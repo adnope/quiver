@@ -28,12 +28,16 @@ import (
 var ErrCollector = errors.New("zeek: collector failed")
 
 type Collector struct {
-	cfg       config.ZeekCollectorConfig
-	state     postgres.CollectorStateStore
-	publisher kafka.RawEventPublisher
-	metrics   *observability.Registry
-	logger    *slog.Logger
-	now       func() time.Time
+	cfg          config.ZeekCollectorConfig
+	state        postgres.CollectorStateStore
+	publisher    kafka.RawEventPublisher
+	metrics      *observability.Registry
+	logger       *slog.Logger
+	now          func() time.Time
+	activeFile   *os.File
+	activeDevice uint64
+	activeInode  uint64
+	activeOffset int64
 }
 
 func NewCollector(
@@ -55,9 +59,17 @@ func NewCollector(
 	return &Collector{cfg: cfg, state: state, publisher: publisher, metrics: metrics, logger: logger, now: time.Now}, nil
 }
 
+func (c *Collector) Stop() {
+	if c.activeFile != nil {
+		_ = c.activeFile.Close()
+		c.activeFile = nil
+	}
+}
+
 func (c *Collector) Run(ctx context.Context) error {
 	ticker := time.NewTicker(c.cfg.PollInterval.Std())
 	defer ticker.Stop()
+	defer c.Stop()
 	for {
 		if err := c.ProcessOnce(ctx); err != nil && !errors.Is(err, kafka.ErrQueueFull) {
 			c.logger.WarnContext(ctx, "zeek poll failed", slog.String("component", "zeek_collector"), slog.Any("error", err))
@@ -74,53 +86,87 @@ func (c *Collector) ProcessOnce(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("process zeek file: %w", err)
 	}
-	file, err := os.Open(c.cfg.FilePath)
-	if err != nil {
-		return fmt.Errorf("%w: open file: %v", ErrCollector, err)
-	}
-	defer func() {
-		_ = file.Close()
-	}()
-	info, err := file.Stat()
+	info, err := os.Stat(c.cfg.FilePath)
 	if err != nil {
 		return fmt.Errorf("%w: stat file: %v", ErrCollector, err)
 	}
 	deviceID, inode := fileIdentity(info)
-	offset, err := c.startOffset(ctx, info.Size(), deviceID, inode)
-	if err != nil {
-		return err
-	}
-	if _, err := file.Seek(offset, io.SeekStart); err != nil {
-		return fmt.Errorf("%w: seek file: %v", ErrCollector, err)
+
+	if c.activeFile == nil {
+		offset, err := c.startOffset(ctx, info.Size(), deviceID, inode)
+		if err != nil {
+			return err
+		}
+		file, err := os.Open(c.cfg.FilePath)
+		if err != nil {
+			return fmt.Errorf("%w: open file: %v", ErrCollector, err)
+		}
+		c.activeFile = file
+		c.activeDevice = deviceID
+		c.activeInode = inode
+		c.activeOffset = offset
+	} else if c.activeInode != inode || c.activeDevice != deviceID {
+		c.logger.Info("zeek file rotation detected, processing remaining tail of old file",
+			slog.Uint64("old_inode", c.activeInode), slog.Uint64("new_inode", inode))
+
+		if err := c.readToEOF(ctx); err != nil {
+			return fmt.Errorf("read tail of old file: %w", err)
+		}
+		_ = c.activeFile.Close()
+
+		file, err := os.Open(c.cfg.FilePath)
+		if err != nil {
+			c.activeFile = nil
+			return fmt.Errorf("%w: open new rotated file: %v", ErrCollector, err)
+		}
+		c.activeFile = file
+		c.activeDevice = deviceID
+		c.activeInode = inode
+		c.activeOffset = 0
+	} else {
+		if info.Size() < c.activeOffset {
+			c.logger.Warn("zeek file size smaller than offset, treating as truncate",
+				slog.Int64("offset", c.activeOffset), slog.Int64("size", info.Size()))
+			c.activeOffset = 0
+		}
 	}
 
-	reader := bufio.NewReaderSize(file, max(4096, c.cfg.MaxLineBytes))
-	current := offset
+	if _, err := c.activeFile.Seek(c.activeOffset, io.SeekStart); err != nil {
+		return fmt.Errorf("%w: seek file to %d: %v", ErrCollector, c.activeOffset, err)
+	}
+
+	return c.readToEOF(ctx)
+}
+
+func (c *Collector) readToEOF(ctx context.Context) error {
+	reader := bufio.NewReaderSize(c.activeFile, max(4096, c.cfg.MaxLineBytes))
+	info, err := c.activeFile.Stat()
+	if err != nil {
+		return fmt.Errorf("%w: stat active file: %v", ErrCollector, err)
+	}
+
 	for {
 		line, readErr := reader.ReadBytes('\n')
 		if len(line) > c.cfg.MaxLineBytes {
 			if err := c.publishLineDLQ(ctx, line, "line_too_large"); err != nil {
 				return err
 			}
-			current += int64(len(line))
-			if err := c.saveOffset(ctx, current, info.Size(), deviceID, inode); err != nil {
+			c.activeOffset += int64(len(line))
+			if err := c.saveOffset(ctx, c.activeOffset, info.Size(), c.activeDevice, c.activeInode); err != nil {
 				return err
 			}
 			continue
 		}
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
-				if len(line) > 0 {
-					return nil
-				}
 				return nil
 			}
 			return fmt.Errorf("%w: read line: %v", ErrCollector, readErr)
 		}
 		trimmed := bytes.TrimRight(line, "\r\n")
 		if len(trimmed) == 0 {
-			current += int64(len(line))
-			if err := c.saveOffset(ctx, current, info.Size(), deviceID, inode); err != nil {
+			c.activeOffset += int64(len(line))
+			if err := c.saveOffset(ctx, c.activeOffset, info.Size(), c.activeDevice, c.activeInode); err != nil {
 				return err
 			}
 			continue
@@ -131,8 +177,8 @@ func (c *Collector) ProcessOnce(ctx context.Context) error {
 				return err
 			}
 			c.metric("collector_parse_errors_total", map[string]string{"error_code": "invalid_json"})
-			current += int64(len(line))
-			if err := c.saveOffset(ctx, current, info.Size(), deviceID, inode); err != nil {
+			c.activeOffset += int64(len(line))
+			if err := c.saveOffset(ctx, c.activeOffset, info.Size(), c.activeDevice, c.activeInode); err != nil {
 				return err
 			}
 			continue
@@ -150,8 +196,8 @@ func (c *Collector) ProcessOnce(ctx context.Context) error {
 			return fmt.Errorf("%w: publish raw: %v", ErrCollector, err)
 		}
 		c.metric("collector_events_published_total", nil)
-		current += int64(len(line))
-		if err := c.saveOffset(ctx, current, info.Size(), deviceID, inode); err != nil {
+		c.activeOffset += int64(len(line))
+		if err := c.saveOffset(ctx, c.activeOffset, info.Size(), c.activeDevice, c.activeInode); err != nil {
 			return err
 		}
 	}
@@ -170,6 +216,9 @@ func (c *Collector) startOffset(ctx context.Context, size int64, deviceID uint64
 		if zeekState.DeviceID == deviceID && zeekState.Inode == inode && zeekState.Offset <= size {
 			return zeekState.Offset, nil
 		}
+		c.logger.Warn("zeek collector restarted with different file inode or size mismatch, possible missed tail",
+			slog.Uint64("stored_inode", zeekState.Inode), slog.Uint64("current_inode", inode),
+			slog.Int64("stored_offset", zeekState.Offset), slog.Int64("current_size", size))
 		return 0, nil
 	}
 	if c.cfg.StartPosition == "beginning" {

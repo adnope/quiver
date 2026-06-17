@@ -169,3 +169,59 @@ func (p *fakePublisher) Flush(context.Context) error {
 }
 
 var _ kafka.RawEventPublisher = (*fakePublisher)(nil)
+
+func TestCollectorPublishesDLQForShortPacket(t *testing.T) {
+	t.Parallel()
+
+	publisher := &fakePublisher{}
+	collector := newTestCollector(t, publisher, nil)
+	packet := []byte{0x00, 0x05, 0x00, 0x01} // too short
+
+	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), packet); err != nil {
+		t.Fatalf("HandlePacket() error = %v", err)
+	}
+	if len(publisher.deadLetters) != 1 {
+		t.Fatalf("dead letters = %d, want 1", len(publisher.deadLetters))
+	}
+	if publisher.deadLetters[0].GetError().GetErrorCode() != "malformed_packet" {
+		t.Fatalf("error code = %q", publisher.deadLetters[0].GetError().GetErrorCode())
+	}
+	if !strings.Contains(publisher.deadLetters[0].GetError().GetErrorMessage(), "packet too short") {
+		t.Fatalf("error message = %q", publisher.deadLetters[0].GetError().GetErrorMessage())
+	}
+}
+
+func TestCollectorPublishesDLQForBadRecordCount(t *testing.T) {
+	t.Parallel()
+
+	publisher := &fakePublisher{}
+	collector := newTestCollector(t, publisher, nil)
+
+	// Case 1: Count is 0
+	p1 := validV5Packet(1, 0)
+	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), p1); err != nil {
+		t.Fatalf("HandlePacket(0) error = %v", err)
+	}
+
+	// Case 2: Count is 31
+	p2 := validV5Packet(1, 31)
+	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), p2); err != nil {
+		t.Fatalf("HandlePacket(31) error = %v", err)
+	}
+
+	// Case 3: Count/length mismatch
+	p3 := validV5Packet(1, 2)
+	p3 = p3[:len(p3)-10]
+	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), p3); err != nil {
+		t.Fatalf("HandlePacket(mismatch) error = %v", err)
+	}
+
+	if len(publisher.deadLetters) != 3 {
+		t.Fatalf("dead letters = %d, want 3", len(publisher.deadLetters))
+	}
+	for i, dlq := range publisher.deadLetters {
+		if dlq.GetError().GetErrorCode() != "malformed_packet" {
+			t.Fatalf("idx %d error code = %q", i, dlq.GetError().GetErrorCode())
+		}
+	}
+}

@@ -206,6 +206,13 @@ func (p *Publisher) Flush(ctx context.Context) error {
 	return nil
 }
 
+func (p *Publisher) Healthy() bool {
+	if p == nil {
+		return false
+	}
+	return !p.closed.Load()
+}
+
 func (p *Publisher) Close(ctx context.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("%w: context is nil", ErrInvalidEvent)

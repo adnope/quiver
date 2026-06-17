@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -199,3 +200,86 @@ func (s *memoryStateStore) Save(_ context.Context, state postgres.CollectorState
 
 var _ kafka.RawEventPublisher = (*fakePublisher)(nil)
 var _ postgres.CollectorStateStore = (*memoryStateStore)(nil)
+
+func TestCollectorRotation(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	path := filepath.Join(tempDir, "conn.log")
+
+	f1, err := os.Create(path) //nolint:gosec
+	if err != nil {
+		t.Fatalf("create f1: %v", err)
+	}
+	_, _ = f1.WriteString(validConnLine() + "\n")
+	_ = f1.Close()
+
+	state := newMemoryStateStore()
+	publisher := &fakePublisher{}
+	collector := newTestCollector(t, path, state, publisher)
+
+	if err := collector.ProcessOnce(context.Background()); err != nil {
+		t.Fatalf("ProcessOnce(1) error = %v", err)
+	}
+	if len(publisher.raw) != 1 {
+		t.Fatalf("raw events = %d, want 1", len(publisher.raw))
+	}
+
+	rotatedPath := path + ".rotated"
+	if err := os.Rename(path, rotatedPath); err != nil {
+		t.Fatalf("rename file: %v", err)
+	}
+
+	f2, err := os.Create(path) //nolint:gosec
+	if err != nil {
+		t.Fatalf("create f2: %v", err)
+	}
+	_, _ = f2.WriteString(validConnLine() + "\n")
+	_ = f2.Close()
+
+	f1Append, err := os.OpenFile(rotatedPath, os.O_APPEND|os.O_WRONLY, 0600) //nolint:gosec
+	if err != nil {
+		t.Fatalf("open rotated path for append: %v", err)
+	}
+	_, _ = f1Append.WriteString(validConnLine() + "\n")
+	_ = f1Append.Close()
+
+	if err := collector.ProcessOnce(context.Background()); err != nil {
+		t.Fatalf("ProcessOnce(2) error = %v", err)
+	}
+
+	if len(publisher.raw) != 3 {
+		t.Fatalf("raw events = %d, want 3", len(publisher.raw))
+	}
+
+	collector.Stop()
+}
+
+func TestCollectorTruncate(t *testing.T) {
+	t.Parallel()
+
+	path := writeZeekFile(t, validConnLine()+"\n"+validConnLine()+"\n")
+	state := newMemoryStateStore()
+	publisher := &fakePublisher{}
+	collector := newTestCollector(t, path, state, publisher)
+
+	if err := collector.ProcessOnce(context.Background()); err != nil {
+		t.Fatalf("ProcessOnce(1) error = %v", err)
+	}
+	if len(publisher.raw) != 2 {
+		t.Fatalf("raw events = %d, want 2", len(publisher.raw))
+	}
+
+	if err := os.WriteFile(path, []byte(validConnLine()+"\n"), 0600); err != nil { //nolint:gosec
+		t.Fatalf("write file: %v", err)
+	}
+
+	if err := collector.ProcessOnce(context.Background()); err != nil {
+		t.Fatalf("ProcessOnce(2) error = %v", err)
+	}
+	if len(publisher.raw) != 3 {
+		t.Fatalf("raw events = %d, want 3", len(publisher.raw))
+	}
+
+	collector.Stop()
+}

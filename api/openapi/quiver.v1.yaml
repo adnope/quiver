@@ -1,0 +1,805 @@
+basePath: /
+definitions:
+  internal_api.APIError:
+    properties:
+      code:
+        type: string
+      details:
+        additionalProperties: {}
+        type: object
+      message:
+        type: string
+    type: object
+  internal_api.ErrorResponse:
+    properties:
+      error:
+        $ref: '#/definitions/internal_api.APIError'
+      request_id:
+        type: string
+    type: object
+  internal_api.FlowResponse:
+    properties:
+      application_protocol:
+        type: string
+      attributes:
+        additionalProperties: {}
+        type: object
+      bytes:
+        type: integer
+      collector_id:
+        type: string
+      direction:
+        type: string
+      dst_ip:
+        type: string
+      dst_port:
+        type: integer
+      duration_ms:
+        type: integer
+      event_end_time:
+        type: string
+      event_start_time:
+        type: string
+      id:
+        type: string
+      idempotency_key:
+        type: string
+      normalization_status:
+        type: string
+      packets:
+        type: integer
+      protocol_number:
+        type: integer
+      raw_event_id:
+        type: string
+      schema_version:
+        type: string
+      source_host:
+        type: string
+      source_ip:
+        type: string
+      source_type:
+        type: string
+      src_ip:
+        type: string
+      src_port:
+        type: integer
+      transport_protocol:
+        type: string
+    type: object
+  internal_api.FlowSearchResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/internal_api.FlowResponse'
+        type: array
+      limit:
+        type: integer
+      next_cursor:
+        type: string
+    type: object
+  internal_api.HealthResponse:
+    properties:
+      status:
+        $ref: '#/definitions/internal_api.HealthStatus'
+    type: object
+  internal_api.HealthStatus:
+    enum:
+    - ok
+    - degraded
+    - fail
+    type: string
+    x-enum-varnames:
+    - HealthOK
+    - HealthDegraded
+    - HealthFail
+  internal_api.IngestRecord:
+    properties:
+      application_protocol:
+        type: string
+      attributes:
+        additionalProperties: {}
+        type: object
+      bytes:
+        type: integer
+      dst_ip:
+        type: string
+      dst_port:
+        type: integer
+      event_end_time:
+        type: string
+      event_start_time:
+        type: string
+      external_id:
+        type: string
+      packets:
+        type: integer
+      protocol_number:
+        type: integer
+      sampling_rate:
+        type: integer
+      src_ip:
+        type: string
+      src_port:
+        type: integer
+      tcp_flags:
+        type: integer
+      transport_protocol:
+        type: string
+    type: object
+  internal_api.IngestRecordError:
+    properties:
+      code:
+        type: string
+      index:
+        type: integer
+      message:
+        type: string
+    type: object
+  internal_api.IngestRequest:
+    properties:
+      records:
+        items:
+          $ref: '#/definitions/internal_api.IngestRecord'
+        type: array
+      source_host:
+        type: string
+    type: object
+  internal_api.IngestResponse:
+    properties:
+      accepted:
+        type: integer
+      errors:
+        items:
+          $ref: '#/definitions/internal_api.IngestRecordError'
+        type: array
+      rejected:
+        type: integer
+    type: object
+  internal_api.ProtocolResponse:
+    properties:
+      flow_count:
+        type: integer
+      metric:
+        type: string
+      protocol_number:
+        type: integer
+      transport_protocol:
+        type: string
+      value:
+        type: integer
+    type: object
+  internal_api.ProtocolsResponse:
+    properties:
+      from:
+        type: string
+      items:
+        items:
+          $ref: '#/definitions/internal_api.ProtocolResponse'
+        type: array
+      limit:
+        type: integer
+      to:
+        type: string
+    type: object
+  internal_api.TopPortResponse:
+    properties:
+      flow_count:
+        type: integer
+      metric:
+        type: string
+      port:
+        type: integer
+      value:
+        type: integer
+    type: object
+  internal_api.TopPortsResponse:
+    properties:
+      from:
+        type: string
+      items:
+        items:
+          $ref: '#/definitions/internal_api.TopPortResponse'
+        type: array
+      limit:
+        type: integer
+      to:
+        type: string
+    type: object
+  internal_api.TopTalkerResponse:
+    properties:
+      flow_count:
+        type: integer
+      ip:
+        type: string
+      metric:
+        type: string
+      value:
+        type: integer
+    type: object
+  internal_api.TopTalkersResponse:
+    properties:
+      from:
+        type: string
+      items:
+        items:
+          $ref: '#/definitions/internal_api.TopTalkerResponse'
+        type: array
+      limit:
+        type: integer
+      to:
+        type: string
+    type: object
+info:
+  contact: {}
+  description: 'Network flow ingestion and query API. Protected endpoints use X-API-Key
+    scopes: ingest, query, metrics. Generated output is Swagger 2.0.'
+  title: Quiver API
+  version: "0.1"
+paths:
+  /api/v1/aggregations/protocols:
+    get:
+      description: Aggregates flows by protocol number and transport protocol.
+      parameters:
+      - description: Inclusive event_start_time lower bound
+        in: query
+        name: from
+        required: true
+        type: string
+      - description: Exclusive event_start_time upper bound
+        in: query
+        name: to
+        required: true
+        type: string
+      - description: Aggregation metric
+        enum:
+        - bytes
+        - packets
+        - flows
+        in: query
+        name: metric
+        type: string
+      - description: Maximum number of rows
+        in: query
+        name: limit
+        type: integer
+      - description: Source type filter
+        enum:
+        - netflow_v5
+        - netflow_v9
+        - zeek_conn_json
+        - suricata_eve_json
+        - rest_json
+        - syslog_cef
+        - syslog_leef
+        in: query
+        name: source_type
+        type: string
+      - description: Exact source IP filter
+        in: query
+        name: src_ip
+        type: string
+      - description: Exact destination IP filter
+        in: query
+        name: dst_ip
+        type: string
+      - description: IP protocol number filter
+        in: query
+        name: protocol_number
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.ProtocolsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Protocol distribution
+      tags:
+      - aggregations
+  /api/v1/aggregations/top-ports:
+    get:
+      description: Aggregates flows by source or destination port.
+      parameters:
+      - description: Inclusive event_start_time lower bound
+        in: query
+        name: from
+        required: true
+        type: string
+      - description: Exclusive event_start_time upper bound
+        in: query
+        name: to
+        required: true
+        type: string
+      - description: src or dst
+        in: query
+        name: direction
+        required: true
+        type: string
+      - description: Aggregation metric
+        enum:
+        - bytes
+        - packets
+        - flows
+        in: query
+        name: metric
+        type: string
+      - description: Maximum number of rows
+        in: query
+        name: limit
+        type: integer
+      - description: Source type filter
+        enum:
+        - netflow_v5
+        - netflow_v9
+        - zeek_conn_json
+        - suricata_eve_json
+        - rest_json
+        - syslog_cef
+        - syslog_leef
+        in: query
+        name: source_type
+        type: string
+      - description: Exact source IP filter
+        in: query
+        name: src_ip
+        type: string
+      - description: Exact destination IP filter
+        in: query
+        name: dst_ip
+        type: string
+      - description: IP protocol number filter
+        in: query
+        name: protocol_number
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.TopPortsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Top ports
+      tags:
+      - aggregations
+  /api/v1/aggregations/top-talkers:
+    get:
+      description: Aggregates flows by source or destination IP.
+      parameters:
+      - description: Inclusive event_start_time lower bound
+        in: query
+        name: from
+        required: true
+        type: string
+      - description: Exclusive event_start_time upper bound
+        in: query
+        name: to
+        required: true
+        type: string
+      - description: src or dst
+        in: query
+        name: direction
+        required: true
+        type: string
+      - description: Aggregation metric
+        enum:
+        - bytes
+        - packets
+        - flows
+        in: query
+        name: metric
+        type: string
+      - description: Maximum number of rows
+        in: query
+        name: limit
+        type: integer
+      - description: Source type filter
+        enum:
+        - netflow_v5
+        - netflow_v9
+        - zeek_conn_json
+        - suricata_eve_json
+        - rest_json
+        - syslog_cef
+        - syslog_leef
+        in: query
+        name: source_type
+        type: string
+      - description: Exact source IP filter
+        in: query
+        name: src_ip
+        type: string
+      - description: Exact destination IP filter
+        in: query
+        name: dst_ip
+        type: string
+      - description: IP protocol number filter
+        in: query
+        name: protocol_number
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.TopTalkersResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Top talkers
+      tags:
+      - aggregations
+  /api/v1/flows:
+    get:
+      description: Searches normalized flow records using required event-time bounds
+        and optional filters.
+      parameters:
+      - description: Inclusive event_start_time lower bound
+        in: query
+        name: from
+        required: true
+        type: string
+      - description: Exclusive event_start_time upper bound
+        in: query
+        name: to
+        required: true
+        type: string
+      - description: Page size
+        in: query
+        name: limit
+        type: integer
+      - description: Signed pagination cursor
+        in: query
+        name: cursor
+        type: string
+      - description: Comma-separated optional expansions. Use attributes to include
+          record attributes
+        in: query
+        name: include
+        type: string
+      - description: Collector ID filter
+        in: query
+        name: collector_id
+        type: string
+      - description: Source type filter
+        enum:
+        - netflow_v5
+        - netflow_v9
+        - zeek_conn_json
+        - suricata_eve_json
+        - rest_json
+        - syslog_cef
+        - syslog_leef
+        in: query
+        name: source_type
+        type: string
+      - description: Source host filter
+        in: query
+        name: source_host
+        type: string
+      - description: Exact source IP filter
+        in: query
+        name: src_ip
+        type: string
+      - description: Exact destination IP filter
+        in: query
+        name: dst_ip
+        type: string
+      - description: Source CIDR filter; mutually exclusive with src_ip
+        in: query
+        name: src_cidr
+        type: string
+      - description: Destination CIDR filter; mutually exclusive with dst_ip
+        in: query
+        name: dst_cidr
+        type: string
+      - description: Exact source port filter
+        in: query
+        name: src_port
+        type: integer
+      - description: Exact destination port filter
+        in: query
+        name: dst_port
+        type: integer
+      - description: Source port range lower bound
+        in: query
+        name: src_port_from
+        type: integer
+      - description: Source port range upper bound
+        in: query
+        name: src_port_to
+        type: integer
+      - description: Destination port range lower bound
+        in: query
+        name: dst_port_from
+        type: integer
+      - description: Destination port range upper bound
+        in: query
+        name: dst_port_to
+        type: integer
+      - description: Transport protocol filter
+        enum:
+        - unknown
+        - tcp
+        - udp
+        - icmp
+        - gre
+        - esp
+        - other
+        in: query
+        name: protocol
+        type: string
+      - description: IP protocol number filter
+        in: query
+        name: protocol_number
+        type: integer
+      - description: Direction filter
+        enum:
+        - unknown
+        - inbound
+        - outbound
+        - internal
+        - external
+        in: query
+        name: direction
+        type: string
+      - description: Application protocol filter
+        in: query
+        name: application_protocol
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.FlowSearchResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Search flow records
+      tags:
+      - flows
+  /api/v1/flows/{id}:
+    get:
+      description: Fetches a single normalized flow record by UUID.
+      parameters:
+      - description: Flow UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Comma-separated optional expansions. Use attributes to include
+          record attributes
+        in: query
+        name: include
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.FlowResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Get flow by ID
+      tags:
+      - flows
+  /api/v1/ingest/flows:
+    post:
+      consumes:
+      - application/json
+      description: Publishes valid REST records as flow.v1.RawFlowEventEnvelope protobuf
+        messages after Kafka ACK. Requires X-API-Key with ingest scope.
+      parameters:
+      - description: API key with ingest scope
+        in: header
+        name: X-API-Key
+        required: true
+        type: string
+      - description: Optional request ID
+        in: header
+        name: X-Request-ID
+        type: string
+      - description: REST ingest batch
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.IngestRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/internal_api.IngestResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "413":
+          description: Request Entity Too Large
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "429":
+          description: Too Many Requests
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Ingest normalized-like flow records
+      tags:
+      - ingest
+  /health:
+    get:
+      description: Returns a top-level process health status only. The route may require
+        an X-API-Key with metrics scope when configured.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.HealthResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/internal_api.HealthResponse'
+      summary: Health status
+      tags:
+      - health
+  /metrics:
+    get:
+      description: Returns Prometheus text exposition metrics. Requires X-API-Key
+        with metrics scope when metrics auth is enabled.
+      parameters:
+      - description: API key with metrics scope when metrics auth is enabled
+        in: header
+        name: X-API-Key
+        required: true
+        type: string
+      produces:
+      - text/plain
+      responses:
+        "200":
+          description: Prometheus text exposition
+          schema:
+            type: string
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "429":
+          description: Too Many Requests
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Prometheus metrics
+      tags:
+      - metrics
+schemes:
+- http
+- https
+securityDefinitions:
+  ApiKeyAuth:
+    description: API key with endpoint-specific scope. Ingest endpoints require ingest,
+      query and aggregation endpoints require query, and metrics endpoints require
+      metrics.
+    in: header
+    name: X-API-Key
+    type: apiKey
+swagger: "2.0"

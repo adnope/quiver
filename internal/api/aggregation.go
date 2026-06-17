@@ -85,7 +85,12 @@ func NewAggregationHandler(cfg config.Config, store AggregationStore) *Aggregati
 // @Param from query string true "Inclusive event_start_time lower bound"
 // @Param to query string true "Exclusive event_start_time upper bound"
 // @Param direction query string true "src or dst"
-// @Param metric query string false "bytes, packets, or flows"
+// @Param metric query string false "Aggregation metric" Enums(bytes,packets,flows)
+// @Param limit query int false "Maximum number of rows"
+// @Param source_type query string false "Source type filter" Enums(netflow_v5,netflow_v9,zeek_conn_json,suricata_eve_json,rest_json,syslog_cef,syslog_leef)
+// @Param src_ip query string false "Exact source IP filter"
+// @Param dst_ip query string false "Exact destination IP filter"
+// @Param protocol_number query int false "IP protocol number filter"
 // @Success 200 {object} TopTalkersResponse
 // @Failure 400 {object} ErrorResponse
 // @Failure 401 {object} ErrorResponse
@@ -129,7 +134,12 @@ func (h *AggregationHandler) TopTalkers(w http.ResponseWriter, r *http.Request) 
 // @Param from query string true "Inclusive event_start_time lower bound"
 // @Param to query string true "Exclusive event_start_time upper bound"
 // @Param direction query string true "src or dst"
-// @Param metric query string false "bytes, packets, or flows"
+// @Param metric query string false "Aggregation metric" Enums(bytes,packets,flows)
+// @Param limit query int false "Maximum number of rows"
+// @Param source_type query string false "Source type filter" Enums(netflow_v5,netflow_v9,zeek_conn_json,suricata_eve_json,rest_json,syslog_cef,syslog_leef)
+// @Param src_ip query string false "Exact source IP filter"
+// @Param dst_ip query string false "Exact destination IP filter"
+// @Param protocol_number query int false "IP protocol number filter"
 // @Success 200 {object} TopPortsResponse
 // @Failure 400 {object} ErrorResponse
 // @Failure 401 {object} ErrorResponse
@@ -172,7 +182,12 @@ func (h *AggregationHandler) TopPorts(w http.ResponseWriter, r *http.Request) {
 // @Security ApiKeyAuth
 // @Param from query string true "Inclusive event_start_time lower bound"
 // @Param to query string true "Exclusive event_start_time upper bound"
-// @Param metric query string false "bytes, packets, or flows"
+// @Param metric query string false "Aggregation metric" Enums(bytes,packets,flows)
+// @Param limit query int false "Maximum number of rows"
+// @Param source_type query string false "Source type filter" Enums(netflow_v5,netflow_v9,zeek_conn_json,suricata_eve_json,rest_json,syslog_cef,syslog_leef)
+// @Param src_ip query string false "Exact source IP filter"
+// @Param dst_ip query string false "Exact destination IP filter"
+// @Param protocol_number query int false "IP protocol number filter"
 // @Success 200 {object} ProtocolsResponse
 // @Failure 400 {object} ErrorResponse
 // @Failure 401 {object} ErrorResponse

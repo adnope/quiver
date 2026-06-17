@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	collectorNetflow "github.com/adnope/quiver/internal/collector/netflow"
 	collectorZeek "github.com/adnope/quiver/internal/collector/zeek"
 	"github.com/adnope/quiver/internal/config"
+	"github.com/adnope/quiver/internal/ingest"
 	"github.com/adnope/quiver/internal/kafka"
 	"github.com/adnope/quiver/internal/observability"
 	"github.com/adnope/quiver/internal/storage/postgres"
@@ -22,12 +24,13 @@ import (
 
 // @title Quiver API
 // @version 0.1
-// @description Network flow ingestion and query API. Protected endpoints use X-API-Key scopes: ingest, query, metrics.
+// @description Network flow ingestion and query API. Protected endpoints use X-API-Key scopes: ingest, query, metrics. Generated output is Swagger 2.0.
 // @BasePath /
 // @schemes http https
 // @securityDefinitions.apikey ApiKeyAuth
 // @in header
 // @name X-API-Key
+// @description API key with endpoint-specific scope. Ingest endpoints require ingest, query and aggregation endpoints require query, and metrics endpoints require metrics.
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -81,6 +84,29 @@ func main() {
 		}
 	}()
 
+	storageWriter, err := postgres.NewStorageWriter(cfg.StorageWriter, flowRepo, publisher)
+	if err != nil {
+		logger.ErrorContext(ctx, "create storage writer failed", slog.String("component", "cmd"), slog.Any("error", err))
+		os.Exit(1)
+	}
+	storageWriter = storageWriter.WithMetrics(metrics)
+
+	pipeline, err := ingest.NewPipeline(cfg, storageWriter, publisher, metrics, logger)
+	if err != nil {
+		logger.ErrorContext(ctx, "create ingestion pipeline failed", slog.String("component", "cmd"), slog.Any("error", err))
+		os.Exit(1)
+	}
+	pipeline.Start(ctx)
+	defer pipeline.Stop()
+
+	registry := newCollectorsRegistry()
+
+	healthChecker := &api.CompositeHealthChecker{
+		DB:              db,
+		Publisher:       publisher,
+		CollectorStatus: registry.Get,
+	}
+
 	apiServer, err := api.NewServerWithObservability(
 		cfg,
 		publisher,
@@ -88,7 +114,7 @@ func main() {
 		flowRepo,
 		os.Getenv,
 		metrics,
-		api.StaticHealthChecker{Value: api.HealthOK},
+		healthChecker,
 	)
 	if err != nil {
 		logger.ErrorContext(ctx, "create api server failed", slog.String("component", "cmd"), slog.Any("error", err))
@@ -112,7 +138,7 @@ func main() {
 			stop()
 		}
 	}()
-	startCollectors(ctx, stop, cfg, stateStore, publisher, metrics, logger)
+	startCollectors(ctx, stop, cfg, stateStore, publisher, metrics, logger, registry)
 
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Shutdown.Timeout.Std())
@@ -131,6 +157,7 @@ func startCollectors(
 	publisher kafka.RawEventPublisher,
 	metrics *observability.Registry,
 	logger *slog.Logger,
+	registry *collectorsRegistry,
 ) {
 	for _, collectorCfg := range cfg.Collectors.ZeekConnJSON {
 		if !collectorCfg.Enabled {
@@ -139,12 +166,15 @@ func startCollectors(
 		collector, err := collectorZeek.NewCollector(collectorCfg, stateStore, publisher, metrics, logger)
 		if err != nil {
 			logger.ErrorContext(ctx, "create zeek collector failed", slog.String("component", "cmd"), slog.Any("error", err))
+			registry.Set(collectorCfg.CollectorID, "failed")
 			stop()
 			return
 		}
+		registry.Set(collectorCfg.CollectorID, "running")
 		go func(id string) {
 			if err := collector.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				logger.Error("zeek collector stopped", slog.String("component", "cmd"), slog.String("collector_id", id), slog.Any("error", err))
+				registry.Set(id, "stopped")
 				stop()
 			}
 		}(collectorCfg.CollectorID)
@@ -156,14 +186,44 @@ func startCollectors(
 		collector, err := collectorNetflow.NewCollector(collectorCfg, cfg.DeadLetter.MaxRawPacketBytes, publisher, metrics, logger)
 		if err != nil {
 			logger.ErrorContext(ctx, "create netflow collector failed", slog.String("component", "cmd"), slog.Any("error", err))
+			registry.Set(collectorCfg.CollectorID, "failed")
 			stop()
 			return
 		}
+		registry.Set(collectorCfg.CollectorID, "running")
 		go func(id string) {
 			if err := collector.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				logger.Error("netflow collector stopped", slog.String("component", "cmd"), slog.String("collector_id", id), slog.Any("error", err))
+				registry.Set(id, "stopped")
 				stop()
 			}
 		}(collectorCfg.CollectorID)
 	}
+}
+
+type collectorsRegistry struct {
+	mu     sync.Mutex
+	status map[string]string
+}
+
+func newCollectorsRegistry() *collectorsRegistry {
+	return &collectorsRegistry{
+		status: make(map[string]string),
+	}
+}
+
+func (r *collectorsRegistry) Set(id string, status string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.status[id] = status
+}
+
+func (r *collectorsRegistry) Get() map[string]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	res := make(map[string]string, len(r.status))
+	for k, v := range r.status {
+		res[k] = v
+	}
+	return res
 }

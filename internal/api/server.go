@@ -84,7 +84,7 @@ func NewServerWithObservability(
 		"GET /api/v1/aggregations/protocols",
 		route(metrics, "GET /api/v1/aggregations/protocols", RequestIDMiddleware(RequireScope(auth, limiter, ScopeQuery, http.HandlerFunc(aggregationHandler.Protocols)))),
 	)
-	healthHandler := HealthHandler(health)
+	healthHandler := HealthHandler(health, auth)
 	if cfg.API.Health.AuthRequired {
 		healthHandler = RequestIDMiddleware(RequireScope(auth, limiter, ScopeMetrics, healthHandler))
 	}

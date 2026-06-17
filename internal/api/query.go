@@ -79,6 +79,24 @@ func NewQueryHandler(cfg config.Config, store FlowStore, cursorCodec *CursorCode
 // @Param to query string true "Exclusive event_start_time upper bound"
 // @Param limit query int false "Page size"
 // @Param cursor query string false "Signed pagination cursor"
+// @Param include query string false "Comma-separated optional expansions. Use attributes to include record attributes"
+// @Param collector_id query string false "Collector ID filter"
+// @Param source_type query string false "Source type filter" Enums(netflow_v5,netflow_v9,zeek_conn_json,suricata_eve_json,rest_json,syslog_cef,syslog_leef)
+// @Param source_host query string false "Source host filter"
+// @Param src_ip query string false "Exact source IP filter"
+// @Param dst_ip query string false "Exact destination IP filter"
+// @Param src_cidr query string false "Source CIDR filter; mutually exclusive with src_ip"
+// @Param dst_cidr query string false "Destination CIDR filter; mutually exclusive with dst_ip"
+// @Param src_port query int false "Exact source port filter"
+// @Param dst_port query int false "Exact destination port filter"
+// @Param src_port_from query int false "Source port range lower bound"
+// @Param src_port_to query int false "Source port range upper bound"
+// @Param dst_port_from query int false "Destination port range lower bound"
+// @Param dst_port_to query int false "Destination port range upper bound"
+// @Param protocol query string false "Transport protocol filter" Enums(unknown,tcp,udp,icmp,gre,esp,other)
+// @Param protocol_number query int false "IP protocol number filter"
+// @Param direction query string false "Direction filter" Enums(unknown,inbound,outbound,internal,external)
+// @Param application_protocol query string false "Application protocol filter"
 // @Success 200 {object} FlowSearchResponse
 // @Failure 400 {object} ErrorResponse
 // @Failure 401 {object} ErrorResponse
@@ -129,6 +147,7 @@ func (h *QueryHandler) Search(w http.ResponseWriter, r *http.Request) {
 // @Produce json
 // @Security ApiKeyAuth
 // @Param id path string true "Flow UUID"
+// @Param include query string false "Comma-separated optional expansions. Use attributes to include record attributes"
 // @Success 200 {object} FlowResponse
 // @Failure 400 {object} ErrorResponse
 // @Failure 401 {object} ErrorResponse
