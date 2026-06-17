@@ -60,6 +60,10 @@ func main() {
 			logger.Warn("close database failed", slog.String("component", "cmd"), slog.Any("error", err))
 		}
 	}()
+	if err := postgres.ApplyStoragePolicies(ctx, db, cfg.Storage); err != nil {
+		logger.ErrorContext(ctx, "apply database storage policies failed", slog.String("component", "cmd"), slog.Any("error", err))
+		os.Exit(1)
+	}
 	flowRepo, err := postgres.NewFlowRepository(db)
 	if err != nil {
 		logger.ErrorContext(ctx, "create flow repository failed", slog.String("component", "cmd"), slog.Any("error", err))

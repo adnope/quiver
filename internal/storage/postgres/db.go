@@ -85,3 +85,48 @@ func validateDatabaseConfig(cfg config.DatabaseConfig) error {
 	}
 	return nil
 }
+
+func ApplyStoragePolicies(ctx context.Context, db *sql.DB, cfg config.StorageConfig) error {
+	if db == nil {
+		return fmt.Errorf("%w: db is nil", ErrInvalidDatabaseConfig)
+	}
+
+	if _, err := db.ExecContext(ctx, "SELECT remove_retention_policy('quiver.flow_records', if_exists => true)"); err != nil {
+		return fmt.Errorf("remove old retention policy: %w", err)
+	}
+	
+	retentionDays := cfg.Retention.FlowRecordsDays
+	if retentionDays > 0 {
+		query := fmt.Sprintf("SELECT add_retention_policy('quiver.flow_records', INTERVAL '%d days')", retentionDays)
+		if _, err := db.ExecContext(ctx, query); err != nil {
+			return fmt.Errorf("add retention policy: %w", err)
+		}
+	}
+
+	if _, err := db.ExecContext(ctx, "CALL remove_columnstore_policy('quiver.flow_records', if_exists => true)"); err != nil {
+		return fmt.Errorf("remove old columnstore policy: %w", err)
+	}
+	if cfg.Columnstore.Enabled {
+		afterSecs := int64(cfg.Columnstore.After.Std().Seconds())
+		if afterSecs > 0 {
+			alterQuery := `ALTER TABLE quiver.flow_records SET (
+				timescaledb.enable_columnstore = true,
+				timescaledb.segmentby = 'source_type,collector_id,source_host',
+				timescaledb.orderby = 'event_start_time DESC'
+			)`
+			if _, err := db.ExecContext(ctx, alterQuery); err != nil {
+				return fmt.Errorf("enable columnstore alter table: %w", err)
+			}
+			query := fmt.Sprintf("CALL add_columnstore_policy('quiver.flow_records', after => INTERVAL '%d seconds')", afterSecs)
+			if _, err := db.ExecContext(ctx, query); err != nil {
+				return fmt.Errorf("add columnstore policy: %w", err)
+			}
+		}
+	} else {
+		if _, err := db.ExecContext(ctx, "ALTER TABLE quiver.flow_records SET (timescaledb.enable_columnstore = false)"); err != nil {
+			return fmt.Errorf("disable columnstore alter table: %w", err)
+		}
+	}
+
+	return nil
+}
