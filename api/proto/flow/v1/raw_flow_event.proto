@@ -1,0 +1,121 @@
+syntax = "proto3";
+
+package flow.v1;
+
+option go_package = "github.com/adnope/quiver/internal/gen/flow/v1;flowv1";
+
+import "flow/v1/common.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+message RawFlowEventEnvelope {
+  string event_id = 1;
+  string schema_version = 2;
+  SourceIdentity source = 3;
+  google.protobuf.Timestamp received_at = 4;
+  string partition_key = 5;
+  RawEventPayload payload = 6;
+  google.protobuf.Struct metadata = 7;
+}
+
+message RawEventPayload {
+  oneof payload {
+    NetFlowV5Flow netflow_v5 = 1;
+    ZeekConnFlow zeek_conn = 2;
+    RestFlowInput rest_flow = 3;
+    NetFlowV9Flow netflow_v9 = 4;
+    SyslogFlow syslog = 5;
+  }
+}
+
+message NetFlowV5Flow {
+  uint32 packet_sequence = 1;
+  uint32 record_index = 2;
+
+  string src_addr = 3;
+  string dst_addr = 4;
+  optional string next_hop = 5;
+
+  optional uint32 input_interface = 6;
+  optional uint32 output_interface = 7;
+
+  uint64 packets = 8;
+  uint64 bytes = 9;
+
+  uint32 first_switched_ms = 10;
+  uint32 last_switched_ms = 11;
+  optional google.protobuf.Timestamp exporter_unix_time = 12;
+  optional uint32 exporter_uptime_ms = 13;
+
+  optional uint32 src_port = 14;
+  optional uint32 dst_port = 15;
+  uint32 tcp_flags = 16;
+  uint32 protocol_number = 17;
+  uint32 tos = 18;
+
+  optional uint32 src_as = 19;
+  optional uint32 dst_as = 20;
+  optional uint32 src_mask = 21;
+  optional uint32 dst_mask = 22;
+
+  optional uint32 engine_type = 23;
+  optional uint32 engine_id = 24;
+  optional uint32 sampling_rate = 25;
+}
+
+message ZeekConnFlow {
+  double ts = 1;
+  string uid = 2;
+
+  string id_orig_h = 3;
+  optional uint32 id_orig_p = 4;
+  string id_resp_h = 5;
+  optional uint32 id_resp_p = 6;
+
+  string proto = 7;
+  optional string service = 8;
+  optional double duration = 9;
+
+  optional uint64 orig_bytes = 10;
+  optional uint64 resp_bytes = 11;
+  optional uint64 orig_pkts = 12;
+  optional uint64 resp_pkts = 13;
+
+  optional string conn_state = 14;
+  optional string history = 15;
+  optional bool local_orig = 16;
+  optional bool local_resp = 17;
+  optional uint64 missed_bytes = 18;
+
+  google.protobuf.Struct extra = 19;
+}
+
+message RestFlowInput {
+  optional string external_id = 1;
+
+  optional google.protobuf.Timestamp event_start_time = 2;
+  optional google.protobuf.Timestamp event_end_time = 3;
+
+  NetworkTuple tuple = 4;
+  CounterFields counters = 5;
+
+  optional string application_protocol = 6;
+  optional uint32 tcp_flags = 7;
+  optional uint32 sampling_rate = 8;
+
+  google.protobuf.Struct attributes = 9;
+}
+
+message NetFlowV9Flow {
+  uint32 source_id = 1;
+  uint32 template_id = 2;
+  uint32 record_index = 3;
+  google.protobuf.Struct fields = 4;
+}
+
+message SyslogFlow {
+  string facility = 1;
+  string severity = 2;
+  string vendor_format = 3;
+  google.protobuf.Struct fields = 4;
+}

@@ -1,0 +1,7 @@
+/artifacts/*
+!/artifacts/.gitkeep
+/bin/
+/coverage.out
+/dist/
+/tmp/
+*.test

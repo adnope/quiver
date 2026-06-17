@@ -1,0 +1,14 @@
+DROP INDEX IF EXISTS quiver.idx_flow_records_direction_time;
+DROP INDEX IF EXISTS quiver.idx_flow_records_app_proto_time;
+DROP INDEX IF EXISTS quiver.idx_flow_records_source_time;
+DROP INDEX IF EXISTS quiver.idx_flow_records_source_type_time;
+DROP INDEX IF EXISTS quiver.idx_flow_records_transport_protocol_time;
+DROP INDEX IF EXISTS quiver.idx_flow_records_protocol_time;
+DROP INDEX IF EXISTS quiver.idx_flow_records_src_port_time;
+DROP INDEX IF EXISTS quiver.idx_flow_records_dst_port_time;
+DROP INDEX IF EXISTS quiver.idx_flow_records_src_dst_proto_time;
+DROP INDEX IF EXISTS quiver.idx_flow_records_dst_ip_time;
+DROP INDEX IF EXISTS quiver.idx_flow_records_src_ip_time;
+DROP INDEX IF EXISTS quiver.idx_flow_records_raw_event_id;
+DROP INDEX IF EXISTS quiver.idx_flow_records_id;
+DROP INDEX IF EXISTS quiver.idx_flow_records_time_id_desc;

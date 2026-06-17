@@ -1,0 +1,220 @@
+package postgres
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/netip"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/adnope/quiver/internal/config"
+	"github.com/adnope/quiver/internal/domain"
+	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+func TestStorageWriterInsertDuplicateAndCommit(t *testing.T) {
+	t.Parallel()
+
+	inserter := &fakeInserter{
+		results: []InsertResult{{Attempted: 2, Inserted: 1, Deduplicated: 1}},
+	}
+	committer := &fakeCommitter{inserter: inserter}
+	writer := newTestStorageWriter(t, inserter, &fakeDeadLetterPublisher{})
+	result, err := writer.WriteBatch(context.Background(), []StorageBatchItem{
+		{Record: validStorageRecord("01934d7c-79b4-7000-8b69-001122334455")},
+		{Record: validStorageRecord("01934d7c-79b4-7000-8b69-001122334456")},
+	}, committer)
+	if err != nil {
+		t.Fatalf("WriteBatch() error = %v", err)
+	}
+	if result.Inserted != 1 || result.Deduplicated != 1 || result.DeadLettered != 0 {
+		t.Fatalf("result = %+v", result)
+	}
+	if !committer.committed || !committer.afterInsert {
+		t.Fatalf("commit state = committed:%v afterInsert:%v", committer.committed, committer.afterInsert)
+	}
+}
+
+func TestStorageWriterInvalidRecordPublishesDLQ(t *testing.T) {
+	t.Parallel()
+
+	dlq := &fakeDeadLetterPublisher{}
+	writer := newTestStorageWriter(t, &fakeInserter{}, dlq)
+	record := validStorageRecord("01934d7c-79b4-7000-8b69-001122334455")
+	record.SchemaVersion = "bad"
+
+	result, err := writer.WriteBatch(context.Background(), []StorageBatchItem{
+		{Record: record, RawEvent: validRawStorageEvent(record.RawEventID)},
+	}, &fakeCommitter{})
+	if err != nil {
+		t.Fatalf("WriteBatch() error = %v", err)
+	}
+	if result.DeadLettered != 1 || len(dlq.events) != 1 {
+		t.Fatalf("result = %+v dlq=%d", result, len(dlq.events))
+	}
+	if dlq.events[0].GetStage() != flowv1.IngestionStage_INGESTION_STAGE_STORAGE_WRITER {
+		t.Fatalf("stage = %s", dlq.events[0].GetStage())
+	}
+}
+
+func TestStorageWriterIsolatesBadDatabaseRow(t *testing.T) {
+	t.Parallel()
+
+	inserter := &fakeInserter{badSourceHost: "bad-db"}
+	dlq := &fakeDeadLetterPublisher{}
+	writer := newTestStorageWriter(t, inserter, dlq)
+	good := validStorageRecord("01934d7c-79b4-7000-8b69-001122334455")
+	bad := validStorageRecord("01934d7c-79b4-7000-8b69-001122334456")
+	bad.SourceHost = "bad-db"
+
+	result, err := writer.WriteBatch(context.Background(), []StorageBatchItem{
+		{Record: good, RawEvent: validRawStorageEvent(good.RawEventID)},
+		{Record: bad, RawEvent: validRawStorageEvent(bad.RawEventID)},
+	}, &fakeCommitter{})
+	if err != nil {
+		t.Fatalf("WriteBatch() error = %v", err)
+	}
+	if result.Inserted != 1 || result.DeadLettered != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(dlq.events) != 1 {
+		t.Fatalf("dlq count = %d", len(dlq.events))
+	}
+}
+
+func newTestStorageWriter(t *testing.T, inserter FlowRecordInserter, publisher DeadLetterPublisher) *StorageWriter {
+	t.Helper()
+
+	writer, err := NewStorageWriter(config.StorageWriterConfig{
+		BatchSize:      1000,
+		MaxRetries:     0,
+		InitialBackoff: config.Duration(time.Millisecond),
+		MaxBackoff:     config.Duration(time.Millisecond),
+	}, inserter, publisher)
+	if err != nil {
+		t.Fatalf("NewStorageWriter() error = %v", err)
+	}
+	writer.now = func() time.Time { return time.Date(2026, 6, 16, 10, 15, 30, 0, time.UTC) }
+	writer.sleep = func(context.Context, time.Duration) error { return nil }
+	return writer
+}
+
+type fakeInserter struct {
+	mu            sync.Mutex
+	calls         int
+	results       []InsertResult
+	badSourceHost string
+}
+
+func (i *fakeInserter) InsertFlowRecords(_ context.Context, records []domain.NormalizedFlowRecord) (InsertResult, error) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.calls++
+	for _, record := range records {
+		if i.badSourceHost != "" && record.SourceHost == i.badSourceHost {
+			return InsertResult{}, errors.New("row violates storage constraint")
+		}
+	}
+	if len(i.results) > 0 {
+		result := i.results[0]
+		i.results = i.results[1:]
+		return result, nil
+	}
+	return InsertResult{Attempted: len(records), Inserted: len(records)}, nil
+}
+
+type fakeDeadLetterPublisher struct {
+	events []*flowv1.DeadLetterEvent
+}
+
+func (p *fakeDeadLetterPublisher) PublishDeadLetter(_ context.Context, event *flowv1.DeadLetterEvent) error {
+	p.events = append(p.events, event)
+	return nil
+}
+
+type fakeCommitter struct {
+	inserter    *fakeInserter
+	committed   bool
+	afterInsert bool
+}
+
+func (c *fakeCommitter) Commit(context.Context) error {
+	c.committed = true
+	if c.inserter == nil {
+		c.afterInsert = true
+		return nil
+	}
+	c.afterInsert = c.inserter.calls > 0
+	return nil
+}
+
+func validStorageRecord(id string) domain.NormalizedFlowRecord {
+	srcPort := uint16(51524)
+	dstPort := uint16(53)
+	bytesValue := uint64(420)
+	packets := uint64(3)
+	return domain.NormalizedFlowRecord{
+		ID:                  id,
+		SchemaVersion:       domain.FlowSchemaVersion,
+		IdempotencyKey:      "sha256:" + id,
+		RawEventID:          "01934d7c-79b4-7000-8b69-001122334457",
+		SourceType:          domain.SourceTypeRESTJSON,
+		CollectorID:         "rest-ingest-main",
+		SourceHost:          "rest-client-host",
+		IngestedAt:          time.Date(2026, 6, 16, 10, 15, 20, 0, time.UTC),
+		NormalizedAt:        time.Date(2026, 6, 16, 10, 15, 21, 0, time.UTC),
+		EventStartTime:      time.Date(2026, 6, 16, 10, 15, 20, 0, time.UTC),
+		SrcIP:               netip.MustParseAddr("192.168.1.10"),
+		DstIP:               netip.MustParseAddr("8.8.8.8"),
+		SrcPort:             &srcPort,
+		DstPort:             &dstPort,
+		IPVersion:           4,
+		TransportProtocol:   domain.TransportProtocolUDP,
+		ProtocolNumber:      17,
+		Bytes:               &bytesValue,
+		Packets:             &packets,
+		Direction:           domain.DirectionOutbound,
+		NormalizationStatus: domain.NormalizationStatusOK,
+		Attributes:          map[string]json.RawMessage{},
+	}
+}
+
+func validRawStorageEvent(id string) *flowv1.RawFlowEventEnvelope {
+	return &flowv1.RawFlowEventEnvelope{
+		EventId:       id,
+		SchemaVersion: domain.RawSchemaVersion,
+		Source: &flowv1.SourceIdentity{
+			CollectorId: "rest-ingest-main",
+			SourceType:  flowv1.SourceType_SOURCE_TYPE_REST_JSON,
+			SourceHost:  "rest-client-host",
+		},
+		ReceivedAt:   timestamppb.New(time.Date(2026, 6, 16, 10, 15, 20, 0, time.UTC)),
+		PartitionKey: "rest-ingest-main:rest-client-host",
+		Payload: &flowv1.RawEventPayload{
+			Payload: &flowv1.RawEventPayload_RestFlow{
+				RestFlow: &flowv1.RestFlowInput{
+					EventStartTime: timestamppb.New(time.Date(2026, 6, 16, 10, 15, 20, 0, time.UTC)),
+					Tuple: &flowv1.NetworkTuple{
+						SrcIp:             testStringPtr("192.168.1.10"),
+						DstIp:             testStringPtr("8.8.8.8"),
+						SrcPort:           testUint32Ptr(51524),
+						DstPort:           testUint32Ptr(53),
+						TransportProtocol: flowv1.TransportProtocol_TRANSPORT_PROTOCOL_UDP,
+						ProtocolNumber:    17,
+					},
+				},
+			},
+		},
+	}
+}
+
+func testStringPtr(value string) *string {
+	return &value
+}
+
+func testUint32Ptr(value uint32) *uint32 {
+	return &value
+}

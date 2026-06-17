@@ -1,0 +1,96 @@
+server:
+  http_addr: "0.0.0.0:8080"
+
+kafka:
+  brokers:
+    - "kafka:9092"
+  topics:
+    raw: "flow.raw"
+    dead_letter: "flow.dead_letter"
+
+database:
+  dsn: "${QUIVER_DATABASE_DSN}"
+  schema: "quiver"
+  max_open_conns: 20
+  max_idle_conns: 10
+  conn_max_lifetime: "30m"
+  conn_max_idle_time: "5m"
+
+ingestion:
+  publish_queue_size: 10000
+  publisher_workers: 4
+
+storage:
+  retention:
+    flow_records_days: 30
+  columnstore:
+    enabled: true
+    after: "24h"
+
+storage_writer:
+  batch_size: 1000
+  flush_interval: "1s"
+  max_retries: 10
+  initial_backoff: "100ms"
+  max_backoff: "5s"
+
+api:
+  max_request_body_bytes: 5242880
+  cursor:
+    hmac_secret_env: "QUIVER_API_CURSOR_SECRET"
+  query:
+    max_query_window: "24h"
+    default_limit: 100
+    max_limit: 1000
+    aggregation_default_limit: 20
+  rate_limits:
+    ingest:
+      requests_per_minute: 60
+    query:
+      requests_per_minute: 120
+    metrics:
+      requests_per_minute: 60
+  health:
+    auth_required: false
+  metrics:
+    auth_required: true
+  keys:
+    - name: "demo-admin"
+      key_env: "QUIVER_DEMO_ADMIN_API_KEY"
+      scopes: ["ingest", "query", "metrics"]
+
+rest_ingest:
+  enabled: true
+  collector_id: "rest-ingest-main"
+  max_batch_size: 1000
+  api_keys:
+    - name: "demo-client"
+      source_host: "rest-demo-client"
+      key_env: "REST_INGEST_DEMO_CLIENT_KEY"
+
+collectors:
+  netflow_v5:
+    - enabled: true
+      collector_id: "netflow-main"
+      listen_addr: "0.0.0.0:2055"
+      read_buffer_bytes: 4194304
+      packet_buffer_bytes: 65535
+      allowed_sources:
+        - source_ip: "10.10.0.1"
+          source_host: "router-core-01"
+          sampling_rate: 1
+  zeek_conn_json:
+    - enabled: true
+      collector_id: "zeek-conn-01"
+      source_host: "zeek-probe-01"
+      file_path: "/var/log/zeek/current/conn.log"
+      poll_interval: "1s"
+      start_position: "end"
+      max_line_bytes: 1048576
+      state_key: "zeek-conn-01:zeek_conn_json:zeek-probe-01:/var/log/zeek/current/conn.log"
+
+dead_letter:
+  max_raw_packet_bytes: 1500
+
+shutdown:
+  timeout: "10s"

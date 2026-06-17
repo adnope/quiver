@@ -1,0 +1,124 @@
+package api
+
+import (
+	"net/http"
+	"strings"
+
+	"github.com/adnope/quiver/internal/config"
+	"github.com/adnope/quiver/internal/kafka"
+	"github.com/adnope/quiver/internal/observability"
+)
+
+type Server struct {
+	mux *http.ServeMux
+}
+
+func NewServer(cfg config.Config, publisher kafka.RawEventPublisher, lookupEnv func(string) string) (*Server, error) {
+	return NewServerWithStores(cfg, publisher, nil, nil, lookupEnv)
+}
+
+func NewServerWithStores(
+	cfg config.Config,
+	publisher kafka.RawEventPublisher,
+	flowStore FlowStore,
+	aggregationStore AggregationStore,
+	lookupEnv func(string) string,
+) (*Server, error) {
+	return NewServerWithObservability(
+		cfg,
+		publisher,
+		flowStore,
+		aggregationStore,
+		lookupEnv,
+		nil,
+		StaticHealthChecker{Value: HealthOK},
+	)
+}
+
+func NewServerWithObservability(
+	cfg config.Config,
+	publisher kafka.RawEventPublisher,
+	flowStore FlowStore,
+	aggregationStore AggregationStore,
+	lookupEnv func(string) string,
+	metrics *observability.Registry,
+	health HealthChecker,
+) (*Server, error) {
+	auth, err := NewAuthenticator(cfg, lookupEnv)
+	if err != nil {
+		return nil, err
+	}
+	cursorCodec, err := cursorCodecFromConfig(cfg, lookupEnv)
+	if err != nil {
+		return nil, err
+	}
+	if flowStore != nil && cursorCodec == nil {
+		return nil, ErrInvalidCursor
+	}
+	limiter := NewRateLimiter(cfg.API.RateLimits)
+	mux := http.NewServeMux()
+	ingestHandler := NewIngestHandler(cfg, publisher)
+	mux.Handle(
+		"POST /api/v1/ingest/flows",
+		route(metrics, "POST /api/v1/ingest/flows", RequestIDMiddleware(RequireScope(auth, limiter, ScopeIngest, ingestHandler))),
+	)
+	queryHandler := NewQueryHandler(cfg, flowStore, cursorCodec)
+	mux.Handle(
+		"GET /api/v1/flows",
+		route(metrics, "GET /api/v1/flows", RequestIDMiddleware(RequireScope(auth, limiter, ScopeQuery, http.HandlerFunc(queryHandler.Search)))),
+	)
+	mux.Handle(
+		"GET /api/v1/flows/",
+		route(metrics, "GET /api/v1/flows/{id}", RequestIDMiddleware(RequireScope(auth, limiter, ScopeQuery, http.HandlerFunc(queryHandler.Lookup)))),
+	)
+	aggregationHandler := NewAggregationHandler(cfg, aggregationStore)
+	mux.Handle(
+		"GET /api/v1/aggregations/top-talkers",
+		route(metrics, "GET /api/v1/aggregations/top-talkers", RequestIDMiddleware(RequireScope(auth, limiter, ScopeQuery, http.HandlerFunc(aggregationHandler.TopTalkers)))),
+	)
+	mux.Handle(
+		"GET /api/v1/aggregations/top-ports",
+		route(metrics, "GET /api/v1/aggregations/top-ports", RequestIDMiddleware(RequireScope(auth, limiter, ScopeQuery, http.HandlerFunc(aggregationHandler.TopPorts)))),
+	)
+	mux.Handle(
+		"GET /api/v1/aggregations/protocols",
+		route(metrics, "GET /api/v1/aggregations/protocols", RequestIDMiddleware(RequireScope(auth, limiter, ScopeQuery, http.HandlerFunc(aggregationHandler.Protocols)))),
+	)
+	healthHandler := HealthHandler(health)
+	if cfg.API.Health.AuthRequired {
+		healthHandler = RequestIDMiddleware(RequireScope(auth, limiter, ScopeMetrics, healthHandler))
+	}
+	mux.Handle("GET /health", route(metrics, "GET /health", healthHandler))
+	metricsHandler := MetricsHandler(metrics)
+	if cfg.API.Metrics.AuthRequired {
+		metricsHandler = RequestIDMiddleware(RequireScope(auth, limiter, ScopeMetrics, metricsHandler))
+	}
+	mux.Handle("GET /metrics", route(metrics, "GET /metrics", metricsHandler))
+	return &Server{mux: mux}, nil
+}
+
+func (s *Server) Handler() http.Handler {
+	if s == nil || s.mux == nil {
+		return http.NotFoundHandler()
+	}
+	return s.mux
+}
+
+func cursorCodecFromConfig(cfg config.Config, lookupEnv func(string) string) (*CursorCodec, error) {
+	if lookupEnv == nil {
+		return nil, nil
+	}
+	envName := strings.TrimSpace(cfg.API.Cursor.HMACSecretEnv)
+	if envName == "" {
+		return nil, nil
+	}
+	secret := strings.TrimSpace(lookupEnv(envName))
+	if secret == "" {
+		return nil, nil
+	}
+	return NewCursorCodec(secret)
+}
+
+func route(metrics *observability.Registry, route string, handler http.Handler) http.Handler {
+	return instrumentHTTP(metrics, route, handler)
+}

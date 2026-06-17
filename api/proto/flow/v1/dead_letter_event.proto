@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package flow.v1;
+
+option go_package = "github.com/adnope/quiver/internal/gen/flow/v1;flowv1";
+
+import "flow/v1/common.proto";
+import "flow/v1/raw_flow_event.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+message DeadLetterEvent {
+  string dead_letter_id = 1;
+  string schema_version = 2;
+  IngestionStage stage = 3;
+  SourceIdentity source = 4;
+
+  google.protobuf.Timestamp received_at = 5;
+  google.protobuf.Timestamp failed_at = 6;
+
+  ErrorInfo error = 7;
+  optional RawFlowEventEnvelope raw_event = 8;
+  optional RawPayloadDebug raw_payload_debug = 9;
+
+  google.protobuf.Struct metadata = 10;
+}
+
+message RawPayloadDebug {
+  bool masked = 1;
+  PayloadEncoding encoding = 2;
+  bytes data = 3;
+  string sha256 = 4;
+  uint64 original_size_bytes = 5;
+  bool truncated = 6;
+}

@@ -1,0 +1,82 @@
+syntax = "proto3";
+
+package flow.v1;
+
+option go_package = "github.com/adnope/quiver/internal/gen/flow/v1;flowv1";
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+enum SourceType {
+  SOURCE_TYPE_UNSPECIFIED = 0;
+  SOURCE_TYPE_NETFLOW_V5 = 1;
+  SOURCE_TYPE_ZEEK_CONN_JSON = 2;
+  SOURCE_TYPE_REST_JSON = 3;
+  SOURCE_TYPE_NETFLOW_V9 = 4;
+  SOURCE_TYPE_SYSLOG_CEF = 5;
+  SOURCE_TYPE_SYSLOG_LEEF = 6;
+  SOURCE_TYPE_SURICATA_EVE_JSON = 7;
+}
+
+enum PayloadEncoding {
+  PAYLOAD_ENCODING_UNSPECIFIED = 0;
+  PAYLOAD_ENCODING_PARSED_PROTOBUF = 1;
+  PAYLOAD_ENCODING_RAW_BYTES = 2;
+  PAYLOAD_ENCODING_TRUNCATED_RAW_BYTES = 3;
+  PAYLOAD_ENCODING_TEXT = 4;
+}
+
+enum TransportProtocol {
+  TRANSPORT_PROTOCOL_UNSPECIFIED = 0;
+  TRANSPORT_PROTOCOL_TCP = 1;
+  TRANSPORT_PROTOCOL_UDP = 2;
+  TRANSPORT_PROTOCOL_ICMP = 3;
+  TRANSPORT_PROTOCOL_GRE = 4;
+  TRANSPORT_PROTOCOL_ESP = 5;
+  TRANSPORT_PROTOCOL_OTHER = 6;
+  TRANSPORT_PROTOCOL_UNKNOWN = 7;
+}
+
+enum IngestionStage {
+  INGESTION_STAGE_UNSPECIFIED = 0;
+  INGESTION_STAGE_COLLECTOR = 1;
+  INGESTION_STAGE_PARSER = 2;
+  INGESTION_STAGE_VALIDATION = 3;
+  INGESTION_STAGE_NORMALIZER = 4;
+  INGESTION_STAGE_STORAGE_WRITER = 5;
+}
+
+message SourceIdentity {
+  string collector_id = 1;
+  SourceType source_type = 2;
+  string source_host = 3;
+  optional string source_ip = 4;
+}
+
+message EventTimeRange {
+  optional google.protobuf.Timestamp start_time = 1;
+  optional google.protobuf.Timestamp end_time = 2;
+}
+
+message NetworkTuple {
+  optional string src_ip = 1;
+  optional string dst_ip = 2;
+  optional uint32 src_port = 3;
+  optional uint32 dst_port = 4;
+  TransportProtocol transport_protocol = 5;
+  uint32 protocol_number = 6;
+}
+
+message CounterFields {
+  optional uint64 bytes = 1;
+  optional uint64 packets = 2;
+  optional bool bytes_partial = 3;
+  optional bool packets_partial = 4;
+}
+
+message ErrorInfo {
+  string error_code = 1;
+  string error_message = 2;
+  bool retryable = 3;
+  google.protobuf.Struct details = 4;
+}
