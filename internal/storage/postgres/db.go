@@ -94,7 +94,7 @@ func ApplyStoragePolicies(ctx context.Context, db *sql.DB, cfg config.StorageCon
 	if _, err := db.ExecContext(ctx, "SELECT remove_retention_policy('quiver.flow_records', if_exists => true)"); err != nil {
 		return fmt.Errorf("remove old retention policy: %w", err)
 	}
-	
+
 	retentionDays := cfg.Retention.FlowRecordsDays
 	if retentionDays > 0 {
 		query := fmt.Sprintf("SELECT add_retention_policy('quiver.flow_records', INTERVAL '%d days')", retentionDays)

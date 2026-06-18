@@ -1,0 +1,79 @@
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg17
+    container_name: quiver-timescaledb
+    environment:
+      - POSTGRES_DB=quiver
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d quiver"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  kafka:
+    image: confluentinc/cp-kafka:8.2.2
+    container_name: quiver-kafka
+    ports:
+      - "9094:9094"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9094'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
+      KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:9094'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+
+  migration:
+    image: migrate/migrate:v4.19.1
+    container_name: quiver-migration
+    volumes:
+      - ./internal/storage/postgres/migrations:/migrations
+    command: -path=/migrations -database="postgres://postgres:postgres@timescaledb:5432/quiver?sslmode=disable" up
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+
+  quiver:
+    build: .
+    container_name: quiver-app
+    command: ["-config", "/configs/quiver.demo.yaml"]
+    environment:
+      - QUIVER_DATABASE_DSN=${QUIVER_DATABASE_DSN}
+      - QUIVER_API_CURSOR_SECRET=${QUIVER_API_CURSOR_SECRET}
+      - QUIVER_DEMO_ADMIN_API_KEY=${QUIVER_DEMO_ADMIN_API_KEY}
+      - REST_INGEST_DEMO_CLIENT_KEY=${REST_INGEST_DEMO_CLIENT_KEY}
+      - QUIVER_HTTP_ADDR=${QUIVER_HTTP_ADDR}
+      - KAFKA_BROKER_INTERNAL=${KAFKA_BROKER_INTERNAL}
+      - KAFKA_TOPIC_RAW=${KAFKA_TOPIC_RAW}
+      - KAFKA_TOPIC_DLQ=${KAFKA_TOPIC_DLQ}
+      - NETFLOW_PORT=${NETFLOW_PORT}
+    volumes:
+      - ./configs:/configs
+      - /tmp/zeek:/var/log/zeek/current
+    ports:
+      - "${QUIVER_HOST_PORT}:${QUIVER_INTERNAL_PORT}"
+      - "${NETFLOW_PORT}:${NETFLOW_PORT}/udp"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      migration:
+        condition: service_completed_successfully

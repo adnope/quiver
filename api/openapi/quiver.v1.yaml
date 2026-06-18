@@ -733,8 +733,8 @@ paths:
       - ingest
   /health:
     get:
-      description: Returns a top-level process health status only. The route may require
-        an X-API-Key with metrics scope when configured.
+      description: Returns a top-level process health status. If X-API-Key with metrics
+        scope is provided, detailed status is returned.
       produces:
       - application/json
       responses:

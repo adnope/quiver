@@ -216,8 +216,27 @@ func LoadFile(ctx context.Context, path string, lookupEnv func(string) string) (
 }
 
 func LoadReader(reader io.Reader, lookupEnv func(string) string) (Config, error) {
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return Config{}, fmt.Errorf("read config data: %w", err)
+	}
+	content := string(data)
+	var missingVar string
+	if lookupEnv != nil {
+		content = os.Expand(content, func(name string) string {
+			resolved := lookupEnv(name)
+			if strings.TrimSpace(resolved) == "" {
+				missingVar = name
+				return ""
+			}
+			return resolved
+		})
+	}
+	if missingVar != "" {
+		return Config{}, fmt.Errorf("%w: required env var %q is missing", ErrInvalidConfig, missingVar)
+	}
 	cfg := Default()
-	decoder := yaml.NewDecoder(reader)
+	decoder := yaml.NewDecoder(strings.NewReader(content))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("decode yaml config: %w", err)

@@ -19,6 +19,7 @@ func NewFranzWriter(cfg Config) (*FranzWriter, error) {
 	client, err := kgo.NewClient(
 		kgo.SeedBrokers(cfg.Brokers...),
 		kgo.RequiredAcks(kgo.AllISRAcks()),
+		kgo.AllowAutoTopicCreation(),
 		kgo.ProducerBatchCompression(kgo.Lz4Compression()),
 		kgo.ProduceRequestTimeout(cfg.RequestTimeout),
 		kgo.RecordDeliveryTimeout(cfg.DeliveryTimeout),

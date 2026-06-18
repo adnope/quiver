@@ -105,7 +105,7 @@ SELECT EXISTS (
     FROM timescaledb_information.jobs
     WHERE hypertable_schema = 'quiver'
       AND hypertable_name = 'flow_records'
-      AND proc_name = 'policy_columnstore'
+      AND proc_name = 'policy_compression'
 )`)
 }
 

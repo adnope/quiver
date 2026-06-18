@@ -389,6 +389,76 @@ func assertJSONRaw(t *testing.T, got json.RawMessage, expected string) {
 	}
 }
 
+func TestNormalizerEdgeCases(t *testing.T) {
+	t.Run("domainSourceType mappings", func(t *testing.T) {
+		types := []struct {
+			proto   flowv1.SourceType
+			domain  domain.SourceType
+			wantErr bool
+		}{
+			{flowv1.SourceType_SOURCE_TYPE_NETFLOW_V5, domain.SourceTypeNetFlowV5, false},
+			{flowv1.SourceType_SOURCE_TYPE_ZEEK_CONN_JSON, domain.SourceTypeZeekConnJSON, false},
+			{flowv1.SourceType_SOURCE_TYPE_REST_JSON, domain.SourceTypeRESTJSON, false},
+			{flowv1.SourceType_SOURCE_TYPE_NETFLOW_V9, domain.SourceTypeNetFlowV9, false},
+			{flowv1.SourceType_SOURCE_TYPE_SYSLOG_CEF, domain.SourceTypeSyslogCEF, false},
+			{flowv1.SourceType_SOURCE_TYPE_SYSLOG_LEEF, domain.SourceTypeSyslogLEEF, false},
+			{flowv1.SourceType_SOURCE_TYPE_SURICATA_EVE_JSON, domain.SourceTypeSuricataEVE, false},
+			{flowv1.SourceType_SOURCE_TYPE_UNSPECIFIED, "", true},
+		}
+		for _, tc := range types {
+			res, err := domainSourceType(tc.proto)
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("expected error for proto %v", tc.proto)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error for proto %v: %v", tc.proto, err)
+				}
+				if res != tc.domain {
+					t.Errorf("got %v, want %v", res, tc.domain)
+				}
+			}
+		}
+	})
+
+	t.Run("domainTransportProtocol mappings", func(t *testing.T) {
+		protos := []struct {
+			proto  flowv1.TransportProtocol
+			domain domain.TransportProtocol
+		}{
+			{flowv1.TransportProtocol_TRANSPORT_PROTOCOL_TCP, domain.TransportProtocolTCP},
+			{flowv1.TransportProtocol_TRANSPORT_PROTOCOL_UDP, domain.TransportProtocolUDP},
+			{flowv1.TransportProtocol_TRANSPORT_PROTOCOL_ICMP, domain.TransportProtocolICMP},
+			{flowv1.TransportProtocol_TRANSPORT_PROTOCOL_GRE, domain.TransportProtocolGRE},
+			{flowv1.TransportProtocol_TRANSPORT_PROTOCOL_ESP, domain.TransportProtocolESP},
+			{flowv1.TransportProtocol_TRANSPORT_PROTOCOL_OTHER, domain.TransportProtocolOther},
+			{flowv1.TransportProtocol_TRANSPORT_PROTOCOL_UNSPECIFIED, domain.TransportProtocolUnknown},
+		}
+		for _, tc := range protos {
+			res := domainTransportProtocol(tc.proto)
+			if res != tc.domain {
+				t.Errorf("got %v, want %v", res, tc.domain)
+			}
+		}
+	})
+
+	t.Run("Option fallbacks", func(t *testing.T) {
+		event := rawRESTEvent(t)
+		opts := Options{} // all nil/empty
+		record, err := NormalizeRawEvent(event, opts)
+		if err != nil {
+			t.Fatalf("NormalizeRawEvent with empty Options failed: %v", err)
+		}
+		if record.ID == "" {
+			t.Error("Expected ID to be generated")
+		}
+		if len(record.Attributes) == 0 {
+			t.Error("Expected attributes to be populated")
+		}
+	})
+}
+
 func testPtr[T any](value T) *T {
 	return &value
 }

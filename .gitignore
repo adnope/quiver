@@ -5,3 +5,5 @@
 /dist/
 /tmp/
 *.test
+.env
+dockerhub.secrets

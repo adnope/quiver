@@ -1,3 +1,8 @@
+ifneq (,$(wildcard ./.env))
+    include .env
+    export
+endif
+
 GO ?= go
 GOLANGCI_LINT ?= golangci-lint
 PROTOC ?= protoc
@@ -8,13 +13,13 @@ QUIVER_DATABASE_DSN ?=
 OPENAPI_DIR ?= api/openapi
 OPENAPI_FILE ?= $(OPENAPI_DIR)/quiver.v1.yaml
 
-.PHONY: fmt lint test test-unit test-integration test-race coverage proto proto-check swagger swagger-check openapi openapi-check migrate-up docker-up docker-down demo verify-demo
+.PHONY: fmt lint test test-unit test-integration test-race coverage proto proto-check swagger swagger-check openapi openapi-check migrate-up docker-up docker-down demo verify-demo load-smoke
 
 fmt:
 	$(GO) fmt ./...
 
 lint:
-	$(GOLANGCI_LINT) run ./...
+	$(GOLANGCI_LINT) run cmd/... internal/...
 
 test: test-unit
 
@@ -22,6 +27,8 @@ test-unit:
 	$(GO) test ./...
 
 test-integration:
+	QUIVER_DATABASE_DSN="$(QUIVER_DATABASE_DSN_HOST)" \
+	QUIVER_KAFKA_BROKERS="$(KAFKA_BROKER_EXTERNAL)" \
 	$(GO) test -tags=integration ./...
 
 test-race:
@@ -83,13 +90,18 @@ migrate-up:
 		up
 
 docker-up:
-	@printf '%s\n' "docker compose is not wired yet"; exit 2
+	docker compose up -d --build
 
 docker-down:
-	@printf '%s\n' "docker compose is not wired yet"; exit 2
+	docker compose down -v
 
 demo:
-	@printf '%s\n' "demo is not wired yet"; exit 2
+	$(GO) run tools/restgen/main.go -target http://localhost:$(QUIVER_HOST_PORT) -key $(REST_INGEST_DEMO_CLIENT_KEY) -count 10
+	$(GO) run tools/zeekloggen/main.go -file /tmp/zeek/conn.log -mode append -count 10
+	$(GO) run tools/netflowgen/main.go -target localhost:$(NETFLOW_PORT) -count 5 -seq 10
 
 verify-demo:
-	@printf '%s\n' "demo verification is not wired yet"; exit 2
+	./scripts/verify-demo.sh
+
+load-smoke:
+	$(GO) run tools/loadsmoke/main.go -rest http://localhost:$(QUIVER_HOST_PORT) -udp localhost:$(NETFLOW_PORT) -duration 30
