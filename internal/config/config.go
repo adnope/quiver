@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,12 +17,14 @@ import (
 const (
 	DefaultMaxRequestBodyBytes = 5 * 1024 * 1024
 	DefaultMaxBatchSize        = 1000
-	DefaultMaxQueryWindow      = Duration(24 * time.Hour)
+	DefaultMaxQueryWindow      = Duration(7 * dayDuration)
 	DefaultQueryLimit          = 100
 	DefaultMaxQueryLimit       = 1000
 	DefaultAggregationLimit    = 20
 	DefaultShutdownTimeout     = Duration(10 * time.Second)
 )
+
+const dayDuration = 24 * time.Hour
 
 type Config struct {
 	Server        ServerConfig        `yaml:"server"`
@@ -188,12 +191,29 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 	if value.Kind != yaml.ScalarNode {
 		return fmt.Errorf("duration must be a scalar")
 	}
-	parsed, err := time.ParseDuration(value.Value)
+	parsed, err := parseDuration(value.Value)
 	if err != nil {
 		return fmt.Errorf("parse duration %q: %w", value.Value, err)
 	}
 	*d = Duration(parsed)
 	return nil
+}
+
+func parseDuration(raw string) (time.Duration, error) {
+	value := strings.TrimSpace(raw)
+	if dayCount, ok := strings.CutSuffix(value, "d"); ok {
+		days, err := strconv.ParseInt(strings.TrimSpace(dayCount), 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("day suffix requires an integer count: %w", err)
+		}
+		const maxDuration = time.Duration(1<<63 - 1)
+		maxDays := int64(maxDuration / dayDuration)
+		if days > maxDays || days < -maxDays {
+			return 0, fmt.Errorf("day duration %d exceeds maximum supported duration", days)
+		}
+		return time.Duration(days) * dayDuration, nil
+	}
+	return time.ParseDuration(value)
 }
 
 func (d Duration) Std() time.Duration {

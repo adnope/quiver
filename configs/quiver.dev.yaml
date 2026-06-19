@@ -39,7 +39,7 @@ api:
   cursor:
     hmac_secret_env: "QUIVER_API_CURSOR_SECRET"
   query:
-    max_query_window: "30d"
+    max_query_window: "7d"
     default_limit: 100
     max_limit: 1000
     aggregation_default_limit: 20

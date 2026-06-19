@@ -138,7 +138,7 @@ func TestLoadBytes(t *testing.T) {
 	if cfg.Storage.Columnstore.After != Duration(24*time.Hour) {
 		t.Fatalf("columnstore after = %s", cfg.Storage.Columnstore.After.Std())
 	}
-	if cfg.API.Query.MaxQueryWindow != Duration(24*time.Hour) {
+	if cfg.API.Query.MaxQueryWindow != Duration(7*dayDuration) {
 		t.Fatalf("query window = %s", cfg.API.Query.MaxQueryWindow.Std())
 	}
 	if !cfg.Storage.Columnstore.Enabled {
@@ -223,10 +223,9 @@ func TestDemoConfigLoads(t *testing.T) {
 		"KAFKA_TOPIC_RAW":             "flow.raw",
 		"KAFKA_TOPIC_DLQ":             "flow.dead_letter",
 		"QUIVER_DATABASE_DSN":         "postgres://timescaledb:5432/quiver?sslmode=disable",
-		cursorSecretEnv:               "cursor-key",
-		"QUIVER_DEMO_ADMIN_API_KEY":   "admin-key",
-		"REST_INGEST_DEMO_CLIENT_KEY": "ingest-key",
-		"BRUNO_CLIENT_API_KEY":        "+8dXdt2UJRuAjSRasp2GOaleUmN6qLhG4fz66ZbtNzo=",
+		cursorSecretEnv:               fixtureValue("cursor"),
+		"QUIVER_DEMO_ADMIN_API_KEY":   fixtureValue("admin"),
+		"REST_INGEST_DEMO_CLIENT_KEY": fixtureValue("ingest"),
 		"NETFLOW_PORT":                "2055",
 		"POSTGRES_POOL_SIZE":          "20",
 		"POSTGRES_MAX_IDLE_CONNS":     "10",
@@ -248,11 +247,10 @@ func TestDevConfigLoads(t *testing.T) {
 		"KAFKA_BROKER_EXTERNAL":       "localhost:9094",
 		"KAFKA_TOPIC_RAW":             "flow.raw",
 		"KAFKA_TOPIC_DLQ":             "flow.dead_letter",
-		"QUIVER_DATABASE_DSN_HOST":    "postgres://postgres:postgres@localhost:5432/quiver?sslmode=disable",
-		cursorSecretEnv:               "cursor-key",
-		"QUIVER_DEMO_ADMIN_API_KEY":   "admin-key",
-		"REST_INGEST_DEMO_CLIENT_KEY": "ingest-key",
-		"BRUNO_CLIENT_API_KEY":        "+8dXdt2UJRuAjSRasp2GOaleUmN6qLhG4fz66ZbtNzo=",
+		"QUIVER_DATABASE_DSN_HOST":    fixturePostgresDSN("localhost"),
+		cursorSecretEnv:               fixtureValue("cursor"),
+		"QUIVER_DEMO_ADMIN_API_KEY":   fixtureValue("admin"),
+		"REST_INGEST_DEMO_CLIENT_KEY": fixtureValue("ingest"),
 		"NETFLOW_PORT":                "2055",
 		"POSTGRES_POOL_SIZE":          "20",
 		"POSTGRES_MAX_IDLE_CONNS":     "10",
@@ -326,6 +324,10 @@ func fixtureValue(name string) string {
 	return "fixture-" + name
 }
 
+func fixturePostgresDSN(host string) string {
+	return "postgres://postgres:" + fixtureValue("postgres-password") + "@" + host + ":5432/quiver?sslmode=disable"
+}
+
 func validYAML() string {
 	return `
 kafka:
@@ -336,6 +338,8 @@ database:
 api:
   cursor:
     hmac_secret_env: QUIVER_CURSOR_HMAC
+  query:
+    max_query_window: "7d"
   keys:
     - name: demo-admin
       key_env: QUIVER_DEMO_ADMIN_API_KEY

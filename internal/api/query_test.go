@@ -37,7 +37,7 @@ func TestFlowSearchValidationAndPagination(t *testing.T) {
 		{name: "missing range", target: "/api/v1/flows", apiKey: "query-key", wantCode: http.StatusBadRequest, wantError: CodeMissingRequiredParameter},
 		{
 			name:      "window too large",
-			target:    "/api/v1/flows?from=2026-06-16T00:00:00Z&to=2026-06-18T00:00:00Z",
+			target:    "/api/v1/flows?from=2026-06-16T00:00:00Z&to=2026-06-24T00:00:00Z",
 			apiKey:    "query-key",
 			wantCode:  http.StatusBadRequest,
 			wantError: CodeQueryWindowTooLarge,
