@@ -68,6 +68,11 @@ rest_ingest:
       source_host: "rest-demo-client"
       key_env: "REST_INGEST_DEMO_CLIENT_KEY"
 
+quiver_client_gateways:
+  - name: "demo-client"
+    source_host: "rest-demo-client"
+    key_env: "REST_INGEST_DEMO_CLIENT_KEY"
+
 collectors:
   netflow_v5:
     - enabled: true
@@ -75,55 +80,7 @@ collectors:
       listen_addr: "0.0.0.0:${NETFLOW_PORT}"
       read_buffer_bytes: 4194304
       packet_buffer_bytes: 65535
-      allowed_sources:
-        - source_ip: "10.10.0.1"
-          source_host: "router-core-01"
-          sampling_rate: 1
-        - source_ip: "127.0.0.1"
-          source_host: "router-local"
-          sampling_rate: 1
-        - source_ip: "172.17.0.1"
-          source_host: "router-docker-17"
-          sampling_rate: 1
-        - source_ip: "172.18.0.1"
-          source_host: "router-docker-18"
-          sampling_rate: 1
-        - source_ip: "172.19.0.1"
-          source_host: "router-docker-19"
-          sampling_rate: 1
-        - source_ip: "172.20.0.1"
-          source_host: "router-docker-20"
-          sampling_rate: 1
-        - source_ip: "172.21.0.1"
-          source_host: "router-docker-21"
-          sampling_rate: 1
-        - source_ip: "172.22.0.1"
-          source_host: "router-docker-22"
-          sampling_rate: 1
-        - source_ip: "172.23.0.1"
-          source_host: "router-docker-23"
-          sampling_rate: 1
-        - source_ip: "172.24.0.1"
-          source_host: "router-docker-24"
-          sampling_rate: 1
-        - source_ip: "172.25.0.1"
-          source_host: "router-docker-25"
-          sampling_rate: 1
-        - source_ip: "172.26.0.1"
-          source_host: "router-docker-26"
-          sampling_rate: 1
-        - source_ip: "172.27.0.1"
-          source_host: "router-docker-27"
-          sampling_rate: 1
-        - source_ip: "172.28.0.1"
-          source_host: "router-docker-28"
-          sampling_rate: 1
-        - source_ip: "172.29.0.1"
-          source_host: "router-docker-29"
-          sampling_rate: 1
-        - source_ip: "172.30.0.1"
-          source_host: "router-docker-30"
-          sampling_rate: 1
+      auth_required: true
   zeek_conn_json:
     - enabled: false
       collector_id: "zeek-conn-01"

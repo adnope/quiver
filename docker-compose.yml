@@ -63,7 +63,6 @@ services:
       - /tmp/zeek:/var/log/zeek/current
     ports:
       - "${QUIVER_HOST_PORT}:${QUIVER_INTERNAL_PORT}"
-      - "${NETFLOW_PORT}:${NETFLOW_PORT}/udp"
     depends_on:
       timescaledb:
         condition: service_healthy
@@ -71,3 +70,18 @@ services:
         condition: service_healthy
       migration:
         condition: service_completed_successfully
+
+  quiver-client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    container_name: quiver-client
+    command: ["--backend-url", "http://quiver:8080", "--api-key", "${REST_INGEST_DEMO_CLIENT_KEY}", "--listen-addr", "0.0.0.0:2055"]
+    env_file:
+      - .env
+    ports:
+      - "${NETFLOW_PORT}:2055/udp"
+    depends_on:
+      quiver:
+        condition: service_started
+

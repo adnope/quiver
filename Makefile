@@ -13,7 +13,15 @@ QUIVER_DATABASE_DSN ?=
 OPENAPI_DIR ?= api/openapi
 OPENAPI_FILE ?= $(OPENAPI_DIR)/quiver.v1.yaml
 
-.PHONY: fmt lint test test-unit test-integration test-race coverage proto proto-check swagger swagger-check openapi openapi-check migrate-up docker-up docker-down demo verify-demo load-smoke
+.PHONY: build build-quiver build-client fmt lint test test-unit test-integration test-race coverage proto proto-check swagger swagger-check openapi openapi-check migrate-up docker-up docker-down demo verify-demo load-smoke
+
+build: build-quiver build-client
+
+build-quiver:
+	$(GO) build -o bin/quiver cmd/quiver/main.go
+
+build-client:
+	$(GO) build -o bin/quiver-client cmd/quiver-client/main.go
 
 fmt:
 	$(GO) fmt ./...

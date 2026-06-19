@@ -44,6 +44,28 @@ func NewServerWithObservability(
 	metrics *observability.Registry,
 	health HealthChecker,
 ) (*Server, error) {
+	return NewServerWithCollectors(
+		cfg,
+		publisher,
+		flowStore,
+		aggregationStore,
+		lookupEnv,
+		metrics,
+		health,
+		nil,
+	)
+}
+
+func NewServerWithCollectors(
+	cfg config.Config,
+	publisher kafka.RawEventPublisher,
+	flowStore FlowStore,
+	aggregationStore AggregationStore,
+	lookupEnv func(string) string,
+	metrics *observability.Registry,
+	health HealthChecker,
+	netflowCollectors []InjectableCollector,
+) (*Server, error) {
 	auth, err := NewAuthenticator(cfg, lookupEnv)
 	if err != nil {
 		return nil, err
@@ -61,6 +83,11 @@ func NewServerWithObservability(
 	mux.Handle(
 		"POST /api/v1/ingest/flows",
 		route(metrics, "POST /api/v1/ingest/flows", RequestIDMiddleware(RequireScope(auth, limiter, ScopeIngest, ingestHandler))),
+	)
+	proxyHandler := NewProxyHandler(cfg, netflowCollectors)
+	mux.Handle(
+		"POST /api/v1/ingest/proxy-netflow",
+		route(metrics, "POST /api/v1/ingest/proxy-netflow", RequestIDMiddleware(RequireScope(auth, limiter, ScopeIngest, proxyHandler))),
 	)
 	queryHandler := NewQueryHandler(cfg, flowStore, cursorCodec)
 	mux.Handle(

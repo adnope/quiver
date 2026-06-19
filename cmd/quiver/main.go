@@ -111,7 +111,25 @@ func main() {
 		CollectorStatus: registry.Get,
 	}
 
-	apiServer, err := api.NewServerWithObservability(
+	var netflowCollectors []*collectorNetflow.Collector
+	for _, collectorCfg := range cfg.Collectors.NetFlowV5 {
+		if !collectorCfg.Enabled {
+			continue
+		}
+		collector, err := collectorNetflow.NewCollector(collectorCfg, cfg.DeadLetter.MaxRawPacketBytes, publisher, metrics, logger)
+		if err != nil {
+			logger.ErrorContext(ctx, "create netflow collector failed", slog.String("component", "cmd"), slog.Any("error", err))
+			os.Exit(1)
+		}
+		netflowCollectors = append(netflowCollectors, collector)
+	}
+
+	var injectableCollectors []api.InjectableCollector
+	for _, c := range netflowCollectors {
+		injectableCollectors = append(injectableCollectors, c)
+	}
+
+	apiServer, err := api.NewServerWithCollectors(
 		cfg,
 		publisher,
 		flowRepo,
@@ -119,6 +137,7 @@ func main() {
 		os.Getenv,
 		metrics,
 		healthChecker,
+		injectableCollectors,
 	)
 	if err != nil {
 		logger.ErrorContext(ctx, "create api server failed", slog.String("component", "cmd"), slog.Any("error", err))
@@ -142,7 +161,7 @@ func main() {
 			stop()
 		}
 	}()
-	startCollectors(ctx, stop, cfg, stateStore, publisher, metrics, logger, registry)
+	startCollectors(ctx, stop, cfg, stateStore, publisher, metrics, logger, registry, netflowCollectors)
 
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Shutdown.Timeout.Std())
@@ -162,6 +181,7 @@ func startCollectors(
 	metrics *observability.Registry,
 	logger *slog.Logger,
 	registry *collectorsRegistry,
+	netflowCollectors []*collectorNetflow.Collector,
 ) {
 	for _, collectorCfg := range cfg.Collectors.ZeekConnJSON {
 		if !collectorCfg.Enabled {
@@ -183,25 +203,16 @@ func startCollectors(
 			}
 		}(collectorCfg.CollectorID)
 	}
-	for _, collectorCfg := range cfg.Collectors.NetFlowV5 {
-		if !collectorCfg.Enabled {
-			continue
-		}
-		collector, err := collectorNetflow.NewCollector(collectorCfg, cfg.DeadLetter.MaxRawPacketBytes, publisher, metrics, logger)
-		if err != nil {
-			logger.ErrorContext(ctx, "create netflow collector failed", slog.String("component", "cmd"), slog.Any("error", err))
-			registry.Set(collectorCfg.CollectorID, "failed")
-			stop()
-			return
-		}
-		registry.Set(collectorCfg.CollectorID, "running")
-		go func(id string) {
-			if err := collector.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				logger.Error("netflow collector stopped", slog.String("component", "cmd"), slog.String("collector_id", id), slog.Any("error", err))
-				registry.Set(id, "stopped")
+	for _, collector := range netflowCollectors {
+		id := collector.CollectorID()
+		registry.Set(id, "running")
+		go func(c *collectorNetflow.Collector, cid string) {
+			if err := c.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Error("netflow collector stopped", slog.String("component", "cmd"), slog.String("collector_id", cid), slog.Any("error", err))
+				registry.Set(cid, "stopped")
 				stop()
 			}
-		}(collectorCfg.CollectorID)
+		}(collector, id)
 	}
 }
 

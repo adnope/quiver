@@ -114,3 +114,16 @@ jobs:
             adnope/quiver:sha-${{ steps.slug.outputs.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Build and Push Client Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.client
+          push: true
+          tags: |
+            adnope/quiver-client:latest
+            adnope/quiver-client:sha-${{ steps.slug.outputs.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
