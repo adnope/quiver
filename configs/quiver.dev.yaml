@@ -82,7 +82,7 @@ collectors:
       packet_buffer_bytes: 65535
       auth_required: true
   zeek_conn_json:
-    - enabled: false
+    - enabled: true
       collector_id: "zeek-conn-01"
       source_host: "zeek-probe-01"
       file_path: "${ZEEK_CONN_LOG_PATH}"

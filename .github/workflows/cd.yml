@@ -54,7 +54,7 @@ jobs:
           
           # Wait for TimescaleDB to be healthy
           for i in {1..30}; do
-            if docker exec quiver-timescaledb pg_isready -U postgres -d quiver; then
+            if docker exec ${COMPOSE_PROJECT_NAME:-quiver}-timescaledb pg_isready -U postgres -d quiver; then
               echo "TimescaleDB is healthy!"
               break
             fi
@@ -64,7 +64,7 @@ jobs:
           
           # Wait for Kafka to be healthy
           for i in {1..30}; do
-            if docker exec quiver-kafka kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1; then
+            if docker exec ${COMPOSE_PROJECT_NAME:-quiver}-kafka kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1; then
               echo "Kafka is healthy!"
               break
             fi

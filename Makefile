@@ -35,8 +35,8 @@ test-unit:
 	$(GO) test ./...
 
 test-integration:
-	QUIVER_DATABASE_DSN="$(QUIVER_DATABASE_DSN_HOST)" \
-	QUIVER_KAFKA_BROKERS="$(KAFKA_BROKER_EXTERNAL)" \
+	QUIVER_DATABASE_DSN="postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@localhost:$(POSTGRES_HOST_PORT)/$(POSTGRES_DB)?sslmode=$(POSTGRES_SSLMODE)" \
+	QUIVER_KAFKA_BROKERS="localhost:$(KAFKA_HOST_PORT)" \
 	$(GO) test -tags=integration ./...
 
 test-race:
