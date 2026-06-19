@@ -1,8 +1,7 @@
-/artifacts/*
-!/artifacts/.gitkeep
 /bin/
 /coverage.out
 /dist/
 /tmp/
+artifacts
 *.test
 .env
