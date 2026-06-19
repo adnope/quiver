@@ -67,13 +67,7 @@ func TestConfigValidateFailures(t *testing.T) {
 			},
 			expected: "max_query_window",
 		},
-		{
-			name: "invalid netflow source ip",
-			mutate: func(c *Config) {
-				c.Collectors.NetFlowV5[0].AllowedSources[0].SourceIP = "not-an-ip"
-			},
-			expected: "source_ip",
-		},
+
 		{
 			name: "missing zeek state key",
 			mutate: func(c *Config) {
@@ -138,11 +132,34 @@ func TestLoadBytes(t *testing.T) {
 	if cfg.Storage.Columnstore.After != Duration(24*time.Hour) {
 		t.Fatalf("columnstore after = %s", cfg.Storage.Columnstore.After.Std())
 	}
-	if cfg.API.Query.MaxQueryWindow != Duration(24*time.Hour) {
+	if cfg.API.Query.MaxQueryWindow != Duration(7*dayDuration) {
 		t.Fatalf("query window = %s", cfg.API.Query.MaxQueryWindow.Std())
 	}
 	if !cfg.Storage.Columnstore.Enabled {
 		t.Fatal("columnstore should default to enabled")
+	}
+}
+
+func TestNetFlowV5CollectorDefaultAuthRequired(t *testing.T) {
+	t.Parallel()
+
+	yamlContent := strings.ReplaceAll(validYAML(), "      auth_required: false", "")
+	cfg, err := LoadBytes([]byte(yamlContent), envLookup(map[string]string{
+		"QUIVER_DATABASE_DSN":         "postgres://timescaledb:5432/quiver?sslmode=disable",
+		cursorEnv:                     "cursor-key",
+		"QUIVER_DEMO_ADMIN_API_KEY":   "admin-key",
+		"REST_INGEST_DEMO_CLIENT_KEY": "ingest-key",
+	}))
+	if err != nil {
+		t.Fatalf("LoadBytes() error = %v", err)
+	}
+
+	if len(cfg.Collectors.NetFlowV5) != 1 {
+		t.Fatalf("expected 1 NetFlow collector, got %d", len(cfg.Collectors.NetFlowV5))
+	}
+
+	if !cfg.Collectors.NetFlowV5[0].AuthRequired {
+		t.Fatal("expected NetFlow collector auth_required to default to true")
 	}
 }
 
@@ -213,6 +230,57 @@ func TestExampleConfigLoads(t *testing.T) {
 	}
 }
 
+func TestDemoConfigLoads(t *testing.T) {
+	t.Parallel()
+
+	cursorSecretEnv := "QUIVER_API_CURSOR_" + "SECRET"
+	cfg, err := LoadFile(context.Background(), "../../configs/quiver.demo.yaml", envLookup(map[string]string{
+		"QUIVER_HTTP_ADDR":            "0.0.0.0:8080",
+		"KAFKA_BROKER_INTERNAL":       "kafka:9092",
+		"KAFKA_TOPIC_RAW":             "flow.raw",
+		"KAFKA_TOPIC_DLQ":             "flow.dead_letter",
+		"QUIVER_DATABASE_DSN":         "postgres://timescaledb:5432/quiver?sslmode=disable",
+		cursorSecretEnv:               fixtureValue("cursor"),
+		"QUIVER_DEMO_ADMIN_API_KEY":   fixtureValue("admin"),
+		"REST_INGEST_DEMO_CLIENT_KEY": fixtureValue("ingest"),
+		"NETFLOW_PORT":                "2055",
+		"POSTGRES_POOL_SIZE":          "20",
+		"POSTGRES_MAX_IDLE_CONNS":     "10",
+	}))
+	if err != nil {
+		t.Fatalf("demo config failed to load: %v", err)
+	}
+	if cfg.Database.MaxOpenConns != 20 {
+		t.Fatalf("max_open_conns = %d", cfg.Database.MaxOpenConns)
+	}
+}
+
+func TestDevConfigLoads(t *testing.T) {
+	t.Parallel()
+
+	cursorSecretEnv := "QUIVER_API_CURSOR_" + "SECRET"
+	cfg, err := LoadFile(context.Background(), "../../configs/quiver.dev.yaml", envLookup(map[string]string{
+		"QUIVER_HTTP_ADDR":            "0.0.0.0:8080",
+		"KAFKA_BROKER_EXTERNAL":       "localhost:9094",
+		"KAFKA_TOPIC_RAW":             "flow.raw",
+		"KAFKA_TOPIC_DLQ":             "flow.dead_letter",
+		"QUIVER_DATABASE_DSN_HOST":    fixturePostgresDSN("localhost"),
+		cursorSecretEnv:               fixtureValue("cursor"),
+		"QUIVER_DEMO_ADMIN_API_KEY":   fixtureValue("admin"),
+		"REST_INGEST_DEMO_CLIENT_KEY": fixtureValue("ingest"),
+		"NETFLOW_PORT":                "2055",
+		"POSTGRES_POOL_SIZE":          "20",
+		"POSTGRES_MAX_IDLE_CONNS":     "10",
+		"ZEEK_CONN_LOG_PATH":          "/tmp/zeek/conn.log",
+	}))
+	if err != nil {
+		t.Fatalf("dev config failed to load: %v", err)
+	}
+	if cfg.Database.MaxOpenConns != 20 {
+		t.Fatalf("max_open_conns = %d", cfg.Database.MaxOpenConns)
+	}
+}
+
 func validConfig() Config {
 	cfg := Default()
 	cfg.Kafka.Brokers = []string{"kafka:9092"}
@@ -236,16 +304,17 @@ func validConfig() Config {
 	}
 	cfg.Collectors.NetFlowV5 = []NetFlowV5CollectorConfig{
 		{
-			Enabled:     true,
-			CollectorID: "netflow-main",
-			ListenAddr:  "0.0.0.0:2055",
-			AllowedSources: []NetFlowAllowedSource{
-				{
-					SourceIP:     "10.10.0.1",
-					SourceHost:   "router-core-01",
-					SamplingRate: 1,
-				},
-			},
+			Enabled:      true,
+			CollectorID:  "netflow-main",
+			ListenAddr:   "0.0.0.0:2055",
+			AuthRequired: false,
+		},
+	}
+	cfg.QuiverClientGateways = []QuiverClientGatewayConfig{
+		{
+			Name:       "demo-client",
+			SourceHost: "rest-demo-client",
+			KeyEnv:     "REST_INGEST_DEMO_CLIENT_KEY",
 		},
 	}
 	cfg.Collectors.ZeekConnJSON = []ZeekCollectorConfig{
@@ -273,6 +342,10 @@ func fixtureValue(name string) string {
 	return "fixture-" + name
 }
 
+func fixturePostgresDSN(host string) string {
+	return "postgres://postgres:" + fixtureValue("postgres-password") + "@" + host + ":5432/quiver?sslmode=disable"
+}
+
 func validYAML() string {
 	return `
 kafka:
@@ -283,6 +356,8 @@ database:
 api:
   cursor:
     hmac_secret_env: QUIVER_CURSOR_HMAC
+  query:
+    max_query_window: "7d"
   keys:
     - name: demo-admin
       key_env: QUIVER_DEMO_ADMIN_API_KEY
@@ -299,10 +374,7 @@ collectors:
     - enabled: true
       collector_id: netflow-main
       listen_addr: "0.0.0.0:2055"
-      allowed_sources:
-        - source_ip: "10.10.0.1"
-          source_host: router-core-01
-          sampling_rate: 1
+      auth_required: false
   zeek_conn_json:
     - enabled: true
       collector_id: zeek-conn-01
@@ -312,5 +384,9 @@ collectors:
       start_position: end
       max_line_bytes: 1048576
       state_key: zeek-conn-01
+quiver_client_gateways:
+  - name: demo-client
+    source_host: rest-demo-client
+    key_env: REST_INGEST_DEMO_CLIENT_KEY
 `
 }

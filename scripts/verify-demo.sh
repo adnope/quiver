@@ -6,27 +6,55 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/.."
 
-# Load environment variables from .env
+# Load environment variables from .env without overwriting existing environment variables
 if [ -f .env ]; then
-  # Export variables from .env, excluding comments and empty lines
-  export $(grep -v '^#' .env | xargs)
+  while IFS= read -r line || [ -n "$line" ]; do
+    # Skip comments and empty lines
+    [[ "$line" =~ ^#.*$ ]] && continue
+    [[ -z "$line" ]] && continue
+    # Extract key and value
+    key="${line%%=*}"
+    val="${line#*=}"
+    # Only export if key is not already defined in environment
+    if [ -z "${!key+x}" ]; then
+      export "$key=$val"
+    fi
+  done < .env
 fi
 
-# Fallback values
-QUIVER_HOST_PORT=${QUIVER_HOST_PORT:-8236}
-QUIVER_DEMO_ADMIN_API_KEY=${QUIVER_DEMO_ADMIN_API_KEY:-demoadminkey123}
-REST_INGEST_DEMO_CLIENT_KEY=${REST_INGEST_DEMO_CLIENT_KEY:-democlientkey456}
-NETFLOW_PORT=${NETFLOW_PORT:-2055}
-KAFKA_TOPIC_DLQ=${KAFKA_TOPIC_DLQ:-flow.dead_letter}
+# Set isolated defaults, overriding the standard dev stack values if present
+if [ -z "${QUIVER_HOST_PORT:-}" ] || [ "${QUIVER_HOST_PORT}" = "8236" ]; then
+  export QUIVER_HOST_PORT=8237
+fi
+if [ -z "${POSTGRES_HOST_PORT:-}" ] || [ "${POSTGRES_HOST_PORT}" = "5432" ]; then
+  export POSTGRES_HOST_PORT=5433
+fi
+if [ -z "${NETFLOW_PORT:-}" ] || [ "${NETFLOW_PORT}" = "2055" ]; then
+  export NETFLOW_PORT=2056
+fi
+if [ -z "${KAFKA_HOST_PORT:-}" ] || [ "${KAFKA_HOST_PORT}" = "9094" ]; then
+  export KAFKA_HOST_PORT=9095
+fi
+if [ -z "${ZEEK_LOG_DIR:-}" ] || [ "${ZEEK_LOG_DIR}" = "/tmp/zeek" ]; then
+  export ZEEK_LOG_DIR=/tmp/zeek-verify
+fi
+if [ -z "${QUIVER_CONFIG:-}" ] || [ "${QUIVER_CONFIG}" = "/configs/quiver.dev.yaml" ]; then
+  export QUIVER_CONFIG=/configs/quiver.demo.yaml
+fi
+export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-quiver-verify}
+
+export QUIVER_DEMO_ADMIN_API_KEY=${QUIVER_DEMO_ADMIN_API_KEY:-demoadminkey123}
+export REST_INGEST_DEMO_CLIENT_KEY=${REST_INGEST_DEMO_CLIENT_KEY:-democlientkey456}
+export KAFKA_TOPIC_DLQ=${KAFKA_TOPIC_DLQ:-flow.dead_letter}
 
 echo "=================================================="
 # 1. Start Docker Compose
-echo "Starting Docker Compose services..."
+echo "Starting Docker Compose services for project: ${COMPOSE_PROJECT_NAME}..."
 docker compose down -v || true
-# Ensure clean /tmp/zeek directory
-docker run --rm -v /tmp:/tmp alpine rm -rf /tmp/zeek || rm -rf /tmp/zeek || true
-mkdir -p /tmp/zeek
-chmod 777 /tmp/zeek
+# Ensure clean zeek directory
+docker run --rm -v /tmp:/tmp alpine rm -rf "${ZEEK_LOG_DIR}" || rm -rf "${ZEEK_LOG_DIR}" || true
+mkdir -p "${ZEEK_LOG_DIR}"
+chmod 777 "${ZEEK_LOG_DIR}"
 
 docker compose up -d --build
 
@@ -67,15 +95,15 @@ echo "=================================================="
 # 3. Ingest Zeek conn.log
 echo "Seeding Zeek conn.log..."
 # Append 5 valid records
-go run tools/zeekloggen/main.go -file /tmp/zeek/conn.log -mode append -count 5
+go run tools/zeekloggen/main.go -file "${ZEEK_LOG_DIR}/conn.log" -mode append -count 5
 
 # Append 1 malformed JSON record (destined for DLQ)
-go run tools/zeekloggen/main.go -file /tmp/zeek/conn.log -mode append -malformed
+go run tools/zeekloggen/main.go -file "${ZEEK_LOG_DIR}/conn.log" -mode append -malformed
 
 # Sync to docker container in case volume mount is not sharing the same filesystem (e.g. in containerized CI)
-if docker ps --format '{{.Names}}' | grep -q 'quiver-app'; then
-  docker exec quiver-app mkdir -p /var/log/zeek/current || true
-  docker cp /tmp/zeek/conn.log quiver-app:/var/log/zeek/current/conn.log || true
+if docker ps --format '{{.Names}}' | grep -q "${COMPOSE_PROJECT_NAME}-app"; then
+  docker exec "${COMPOSE_PROJECT_NAME}-app" mkdir -p /var/log/zeek/current || true
+  docker cp "${ZEEK_LOG_DIR}/conn.log" "${COMPOSE_PROJECT_NAME}-app":/var/log/zeek/current/conn.log || true
 fi
 
 echo "=================================================="
@@ -145,7 +173,7 @@ echo "=================================================="
 # 8. Verify DLQ (Kafka dead_letter topic)
 echo "Verifying ${KAFKA_TOPIC_DLQ} topic has messages..."
 # Consume from dead_letter topic using docker cp-kafka tools
-DLQ_COUNT=$(docker exec quiver-kafka kafka-get-offsets --bootstrap-server localhost:9092 --topic "${KAFKA_TOPIC_DLQ}" | cut -d':' -f3 | awk '{s+=$1} END {print s}')
+DLQ_COUNT=$(docker exec "${COMPOSE_PROJECT_NAME}-kafka" kafka-get-offsets --bootstrap-server localhost:9092 --topic "${KAFKA_TOPIC_DLQ}" | cut -d':' -f3 | awk '{s+=$1} END {print s}')
 echo "DLQ message count: $DLQ_COUNT"
 if [ -z "$DLQ_COUNT" ] || [ "$DLQ_COUNT" -lt 2 ]; then
   echo "ERROR: Expected at least 2 messages in ${KAFKA_TOPIC_DLQ}, got: ${DLQ_COUNT:-0}"

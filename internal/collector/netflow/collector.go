@@ -22,11 +22,6 @@ import (
 
 var ErrCollector = errors.New("netflow: collector failed")
 
-type allowedSource struct {
-	sourceHost   string
-	samplingRate uint32
-}
-
 type Collector struct {
 	cfg                config.NetFlowV5CollectorConfig
 	deadLetterMaxBytes int
@@ -34,7 +29,6 @@ type Collector struct {
 	metrics            *observability.Registry
 	logger             *slog.Logger
 	now                func() time.Time
-	allowed            map[netip.Addr]allowedSource
 	nextSequence       map[netip.Addr]uint32
 }
 
@@ -57,20 +51,6 @@ func NewCollector(
 	if logger == nil {
 		logger = slog.Default()
 	}
-	allowed := make(map[netip.Addr]allowedSource, len(cfg.AllowedSources))
-	for _, source := range cfg.AllowedSources {
-		addr, err := netip.ParseAddr(source.SourceIP)
-		if err != nil {
-			return nil, fmt.Errorf("%w: parse allowed source %q: %v", ErrCollector, source.SourceIP, err)
-		}
-		if _, exists := allowed[addr]; exists {
-			return nil, fmt.Errorf("%w: duplicate allowed source %q", ErrCollector, source.SourceIP)
-		}
-		allowed[addr] = allowedSource{sourceHost: source.SourceHost, samplingRate: source.SamplingRate}
-	}
-	if len(allowed) == 0 {
-		return nil, fmt.Errorf("%w: at least one allowed source is required", ErrCollector)
-	}
 	return &Collector{
 		cfg:                cfg,
 		deadLetterMaxBytes: deadLetterMaxBytes,
@@ -78,7 +58,6 @@ func NewCollector(
 		metrics:            metrics,
 		logger:             logger,
 		now:                time.Now,
-		allowed:            allowed,
 		nextSequence:       map[netip.Addr]uint32{},
 	}, nil
 }
@@ -128,51 +107,52 @@ func (c *Collector) Run(ctx context.Context) error {
 			continue
 		}
 		packet := append([]byte(nil), buffer[:n]...)
-		if err := c.HandlePacket(ctx, source, packet); err != nil {
+		if err := c.HandlePacket(ctx, source, "", packet); err != nil {
 			c.logger.WarnContext(ctx, "netflow packet handling failed", slog.Any("error", err))
 		}
 	}
 }
 
-func (c *Collector) HandlePacket(ctx context.Context, sourceIP netip.Addr, data []byte) error {
+func (c *Collector) HandlePacket(ctx context.Context, sourceIP netip.Addr, sourceHost string, data []byte) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("handle netflow packet: %w", err)
 	}
-	source, allowed := c.allowed[sourceIP]
-	if !allowed {
-		c.metric("collector_dropped_packets_total", map[string]string{"reason": "source_not_allowed", "source_host": "unknown"})
-		return nil
+
+	if sourceHost == "" {
+		if c.cfg.AuthRequired {
+			c.metric("collector_dropped_packets_total", map[string]string{"reason": "auth_required", "source_host": "unknown"})
+			return nil
+		}
+		sourceHost = "netflow-v5-" + sourceIP.String()
 	}
-	c.metric("collector_packets_received_total", map[string]string{"source_host": source.sourceHost})
+
+	c.metric("collector_packets_received_total", map[string]string{"source_host": sourceHost})
 	packet, err := ParseV5Packet(data)
 	if err != nil {
 		code := "malformed_packet"
 		if errors.Is(err, ErrUnsupportedVersion) {
 			code = "unsupported_version"
 		}
-		c.metric("collector_parse_errors_total", map[string]string{"error_code": code, "source_host": source.sourceHost})
-		if dlqErr := c.publishPacketDLQ(ctx, sourceIP, source.sourceHost, data, code, err.Error()); dlqErr != nil {
+		c.metric("collector_parse_errors_total", map[string]string{"error_code": code, "source_host": sourceHost})
+		if dlqErr := c.publishPacketDLQ(ctx, sourceIP, sourceHost, data, code, err.Error()); dlqErr != nil {
 			return dlqErr
 		}
 		return nil
 	}
-	c.trackSequence(sourceIP, source.sourceHost, packet.Sequence, len(packet.Records))
+	c.trackSequence(sourceIP, sourceHost, packet.Sequence, len(packet.Records))
 	for _, record := range packet.Records {
-		if source.samplingRate > 0 {
-			record.SamplingRate = &source.samplingRate
-		}
-		event, err := c.rawEvent(sourceIP, source.sourceHost, record)
+		event, err := c.rawEvent(sourceIP, sourceHost, record)
 		if err != nil {
 			return err
 		}
 		if err := c.publisher.PublishRaw(ctx, event); err != nil {
 			if errors.Is(err, kafka.ErrQueueFull) {
-				c.metric("collector_dropped_events_total", map[string]string{"reason": "queue_full", "source_host": source.sourceHost})
+				c.metric("collector_dropped_events_total", map[string]string{"reason": "queue_full", "source_host": sourceHost})
 				return nil
 			}
 			return fmt.Errorf("%w: publish raw: %v", ErrCollector, err)
 		}
-		c.metric("collector_events_published_total", map[string]string{"source_host": source.sourceHost})
+		c.metric("collector_events_published_total", map[string]string{"source_host": sourceHost})
 	}
 	return nil
 }
@@ -316,4 +296,8 @@ func truncatePacket(packet []byte, maxBytes int) ([]byte, bool) {
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+func (c *Collector) CollectorID() string {
+	return c.cfg.CollectorID
 }

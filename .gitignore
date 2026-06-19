@@ -6,4 +6,3 @@
 /tmp/
 *.test
 .env
-dockerhub.secrets

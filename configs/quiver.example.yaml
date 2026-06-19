@@ -39,7 +39,7 @@ api:
   cursor:
     hmac_secret_env: "QUIVER_API_CURSOR_SECRET"
   query:
-    max_query_window: "24h"
+    max_query_window: "7d"
     default_limit: 100
     max_limit: 1000
     aggregation_default_limit: 20
@@ -68,6 +68,11 @@ rest_ingest:
       source_host: "rest-demo-client"
       key_env: "REST_INGEST_DEMO_CLIENT_KEY"
 
+quiver_client_gateways:
+  - name: "demo-client"
+    source_host: "rest-demo-client"
+    key_env: "REST_INGEST_DEMO_CLIENT_KEY"
+
 collectors:
   netflow_v5:
     - enabled: true
@@ -75,10 +80,7 @@ collectors:
       listen_addr: "0.0.0.0:2055"
       read_buffer_bytes: 4194304
       packet_buffer_bytes: 65535
-      allowed_sources:
-        - source_ip: "10.10.0.1"
-          source_host: "router-core-01"
-          sampling_rate: 1
+      auth_required: true
   zeek_conn_json:
     - enabled: true
       collector_id: "zeek-conn-01"

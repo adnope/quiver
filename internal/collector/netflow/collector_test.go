@@ -26,43 +26,42 @@ func TestCollectorPublishesAllowedPacketAndTracksSequenceGap(t *testing.T) {
 	collector := newTestCollector(t, publisher, metrics)
 	sourceIP := netip.MustParseAddr("10.10.0.1")
 
-	if err := collector.HandlePacket(context.Background(), sourceIP, validV5Packet(10, 1)); err != nil {
+	if err := collector.HandlePacket(context.Background(), sourceIP, "", validV5Packet(10, 1)); err != nil {
 		t.Fatalf("HandlePacket(first) error = %v", err)
 	}
-	if err := collector.HandlePacket(context.Background(), sourceIP, validV5Packet(12, 1)); err != nil {
+	if err := collector.HandlePacket(context.Background(), sourceIP, "", validV5Packet(12, 1)); err != nil {
 		t.Fatalf("HandlePacket(gap) error = %v", err)
 	}
 	if len(publisher.raw) != 2 {
 		t.Fatalf("raw events = %d, want 2", len(publisher.raw))
 	}
 	event := publisher.raw[0]
-	if event.GetSource().GetSourceHost() != "router-core-01" || event.GetSource().GetSourceIp() != "10.10.0.1" {
+	if event.GetSource().GetSourceHost() != "netflow-v5-10.10.0.1" || event.GetSource().GetSourceIp() != "10.10.0.1" {
 		t.Fatalf("source identity = %+v", event.GetSource())
 	}
-	if event.GetPayload().GetNetflowV5().GetSamplingRate() != 100 {
-		t.Fatalf("sampling rate = %d, want config override 100", event.GetPayload().GetNetflowV5().GetSamplingRate())
-	}
 	body := string(metrics.WritePrometheus())
-	if !strings.Contains(body, `netflow_sequence_gaps_total{collector_id="netflow-test",source_host="router-core-01",source_type="netflow_v5"} 1`) {
+	if !strings.Contains(body, `netflow_sequence_gaps_total{collector_id="netflow-test",source_host="netflow-v5-10.10.0.1",source_type="netflow_v5"} 1`) {
 		t.Fatalf("metrics missing sequence gap:\n%s", body)
 	}
 }
 
-func TestCollectorDropsUnknownSource(t *testing.T) {
+func TestCollectorDropsUnauthenticatedPacketWhenAuthRequired(t *testing.T) {
 	t.Parallel()
 
 	publisher := &fakePublisher{}
 	metrics := observability.NewRegistry()
 	collector := newTestCollector(t, publisher, metrics)
+	collector.cfg.AuthRequired = true // Enable authentication requirement
 
-	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.2"), validV5Packet(10, 1)); err != nil {
+	// Call HandlePacket with empty sourceHost (unauthenticated/direct)
+	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), "", validV5Packet(10, 1)); err != nil {
 		t.Fatalf("HandlePacket() error = %v", err)
 	}
 	if len(publisher.raw) != 0 || len(publisher.deadLetters) != 0 {
 		t.Fatalf("raw=%d dlq=%d, want packet drop only", len(publisher.raw), len(publisher.deadLetters))
 	}
-	if !strings.Contains(string(metrics.WritePrometheus()), `reason="source_not_allowed"`) {
-		t.Fatalf("missing source_not_allowed metric:\n%s", metrics.WritePrometheus())
+	if !strings.Contains(string(metrics.WritePrometheus()), `reason="auth_required"`) {
+		t.Fatalf("missing auth_required metric:\n%s", metrics.WritePrometheus())
 	}
 }
 
@@ -74,7 +73,7 @@ func TestCollectorPublishesDLQForUnsupportedVersion(t *testing.T) {
 	packet := bytes.Repeat([]byte{0xab}, 64)
 	binary.BigEndian.PutUint16(packet[0:2], 9)
 
-	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), packet); err != nil {
+	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), "", packet); err != nil {
 		t.Fatalf("HandlePacket() error = %v", err)
 	}
 	if len(publisher.deadLetters) != 1 {
@@ -96,7 +95,7 @@ func TestCollectorQueueFullDropsUDPRecordWithoutDLQ(t *testing.T) {
 	metrics := observability.NewRegistry()
 	collector := newTestCollector(t, publisher, metrics)
 
-	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), validV5Packet(10, 1)); err != nil {
+	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), "", validV5Packet(10, 1)); err != nil {
 		t.Fatalf("HandlePacket() error = %v", err)
 	}
 	if len(publisher.deadLetters) != 0 {
@@ -113,7 +112,7 @@ func TestCollectorPropagatesNonQueuePublishError(t *testing.T) {
 	publisher := &fakePublisher{publishErr: errors.New("broker unavailable")}
 	collector := newTestCollector(t, publisher, nil)
 
-	err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), validV5Packet(10, 1))
+	err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), "", validV5Packet(10, 1))
 	if err == nil {
 		t.Fatal("expected publish error")
 	}
@@ -123,15 +122,12 @@ func newTestCollector(t *testing.T, publisher *fakePublisher, metrics *observabi
 	t.Helper()
 
 	collector, err := NewCollector(config.NetFlowV5CollectorConfig{
-		Enabled:         true,
-		CollectorID:     "netflow-test",
-		ListenAddr:      "127.0.0.1:2055",
-		ReadBufferBytes: 4096,
-		AllowedSources: []config.NetFlowAllowedSource{{
-			SourceIP:     "10.10.0.1",
-			SourceHost:   "router-core-01",
-			SamplingRate: 100,
-		}},
+		Enabled:           true,
+		CollectorID:       "netflow-test",
+		ListenAddr:        "127.0.0.1:2055",
+		ReadBufferBytes:   4096,
+		PacketBufferBytes: 1500,
+		AuthRequired:      false,
 	}, 16, publisher, metrics, slog.Default())
 	if err != nil {
 		t.Fatalf("NewCollector() error = %v", err)
@@ -177,7 +173,7 @@ func TestCollectorPublishesDLQForShortPacket(t *testing.T) {
 	collector := newTestCollector(t, publisher, nil)
 	packet := []byte{0x00, 0x05, 0x00, 0x01} // too short
 
-	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), packet); err != nil {
+	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), "", packet); err != nil {
 		t.Fatalf("HandlePacket() error = %v", err)
 	}
 	if len(publisher.deadLetters) != 1 {
@@ -199,20 +195,20 @@ func TestCollectorPublishesDLQForBadRecordCount(t *testing.T) {
 
 	// Case 1: Count is 0
 	p1 := validV5Packet(1, 0)
-	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), p1); err != nil {
+	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), "", p1); err != nil {
 		t.Fatalf("HandlePacket(0) error = %v", err)
 	}
 
 	// Case 2: Count is 31
 	p2 := validV5Packet(1, 31)
-	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), p2); err != nil {
+	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), "", p2); err != nil {
 		t.Fatalf("HandlePacket(31) error = %v", err)
 	}
 
 	// Case 3: Count/length mismatch
 	p3 := validV5Packet(1, 2)
 	p3 = p3[:len(p3)-10]
-	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), p3); err != nil {
+	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), "", p3); err != nil {
 		t.Fatalf("HandlePacket(mismatch) error = %v", err)
 	}
 

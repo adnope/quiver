@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,25 +17,28 @@ import (
 const (
 	DefaultMaxRequestBodyBytes = 5 * 1024 * 1024
 	DefaultMaxBatchSize        = 1000
-	DefaultMaxQueryWindow      = Duration(24 * time.Hour)
+	DefaultMaxQueryWindow      = Duration(7 * dayDuration)
 	DefaultQueryLimit          = 100
 	DefaultMaxQueryLimit       = 1000
 	DefaultAggregationLimit    = 20
 	DefaultShutdownTimeout     = Duration(10 * time.Second)
 )
 
+const dayDuration = 24 * time.Hour
+
 type Config struct {
-	Server        ServerConfig        `yaml:"server"`
-	Kafka         KafkaConfig         `yaml:"kafka"`
-	Database      DatabaseConfig      `yaml:"database"`
-	Ingestion     IngestionConfig     `yaml:"ingestion"`
-	Storage       StorageConfig       `yaml:"storage"`
-	StorageWriter StorageWriterConfig `yaml:"storage_writer"`
-	API           APIConfig           `yaml:"api"`
-	RestIngest    RESTIngestConfig    `yaml:"rest_ingest"`
-	Collectors    CollectorsConfig    `yaml:"collectors"`
-	DeadLetter    DeadLetterConfig    `yaml:"dead_letter"`
-	Shutdown      ShutdownConfig      `yaml:"shutdown"`
+	Server               ServerConfig                `yaml:"server"`
+	Kafka                KafkaConfig                 `yaml:"kafka"`
+	Database             DatabaseConfig              `yaml:"database"`
+	Ingestion            IngestionConfig             `yaml:"ingestion"`
+	Storage              StorageConfig               `yaml:"storage"`
+	StorageWriter        StorageWriterConfig         `yaml:"storage_writer"`
+	API                  APIConfig                   `yaml:"api"`
+	RestIngest           RESTIngestConfig            `yaml:"rest_ingest"`
+	QuiverClientGateways []QuiverClientGatewayConfig `yaml:"quiver_client_gateways"`
+	Collectors           CollectorsConfig            `yaml:"collectors"`
+	DeadLetter           DeadLetterConfig            `yaml:"dead_letter"`
+	Shutdown             ShutdownConfig              `yaml:"shutdown"`
 }
 
 type ServerConfig struct {
@@ -141,24 +145,36 @@ type RESTAPIKeyConfig struct {
 	KeyEnv     string `yaml:"key_env"`
 }
 
+type QuiverClientGatewayConfig struct {
+	Name       string `yaml:"name"`
+	SourceHost string `yaml:"source_host"`
+	KeyEnv     string `yaml:"key_env"`
+}
+
 type CollectorsConfig struct {
 	NetFlowV5    []NetFlowV5CollectorConfig `yaml:"netflow_v5"`
 	ZeekConnJSON []ZeekCollectorConfig      `yaml:"zeek_conn_json"`
 }
 
 type NetFlowV5CollectorConfig struct {
-	Enabled           bool                   `yaml:"enabled"`
-	CollectorID       string                 `yaml:"collector_id"`
-	ListenAddr        string                 `yaml:"listen_addr"`
-	ReadBufferBytes   int                    `yaml:"read_buffer_bytes"`
-	PacketBufferBytes int                    `yaml:"packet_buffer_bytes"`
-	AllowedSources    []NetFlowAllowedSource `yaml:"allowed_sources"`
+	Enabled           bool   `yaml:"enabled"`
+	CollectorID       string `yaml:"collector_id"`
+	ListenAddr        string `yaml:"listen_addr"`
+	ReadBufferBytes   int    `yaml:"read_buffer_bytes"`
+	PacketBufferBytes int    `yaml:"packet_buffer_bytes"`
+	AuthRequired      bool   `yaml:"auth_required"`
 }
 
-type NetFlowAllowedSource struct {
-	SourceIP     string `yaml:"source_ip"`
-	SourceHost   string `yaml:"source_host"`
-	SamplingRate uint32 `yaml:"sampling_rate"`
+func (n *NetFlowV5CollectorConfig) UnmarshalYAML(value *yaml.Node) error {
+	type alias NetFlowV5CollectorConfig
+	aux := alias{
+		AuthRequired: true, // Default to true
+	}
+	if err := value.Decode(&aux); err != nil {
+		return err
+	}
+	*n = NetFlowV5CollectorConfig(aux)
+	return nil
 }
 
 type ZeekCollectorConfig struct {
@@ -188,12 +204,29 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 	if value.Kind != yaml.ScalarNode {
 		return fmt.Errorf("duration must be a scalar")
 	}
-	parsed, err := time.ParseDuration(value.Value)
+	parsed, err := parseDuration(value.Value)
 	if err != nil {
 		return fmt.Errorf("parse duration %q: %w", value.Value, err)
 	}
 	*d = Duration(parsed)
 	return nil
+}
+
+func parseDuration(raw string) (time.Duration, error) {
+	value := strings.TrimSpace(raw)
+	if dayCount, ok := strings.CutSuffix(value, "d"); ok {
+		days, err := strconv.ParseInt(strings.TrimSpace(dayCount), 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("day suffix requires an integer count: %w", err)
+		}
+		const maxDuration = time.Duration(1<<63 - 1)
+		maxDays := int64(maxDuration / dayDuration)
+		if days > maxDays || days < -maxDays {
+			return 0, fmt.Errorf("day duration %d exceeds maximum supported duration", days)
+		}
+		return time.Duration(days) * dayDuration, nil
+	}
+	return time.ParseDuration(value)
 }
 
 func (d Duration) Std() time.Duration {
@@ -325,6 +358,9 @@ func (c Config) Validate(lookupEnv func(string) string) error {
 	if err := c.validateRESTIngest(lookupEnv); err != nil {
 		return err
 	}
+	if err := c.validateQuiverClientGateways(lookupEnv); err != nil {
+		return err
+	}
 	if err := c.validateCollectors(); err != nil {
 		return err
 	}
@@ -336,6 +372,19 @@ func (c Config) Validate(lookupEnv func(string) string) error {
 	}
 	if c.Shutdown.Timeout <= 0 {
 		return fmt.Errorf("%w: shutdown.timeout must be positive", ErrInvalidConfig)
+	}
+	return nil
+}
+
+func (c Config) validateQuiverClientGateways(lookupEnv func(string) string) error {
+	for _, gateway := range c.QuiverClientGateways {
+		if strings.TrimSpace(gateway.Name) == "" || strings.TrimSpace(gateway.SourceHost) == "" ||
+			strings.TrimSpace(gateway.KeyEnv) == "" {
+			return fmt.Errorf("%w: quiver client gateway name, source_host, and key_env are required", ErrInvalidConfig)
+		}
+		if strings.TrimSpace(lookupEnv(gateway.KeyEnv)) == "" {
+			return fmt.Errorf("%w: quiver client gateway key env %q is missing", ErrInvalidConfig, gateway.KeyEnv)
+		}
 	}
 	return nil
 }
@@ -472,17 +521,6 @@ func (c Config) validateCollectors() error {
 		}
 		if _, _, err := net.SplitHostPort(collector.ListenAddr); err != nil {
 			return fmt.Errorf("%w: netflow_v5.listen_addr must be host:port: %w", ErrInvalidConfig, err)
-		}
-		if len(collector.AllowedSources) == 0 {
-			return fmt.Errorf("%w: netflow_v5.allowed_sources is required", ErrInvalidConfig)
-		}
-		for _, source := range collector.AllowedSources {
-			if net.ParseIP(source.SourceIP) == nil {
-				return fmt.Errorf("%w: netflow_v5.allowed_sources.source_ip is invalid", ErrInvalidConfig)
-			}
-			if strings.TrimSpace(source.SourceHost) == "" {
-				return fmt.Errorf("%w: netflow_v5.allowed_sources.source_host is required", ErrInvalidConfig)
-			}
 		}
 	}
 	for _, collector := range c.Collectors.ZeekConnJSON {

@@ -23,11 +23,7 @@ func TestNetFlowCollectorIntegrationUDP(t *testing.T) {
 		CollectorID:     "netflow-integration-01",
 		ListenAddr:      addr,
 		ReadBufferBytes: 1024,
-		AllowedSources: []config.NetFlowAllowedSource{{
-			SourceIP:     "127.0.0.1",
-			SourceHost:   "router-test-host",
-			SamplingRate: 1,
-		}},
+		AuthRequired:    false,
 	}
 
 	collector, err := NewCollector(cfg, 1500, publisher, nil, nil)
@@ -79,7 +75,7 @@ func TestNetFlowCollectorIntegrationUDP(t *testing.T) {
 	}
 
 	event := publisher.raw[0]
-	if event.GetSource().GetSourceHost() != "router-test-host" {
+	if event.GetSource().GetSourceHost() != "netflow-v5-127.0.0.1" {
 		t.Errorf("Unexpected source host: %s", event.GetSource().GetSourceHost())
 	}
 	if event.GetPayload().GetNetflowV5().GetPacketSequence() != 101 {

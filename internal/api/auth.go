@@ -84,6 +84,23 @@ func NewAuthenticator(cfg config.Config, lookupEnv func(string) string) (*Authen
 		key.principal.SourceHost = item.SourceHost
 		merged[value] = key
 	}
+	for _, item := range cfg.QuiverClientGateways {
+		value := strings.TrimSpace(lookupEnv(item.KeyEnv))
+		if value == "" {
+			return nil, fmt.Errorf("api: client gateway key env %q is missing", item.KeyEnv)
+		}
+		key := merged[value]
+		key.value = value
+		if key.principal.Name == "" {
+			key.principal.Name = item.Name
+		}
+		if key.principal.Scopes == nil {
+			key.principal.Scopes = map[Scope]struct{}{}
+		}
+		key.principal.Scopes[ScopeIngest] = struct{}{}
+		key.principal.SourceHost = item.SourceHost
+		merged[value] = key
+	}
 
 	keys := make([]apiKey, 0, len(merged))
 	for _, key := range merged {
