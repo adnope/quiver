@@ -213,6 +213,59 @@ func TestExampleConfigLoads(t *testing.T) {
 	}
 }
 
+func TestDemoConfigLoads(t *testing.T) {
+	t.Parallel()
+
+	cursorSecretEnv := "QUIVER_API_CURSOR_" + "SECRET"
+	cfg, err := LoadFile(context.Background(), "../../configs/quiver.demo.yaml", envLookup(map[string]string{
+		"QUIVER_HTTP_ADDR":            "0.0.0.0:8080",
+		"KAFKA_BROKER_INTERNAL":       "kafka:9092",
+		"KAFKA_TOPIC_RAW":             "flow.raw",
+		"KAFKA_TOPIC_DLQ":             "flow.dead_letter",
+		"QUIVER_DATABASE_DSN":         "postgres://timescaledb:5432/quiver?sslmode=disable",
+		cursorSecretEnv:               "cursor-key",
+		"QUIVER_DEMO_ADMIN_API_KEY":   "admin-key",
+		"REST_INGEST_DEMO_CLIENT_KEY": "ingest-key",
+		"BRUNO_CLIENT_API_KEY":        "+8dXdt2UJRuAjSRasp2GOaleUmN6qLhG4fz66ZbtNzo=",
+		"NETFLOW_PORT":                "2055",
+		"POSTGRES_POOL_SIZE":          "20",
+		"POSTGRES_MAX_IDLE_CONNS":     "10",
+	}))
+	if err != nil {
+		t.Fatalf("demo config failed to load: %v", err)
+	}
+	if cfg.Database.MaxOpenConns != 20 {
+		t.Fatalf("max_open_conns = %d", cfg.Database.MaxOpenConns)
+	}
+}
+
+func TestDevConfigLoads(t *testing.T) {
+	t.Parallel()
+
+	cursorSecretEnv := "QUIVER_API_CURSOR_" + "SECRET"
+	cfg, err := LoadFile(context.Background(), "../../configs/quiver.dev.yaml", envLookup(map[string]string{
+		"QUIVER_HTTP_ADDR":            "0.0.0.0:8080",
+		"KAFKA_BROKER_EXTERNAL":       "localhost:9094",
+		"KAFKA_TOPIC_RAW":             "flow.raw",
+		"KAFKA_TOPIC_DLQ":             "flow.dead_letter",
+		"QUIVER_DATABASE_DSN_HOST":    "postgres://postgres:postgres@localhost:5432/quiver?sslmode=disable",
+		cursorSecretEnv:               "cursor-key",
+		"QUIVER_DEMO_ADMIN_API_KEY":   "admin-key",
+		"REST_INGEST_DEMO_CLIENT_KEY": "ingest-key",
+		"BRUNO_CLIENT_API_KEY":        "+8dXdt2UJRuAjSRasp2GOaleUmN6qLhG4fz66ZbtNzo=",
+		"NETFLOW_PORT":                "2055",
+		"POSTGRES_POOL_SIZE":          "20",
+		"POSTGRES_MAX_IDLE_CONNS":     "10",
+		"ZEEK_CONN_LOG_PATH":          "/tmp/zeek/conn.log",
+	}))
+	if err != nil {
+		t.Fatalf("dev config failed to load: %v", err)
+	}
+	if cfg.Database.MaxOpenConns != 20 {
+		t.Fatalf("max_open_conns = %d", cfg.Database.MaxOpenConns)
+	}
+}
+
 func validConfig() Config {
 	cfg := Default()
 	cfg.Kafka.Brokers = []string{"kafka:9092"}

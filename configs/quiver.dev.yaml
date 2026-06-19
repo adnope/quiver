@@ -3,13 +3,13 @@ server:
 
 kafka:
   brokers:
-    - "${KAFKA_BROKER_INTERNAL}"
+    - "${KAFKA_BROKER_EXTERNAL}"
   topics:
     raw: "${KAFKA_TOPIC_RAW}"
     dead_letter: "${KAFKA_TOPIC_DLQ}"
 
 database:
-  dsn: "${QUIVER_DATABASE_DSN}"
+  dsn: "${QUIVER_DATABASE_DSN_HOST}"
   schema: "quiver"
   max_open_conns: ${POSTGRES_POOL_SIZE}
   max_idle_conns: ${POSTGRES_MAX_IDLE_CONNS}
@@ -39,7 +39,7 @@ api:
   cursor:
     hmac_secret_env: "QUIVER_API_CURSOR_SECRET"
   query:
-    max_query_window: "24h"
+    max_query_window: "30d"
     default_limit: 100
     max_limit: 1000
     aggregation_default_limit: 20
@@ -125,14 +125,14 @@ collectors:
           source_host: "router-docker-30"
           sampling_rate: 1
   zeek_conn_json:
-    - enabled: true
+    - enabled: false
       collector_id: "zeek-conn-01"
       source_host: "zeek-probe-01"
-      file_path: "/var/log/zeek/current/conn.log"
+      file_path: "${ZEEK_CONN_LOG_PATH}"
       poll_interval: "1s"
-      start_position: "beginning"
+      start_position: "end"
       max_line_bytes: 1048576
-      state_key: "zeek-conn-01:zeek_conn_json:zeek-probe-01:/var/log/zeek/current/conn.log"
+      state_key: "zeek-conn-01:zeek_conn_json:zeek-probe-01:local-testing"
 
 dead_letter:
   max_raw_packet_bytes: 1500

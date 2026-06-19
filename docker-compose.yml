@@ -2,12 +2,10 @@ services:
   timescaledb:
     image: timescale/timescaledb:latest-pg17
     container_name: quiver-timescaledb
-    environment:
-      - POSTGRES_DB=quiver
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
+    env_file:
+      - .env
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d quiver"]
       interval: 3s
@@ -45,7 +43,7 @@ services:
     container_name: quiver-migration
     volumes:
       - ./internal/storage/postgres/migrations:/migrations
-    command: -path=/migrations -database="postgres://postgres:postgres@timescaledb:5432/quiver?sslmode=disable" up
+    command: -path=/migrations -database="${QUIVER_DATABASE_DSN}" up
     depends_on:
       timescaledb:
         condition: service_healthy
@@ -53,17 +51,13 @@ services:
   quiver:
     build: .
     container_name: quiver-app
-    command: ["-config", "/configs/quiver.demo.yaml"]
+    command: ["-config", "/configs/quiver.dev.yaml"]
+    env_file:
+      - .env
     environment:
-      - QUIVER_DATABASE_DSN=${QUIVER_DATABASE_DSN}
-      - QUIVER_API_CURSOR_SECRET=${QUIVER_API_CURSOR_SECRET}
-      - QUIVER_DEMO_ADMIN_API_KEY=${QUIVER_DEMO_ADMIN_API_KEY}
-      - REST_INGEST_DEMO_CLIENT_KEY=${REST_INGEST_DEMO_CLIENT_KEY}
-      - QUIVER_HTTP_ADDR=${QUIVER_HTTP_ADDR}
-      - KAFKA_BROKER_INTERNAL=${KAFKA_BROKER_INTERNAL}
-      - KAFKA_TOPIC_RAW=${KAFKA_TOPIC_RAW}
-      - KAFKA_TOPIC_DLQ=${KAFKA_TOPIC_DLQ}
-      - NETFLOW_PORT=${NETFLOW_PORT}
+      - QUIVER_DATABASE_DSN_HOST=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}?sslmode=${POSTGRES_SSLMODE}
+      - KAFKA_BROKER_EXTERNAL=kafka:9092
+      - ZEEK_CONN_LOG_PATH=/var/log/zeek/current/conn.log
     volumes:
       - ./configs:/configs
       - /tmp/zeek:/var/log/zeek/current
