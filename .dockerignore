@@ -1,0 +1,10 @@
+.git
+bin
+coverage.out
+artifacts
+frontend/node_modules
+frontend/dist
+frontend/.vite
+node_modules
+*.log
+*.test

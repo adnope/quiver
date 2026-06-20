@@ -8,6 +8,7 @@ import (
 	"github.com/adnope/quiver/internal/config"
 	"github.com/adnope/quiver/internal/kafka"
 	"github.com/adnope/quiver/internal/observability"
+	"github.com/adnope/quiver/internal/web"
 )
 
 type Server struct {
@@ -143,6 +144,7 @@ func NewServerWithCollectors(
 	}
 	mux.Handle("GET /api/v1/metrics/live", route(metrics, "GET /api/v1/metrics/live", liveHandler))
 	mux.Handle("GET /api/v1/metrics/history", route(metrics, "GET /api/v1/metrics/history", historyHandler))
+	mux.Handle("GET /", route(metrics, "GET /", FrontendHandler(web.DistFS())))
 
 	return &Server{mux: mux}, nil
 

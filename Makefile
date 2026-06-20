@@ -13,15 +13,31 @@ QUIVER_DATABASE_DSN ?=
 OPENAPI_DIR ?= api/openapi
 OPENAPI_FILE ?= $(OPENAPI_DIR)/quiver.v1.yaml
 
-.PHONY: build build-quiver build-client fmt lint test test-unit test-up test-down test-integration test-all test-race coverage proto proto-check swagger swagger-check openapi openapi-check migrate-up dev-up dev-down dev-demo dev-load-smoke verify-demo verify-vector-shipper
+.PHONY: build build-quiver build-client frontend-install frontend-typecheck frontend-test frontend-build fmt lint test test-unit test-up test-down test-integration test-all test-race coverage proto proto-check swagger swagger-check openapi openapi-check migrate-up dev-up dev-down dev-demo dev-load-smoke verify-demo verify-vector-shipper
 
 build: build-quiver build-client
 
-build-quiver:
+build-quiver: frontend-build
 	$(GO) build -o bin/quiver cmd/quiver/main.go
 
 build-client:
 	$(GO) build -o bin/quiver-client cmd/quiver-client/main.go
+
+frontend-install:
+	npm --prefix frontend ci
+
+frontend-typecheck:
+	npm --prefix frontend run typecheck
+
+frontend-test:
+	npm --prefix frontend run test
+
+frontend-build: frontend-install
+	npm --prefix frontend run build
+	rm -rf internal/web/dist
+	mkdir -p internal/web/dist
+	cp -R frontend/dist/. internal/web/dist/
+	printf '%s\n' "placeholder for Go embed before frontend assets are built" > internal/web/dist/keep.txt
 
 fmt:
 	$(GO) fmt ./...

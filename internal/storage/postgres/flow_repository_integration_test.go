@@ -127,7 +127,7 @@ func TestFlowRepositoryIntegration(t *testing.T) {
 
 	// 3. Test GetFlowByID
 	t.Run("GetFlowByID", func(t *testing.T) {
-		record, found, err := flowRepo.GetFlowByID(ctx, rec1.ID)
+		record, found, err := flowRepo.GetFlowByID(ctx, rec1.ID, nil)
 		if err != nil {
 			t.Fatalf("GetFlowByID failed: %v", err)
 		}
@@ -138,7 +138,19 @@ func TestFlowRepositoryIntegration(t *testing.T) {
 			t.Errorf("Expected IdempotencyKey %s, got %s", rec1.IdempotencyKey, record.IdempotencyKey)
 		}
 
-		_, found, err = flowRepo.GetFlowByID(ctx, "01934d7c-79b4-7000-8b69-999999999999")
+		// Test with valid eventStartTime (chunk pruning)
+		recordWithTime, foundWithTime, err := flowRepo.GetFlowByID(ctx, rec1.ID, &rec1.EventStartTime)
+		if err != nil {
+			t.Fatalf("GetFlowByID with time failed: %v", err)
+		}
+		if !foundWithTime {
+			t.Errorf("Expected to find record %s with time", rec1.ID)
+		}
+		if recordWithTime.ID != rec1.ID {
+			t.Errorf("Expected ID %s, got %s", rec1.ID, recordWithTime.ID)
+		}
+
+		_, found, err = flowRepo.GetFlowByID(ctx, "01934d7c-79b4-7000-8b69-999999999999", nil)
 		if err != nil {
 			t.Fatalf("GetFlowByID for non-existent ID failed: %v", err)
 		}
@@ -146,7 +158,7 @@ func TestFlowRepositoryIntegration(t *testing.T) {
 			t.Error("Expected not to find non-existent record")
 		}
 
-		_, _, err = flowRepo.GetFlowByID(ctx, "invalid-uuid")
+		_, _, err = flowRepo.GetFlowByID(ctx, "invalid-uuid", nil)
 		if err == nil {
 			t.Error("Expected error for invalid UUID")
 		}

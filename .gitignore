@@ -1,6 +1,8 @@
 /bin/
 /coverage.out
 /dist/
+/internal/web/dist/*
+!/internal/web/dist/keep.txt
 /tmp/
 artifacts
 *.test

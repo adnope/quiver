@@ -253,20 +253,33 @@ LIMIT $` + fmt.Sprint(len(args))
 	return FlowSearchResult{Records: records, HasMore: hasMore}, nil
 }
 
-func (r *FlowRepository) GetFlowByID(ctx context.Context, id string) (domain.NormalizedFlowRecord, bool, error) {
+func (r *FlowRepository) GetFlowByID(ctx context.Context, id string, eventStartTime *time.Time) (domain.NormalizedFlowRecord, bool, error) {
 	if !domain.IsUUIDv7(id) {
 		return domain.NormalizedFlowRecord{}, false, fmt.Errorf("%w: id must be uuidv7", ErrInvalidFlowQuery)
 	}
 	// security: selected columns are a fixed internal list; id remains parameterized.
 	// #nosec G202
-	row := r.db.QueryRowContext(
-		ctx,
-		`SELECT `+flowRecordColumns()+`
+	var row *sql.Row
+	if eventStartTime != nil {
+		row = r.db.QueryRowContext(
+			ctx,
+			`SELECT `+flowRecordColumns()+`
+FROM quiver.flow_records
+WHERE event_start_time = $1 AND id = $2
+LIMIT 1`,
+			*eventStartTime,
+			id,
+		)
+	} else {
+		row = r.db.QueryRowContext(
+			ctx,
+			`SELECT `+flowRecordColumns()+`
 FROM quiver.flow_records
 WHERE id = $1
 LIMIT 1`,
-		id,
-	)
+			id,
+		)
+	}
 	record, err := scanFlowRecord(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
