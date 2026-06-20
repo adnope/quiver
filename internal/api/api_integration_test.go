@@ -166,7 +166,50 @@ func TestAPIIntegrationWithTimescaleDB(t *testing.T) {
 	if !strings.Contains(wMetrics.Body.String(), "http_requests_total") {
 		t.Errorf("Metrics missing expected metric name: %s", wMetrics.Body.String())
 	}
+
+	// 6. Test JSON /api/v1/metrics/live
+	metrics.Inc("test_live_metric_total", map[string]string{"label_key": "label_val"})
+	reqLive := httptest.NewRequest("GET", "/api/v1/metrics/live", nil)
+	reqLive.Header.Set("X-API-Key", "adminsecret123")
+	wLive := httptest.NewRecorder()
+	server.Handler().ServeHTTP(wLive, reqLive)
+
+	if wLive.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/metrics/live returned status %d: %s", wLive.Code, wLive.Body.String())
+	}
+	if !strings.Contains(wLive.Body.String(), "test_live_metric_total") {
+		t.Errorf("GET /api/v1/metrics/live output missing expected metric name: %s", wLive.Body.String())
+	}
+
+	// Test live metrics auth block
+	reqLiveNoAuth := httptest.NewRequest("GET", "/api/v1/metrics/live", nil)
+	wLiveNoAuth := httptest.NewRecorder()
+	server.Handler().ServeHTTP(wLiveNoAuth, reqLiveNoAuth)
+	if wLiveNoAuth.Code != http.StatusUnauthorized {
+		t.Errorf("GET /api/v1/metrics/live without auth returned status %d, expected 401", wLiveNoAuth.Code)
+	}
+
+	// 7. Test /api/v1/metrics/history
+	// Seed a metrics snapshot in TimescaleDB
+	_, err = db.ExecContext(ctx, `INSERT INTO quiver.system_metrics (timestamp, metric_name, labels, value) VALUES ($1, $2, $3, $4)`,
+		time.Now().UTC(), "test_history_metric_total", `{"type": "netflow"}`, 100.0)
+	if err != nil {
+		t.Fatalf("Failed to seed system_metrics: %v", err)
+	}
+
+	reqHist := httptest.NewRequest("GET", "/api/v1/metrics/history?range=1h", nil)
+	reqHist.Header.Set("X-API-Key", "adminsecret123")
+	wHist := httptest.NewRecorder()
+	server.Handler().ServeHTTP(wHist, reqHist)
+
+	if wHist.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/metrics/history returned status %d: %s", wHist.Code, wHist.Body.String())
+	}
+	if !strings.Contains(wHist.Body.String(), "test_history_metric_total") {
+		t.Errorf("GET /api/v1/metrics/history output missing expected metric: %s", wHist.Body.String())
+	}
 }
+
 
 func validDomainRecord(id string, idempotencyKey string, start time.Time, src, dst string, dstPort uint16, bytes uint64, packets uint64) domain.NormalizedFlowRecord {
 	srcPort := uint16(12345)

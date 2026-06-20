@@ -122,6 +122,15 @@ func NewFlowRepository(db *sql.DB) (*FlowRepository, error) {
 	return &FlowRepository{db: db}, nil
 }
 
+func (r *FlowRepository) DB() *sql.DB {
+	if r == nil {
+		return nil
+	}
+	return r.db
+}
+
+
+
 func (r *FlowRepository) InsertFlowRecords(ctx context.Context, records []domain.NormalizedFlowRecord) (InsertResult, error) {
 	if ctx == nil {
 		return InsertResult{}, fmt.Errorf("%w: context is nil", ErrInvalidFlowQuery)

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -231,3 +232,126 @@ func instrumentHTTP(registry *observability.Registry, route string, next http.Ha
 		registry.ObserveDuration("api_http_request_duration", labels, start)
 	})
 }
+
+type LiveMetricsResponse struct {
+	Metrics []observability.MetricSnapshot `json:"metrics"`
+}
+
+// LiveMetricsHandler godoc
+// @Summary Live Prometheus metrics in JSON format
+// @Description Returns the current in-memory metrics registry snapshots as structured JSON.
+// @Tags metrics
+// @Produce json
+// @Security ApiKeyAuth
+// @Param X-API-Key header string true "API key with metrics scope when metrics auth is enabled"
+// @Success 200 {object} LiveMetricsResponse
+// @Failure 401 {object} ErrorResponse
+// @Failure 403 {object} ErrorResponse
+// @Router /api/v1/metrics/live [get]
+func LiveMetricsHandler(registry *observability.Registry) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		snapshots := registry.Snapshot()
+		writeJSON(w, http.StatusOK, LiveMetricsResponse{Metrics: snapshots})
+	})
+}
+
+type MetricHistoryPoint struct {
+	Timestamp time.Time         `json:"timestamp"`
+	Name      string            `json:"name"`
+	Labels    map[string]string `json:"labels"`
+	Value     float64           `json:"value"`
+	Delta     float64           `json:"delta"`
+}
+
+type MetricHistoryResponse struct {
+	Points []MetricHistoryPoint `json:"points"`
+}
+
+// MetricsHistoryHandler godoc
+// @Summary Historical metrics timeseries
+// @Description Returns downsampled system metrics from TimescaleDB based on range parameter (1m, 1h, 12h, 24h, 1w, 30d).
+// @Tags metrics
+// @Produce json
+// @Security ApiKeyAuth
+// @Param X-API-Key header string true "API key with metrics scope when metrics auth is enabled"
+// @Param range query string false "Metrics range window" Enums(1m, 1h, 12h, 24h, 1w, 30d) default(1h)
+// @Success 200 {object} MetricHistoryResponse
+// @Failure 401 {object} ErrorResponse
+// @Failure 403 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /api/v1/metrics/history [get]
+func MetricsHistoryHandler(db *sql.DB) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		timeRange := r.URL.Query().Get("range")
+		if timeRange == "" {
+			timeRange = "1h"
+		}
+
+		var interval time.Duration
+		var since time.Time
+		now := time.Now().UTC()
+
+		switch timeRange {
+		case "1m":
+			interval = 1 * time.Second
+			since = now.Add(-1 * time.Minute)
+		case "1h":
+			interval = 1 * time.Minute
+			since = now.Add(-1 * time.Hour)
+		case "12h":
+			interval = 10 * time.Minute
+			since = now.Add(-12 * time.Hour)
+		case "24h":
+			interval = 20 * time.Minute
+			since = now.Add(-24 * time.Hour)
+		case "1w":
+			interval = 1 * time.Hour
+			since = now.Add(-7 * 24 * time.Hour)
+		case "30d":
+			interval = 8 * time.Hour
+			since = now.Add(-30 * 24 * time.Hour)
+		default:
+			interval = 1 * time.Minute
+			since = now.Add(-1 * time.Hour)
+		}
+
+		rows, err := db.QueryContext(r.Context(), `
+			SELECT 
+				time_bucket($1, timestamp) AS bucket,
+				metric_name,
+				labels,
+				COALESCE(MAX(value) - MIN(value), 0) AS delta,
+				COALESCE(AVG(value), 0) AS val
+			FROM quiver.system_metrics
+			WHERE timestamp >= $2
+			GROUP BY bucket, metric_name, labels
+			ORDER BY bucket ASC
+		`, interval, since)
+		if err != nil {
+			writeError(w, r, http.StatusInternalServerError, CodeInternalError, "Failed to query metrics history: "+err.Error(), nil)
+			return
+		}
+		defer rows.Close()
+
+		points := make([]MetricHistoryPoint, 0)
+		for rows.Next() {
+			var p MetricHistoryPoint
+			var labelsJSON []byte
+			err := rows.Scan(&p.Timestamp, &p.Name, &labelsJSON, &p.Delta, &p.Value)
+			if err != nil {
+				writeError(w, r, http.StatusInternalServerError, CodeInternalError, "Failed to scan metrics history point: "+err.Error(), nil)
+				return
+			}
+			if len(labelsJSON) > 0 {
+				var labels map[string]string
+				if err := json.Unmarshal(labelsJSON, &labels); err == nil {
+					p.Labels = labels
+				}
+			}
+			points = append(points, p)
+		}
+
+		writeJSON(w, http.StatusOK, MetricHistoryResponse{Points: points})
+	})
+}
+

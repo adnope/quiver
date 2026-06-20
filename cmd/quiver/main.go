@@ -59,6 +59,11 @@ func main() {
 			logger.Warn("close database failed", slog.String("component", "cmd"), slog.Any("error", err))
 		}
 	}()
+
+	metricsSaver := observability.NewMetricsSaver(db, metrics, logger, 10*time.Second)
+	metricsSaver.Start(ctx)
+	defer metricsSaver.Stop()
+
 	if err := postgres.ApplyStoragePolicies(ctx, db, cfg.Storage); err != nil {
 		logger.ErrorContext(ctx, "apply database storage policies failed", slog.String("component", "cmd"), slog.Any("error", err))
 		os.Exit(1)

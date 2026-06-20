@@ -7,7 +7,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5439:5432"
+      - "5434:5432"
     volumes:
       - quiver_test_db_data:/var/lib/postgresql/data
     healthcheck:
@@ -20,7 +20,8 @@ services:
     image: confluentinc/cp-kafka:8.2.2
     container_name: ${COMPOSE_PROJECT_NAME:-quiver-test}-kafka
     ports:
-      - "9098:9094"
+      - "9096:9094"
+
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_NUM_PARTITIONS: 4

@@ -107,3 +107,48 @@ func escapeLabelValue(value string) string {
 	value = strings.ReplaceAll(value, "\n", `\n`)
 	return strings.ReplaceAll(value, `"`, `\"`)
 }
+
+type MetricSnapshot struct {
+	Name   string            `json:"name"`
+	Labels map[string]string `json:"labels"`
+	Value  uint64            `json:"value"`
+}
+
+func (r *Registry) Snapshot() []MetricSnapshot {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	snapshots := make([]MetricSnapshot, 0, len(r.counters))
+	for key, val := range r.counters {
+		snapshots = append(snapshots, MetricSnapshot{
+			Name:   key.name,
+			Labels: decodeLabels(key.labels),
+			Value:  val,
+		})
+	}
+	return snapshots
+}
+
+func decodeLabels(s string) map[string]string {
+	if s == "" {
+		return nil
+	}
+	res := make(map[string]string)
+	pairs := strings.Split(s, ",")
+	for _, pair := range pairs {
+		kv := strings.SplitN(pair, "=", 2)
+		if len(kv) == 2 {
+			k := kv[0]
+			v := strings.Trim(kv[1], `"`)
+			v = strings.ReplaceAll(v, `\"`, `"`)
+			v = strings.ReplaceAll(v, `\n`, "\n")
+			v = strings.ReplaceAll(v, `\\`, `\`)
+			res[k] = v
+		}
+	}
+	return res
+}
+

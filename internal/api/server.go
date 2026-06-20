@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"net/http"
 	"strings"
 
@@ -128,7 +129,23 @@ func NewServerWithCollectors(
 		metricsHandler = RequestIDMiddleware(RequireScope(auth, limiter, ScopeMetrics, metricsHandler))
 	}
 	mux.Handle("GET /metrics", route(metrics, "GET /metrics", metricsHandler))
+
+	var db *sql.DB
+	if provider, ok := flowStore.(interface{ DB() *sql.DB }); ok {
+		db = provider.DB()
+	}
+
+	liveHandler := LiveMetricsHandler(metrics)
+	historyHandler := MetricsHistoryHandler(db)
+	if cfg.API.Metrics.AuthRequired {
+		liveHandler = RequestIDMiddleware(RequireScope(auth, limiter, ScopeMetrics, liveHandler))
+		historyHandler = RequestIDMiddleware(RequireScope(auth, limiter, ScopeMetrics, historyHandler))
+	}
+	mux.Handle("GET /api/v1/metrics/live", route(metrics, "GET /api/v1/metrics/live", liveHandler))
+	mux.Handle("GET /api/v1/metrics/history", route(metrics, "GET /api/v1/metrics/history", historyHandler))
+
 	return &Server{mux: mux}, nil
+
 }
 
 func (s *Server) Handler() http.Handler {
