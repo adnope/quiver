@@ -269,4 +269,41 @@ func TestFlowRepositoryIntegration(t *testing.T) {
 			t.Errorf("Expected first protocol UDP (17) with packets 10, got %d and %d", protocols[0].ProtocolNumber, protocols[0].Value)
 		}
 	})
+
+	// 7. Test Continuous Aggregate Materialization
+	t.Run("ContinuousAggregateMaterialization", func(t *testing.T) {
+		windowStart := seedTime.Truncate(time.Hour)
+		windowEnd := windowStart.Add(time.Hour)
+
+		// Refresh both views
+		_, err := db.ExecContext(ctx, "CALL refresh_continuous_aggregate('quiver.flow_hourly_talkers', $1::timestamptz, $2::timestamptz)", windowStart, windowEnd)
+		if err != nil {
+			t.Fatalf("Failed to refresh flow_hourly_talkers: %v", err)
+		}
+		_, err = db.ExecContext(ctx, "CALL refresh_continuous_aggregate('quiver.flow_hourly_ports', $1::timestamptz, $2::timestamptz)", windowStart, windowEnd)
+		if err != nil {
+			t.Fatalf("Failed to refresh flow_hourly_ports: %v", err)
+		}
+
+		// Verify flow_hourly_talkers count
+		var talkersCount int
+		err = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM quiver.flow_hourly_talkers").Scan(&talkersCount)
+		if err != nil {
+			t.Fatalf("Failed to query flow_hourly_talkers: %v", err)
+		}
+		if talkersCount != 2 {
+			t.Errorf("Expected 2 rows in flow_hourly_talkers, got %d", talkersCount)
+		}
+
+		// Verify flow_hourly_ports count
+		var portsCount int
+		err = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM quiver.flow_hourly_ports").Scan(&portsCount)
+		if err != nil {
+			t.Fatalf("Failed to query flow_hourly_ports: %v", err)
+		}
+		if portsCount != 2 {
+			t.Errorf("Expected 2 rows in flow_hourly_ports, got %d", portsCount)
+		}
+	})
 }
+

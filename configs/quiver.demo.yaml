@@ -28,7 +28,7 @@ storage:
     after: "24h"
 
 storage_writer:
-  batch_size: 1000
+  batch_size: 3000
   flush_interval: "1s"
   max_retries: 10
   initial_backoff: "100ms"

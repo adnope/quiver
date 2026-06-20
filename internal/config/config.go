@@ -15,13 +15,14 @@ import (
 )
 
 const (
-	DefaultMaxRequestBodyBytes = 5 * 1024 * 1024
-	DefaultMaxBatchSize        = 1000
-	DefaultMaxQueryWindow      = Duration(7 * dayDuration)
-	DefaultQueryLimit          = 100
-	DefaultMaxQueryLimit       = 1000
-	DefaultAggregationLimit    = 20
-	DefaultShutdownTimeout     = Duration(10 * time.Second)
+	DefaultMaxRequestBodyBytes       = 5 * 1024 * 1024
+	DefaultMaxBatchSize              = 1000
+	DefaultMaxStorageWriterBatchSize = 5000
+	DefaultMaxQueryWindow            = Duration(7 * dayDuration)
+	DefaultQueryLimit                = 100
+	DefaultMaxQueryLimit             = 1000
+	DefaultAggregationLimit          = 20
+	DefaultShutdownTimeout           = Duration(10 * time.Second)
 )
 
 const dayDuration = 24 * time.Hour
@@ -309,7 +310,7 @@ func Default() Config {
 			},
 		},
 		StorageWriter: StorageWriterConfig{
-			BatchSize:      1000,
+			BatchSize:      3000,
 			FlushInterval:  Duration(time.Second),
 			MaxRetries:     10,
 			InitialBackoff: Duration(100 * time.Millisecond),
@@ -623,8 +624,8 @@ func (c Config) validateStorage() error {
 }
 
 func (c Config) validateStorageWriter() error {
-	if c.StorageWriter.BatchSize <= 0 || c.StorageWriter.BatchSize > DefaultMaxBatchSize {
-		return fmt.Errorf("%w: storage_writer.batch_size must be within 1..1000", ErrInvalidConfig)
+	if c.StorageWriter.BatchSize <= 0 || c.StorageWriter.BatchSize > DefaultMaxStorageWriterBatchSize {
+		return fmt.Errorf("%w: storage_writer.batch_size must be within 1..5000", ErrInvalidConfig)
 	}
 	if c.StorageWriter.FlushInterval <= 0 {
 		return fmt.Errorf("%w: storage_writer.flush_interval must be positive", ErrInvalidConfig)

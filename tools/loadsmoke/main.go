@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -47,14 +48,32 @@ type IngestRecord struct {
 	Packets           *uint64 `json:"packets,omitempty"`
 }
 
+type ZeekRecord struct {
+	TS        float64 `json:"ts"`
+	UID       string  `json:"uid"`
+	OrigH     string  `json:"id.orig_h"`
+	OrigP     int     `json:"id.orig_p"`
+	RespH     string  `json:"id.resp_h"`
+	RespP     int     `json:"id.resp_p"`
+	Proto     string  `json:"proto"`
+	Service   string  `json:"service,omitempty"`
+	Duration  float64 `json:"duration,omitempty"`
+	OrigBytes int64   `json:"orig_bytes,omitempty"`
+	RespBytes int64   `json:"resp_bytes,omitempty"`
+	OrigPkts  int64   `json:"orig_pkts,omitempty"`
+	RespPkts  int64   `json:"resp_pkts,omitempty"`
+	ConnState string  `json:"conn_state,omitempty"`
+}
+
 func main() {
 	targetREST := flag.String("rest", "http://localhost:8080", "Target REST API Base URL")
 	targetUDP := flag.String("udp", "localhost:2055", "Target UDP address host:port")
+	targetZeek := flag.String("zeek", "/tmp/zeek/conn.log", "Target Zeek log file path")
 	key := flag.String("key", "democlientkey456", "API Key with ingest scope")
 	durationSec := flag.Int("duration", 30, "Duration of the smoke test in seconds")
 	flag.Parse()
 
-	fmt.Printf("Starting load smoke test for %ds against REST=%s, UDP=%s\n", *durationSec, *targetREST, *targetUDP)
+	fmt.Printf("Starting load smoke test for %ds against REST=%s, UDP=%s, Zeek=%s\n", *durationSec, *targetREST, *targetUDP, *targetZeek)
 
 	startTime := time.Now()
 
@@ -190,6 +209,65 @@ func main() {
 					atomic.AddInt64(&accepted, int64(recordCount))
 				}
 				time.Sleep(10 * time.Microsecond) // Throttle slightly
+			}
+		}
+	})
+
+	// 3. Zeek Worker Loop
+	wg.Go(func() {
+		if *targetZeek == "" {
+			return
+		}
+		dir := filepath.Dir(*targetZeek)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			fmt.Printf("Failed to create Zeek directory %s: %v\n", dir, err)
+			return
+		}
+		file, err := os.OpenFile(*targetZeek, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			fmt.Printf("Failed to open Zeek log file %s: %v\n", *targetZeek, err)
+			return
+		}
+		defer file.Close()
+
+		var i int
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				recordCount := 1
+				atomic.AddInt64(&attempted, int64(recordCount))
+
+				record := ZeekRecord{
+					TS:        float64(time.Now().UnixNano()) / 1e9,
+					UID:       fmt.Sprintf("C%x", rand.Int63()),
+					OrigH:     "192.168.1.50",
+					OrigP:     49000 + (i % 10000),
+					RespH:     "8.8.8.8",
+					RespP:     53,
+					Proto:     "udp",
+					Service:   "dns",
+					Duration:  0.045,
+					OrigBytes: 42,
+					RespBytes: 84,
+					OrigPkts:  1,
+					RespPkts:  1,
+					ConnState: "SF",
+				}
+				data, err := json.Marshal(record)
+				if err != nil {
+					atomic.AddInt64(&failed, int64(recordCount))
+					continue
+				}
+				_, err = file.Write(append(data, '\n'))
+				if err != nil {
+					atomic.AddInt64(&failed, int64(recordCount))
+				} else {
+					atomic.AddInt64(&accepted, int64(recordCount))
+				}
+				i++
+				time.Sleep(10 * time.Millisecond) // Throttle slightly to prevent disk IO saturation
 			}
 		}
 	})

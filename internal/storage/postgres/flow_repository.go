@@ -276,7 +276,7 @@ func (r *FlowRepository) TopTalkers(ctx context.Context, query AggregationQuery)
 	if query.Direction == AggregationDirectionDst {
 		groupColumn = "dst_ip"
 	}
-	sqlQuery, args := buildAggregationSQL(query, groupColumn, "true")
+	sqlQuery, args := buildAggregationSQL(query, groupColumn, "quiver.flow_hourly_talkers", "true")
 	rows, err := r.db.QueryContext(ctx, sqlQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query top talkers: %w", err)
@@ -312,7 +312,11 @@ func (r *FlowRepository) TopPorts(ctx context.Context, query AggregationQuery) (
 	if query.Direction == AggregationDirectionDst {
 		groupColumn = "dst_port"
 	}
-	sqlQuery, args := buildAggregationSQL(query, groupColumn, groupColumn+" IS NOT NULL")
+	targetTable := "quiver.flow_hourly_ports"
+	if query.SrcIP != nil || query.DstIP != nil {
+		targetTable = "quiver.flow_records"
+	}
+	sqlQuery, args := buildAggregationSQL(query, groupColumn, targetTable, groupColumn+" IS NOT NULL")
 	rows, err := r.db.QueryContext(ctx, sqlQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query top ports: %w", err)
@@ -344,7 +348,7 @@ func (r *FlowRepository) ProtocolDistribution(ctx context.Context, query Aggrega
 	if err := validateAggregationQuery(query, false); err != nil {
 		return nil, err
 	}
-	sqlQuery, args := buildAggregationSQL(query, "protocol_number, transport_protocol", "true")
+	sqlQuery, args := buildAggregationSQL(query, "protocol_number, transport_protocol", "quiver.flow_hourly_talkers", "true")
 	rows, err := r.db.QueryContext(ctx, sqlQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query protocol distribution: %w", err)
@@ -619,18 +623,33 @@ func buildFlowWhere(query FlowSearchQuery) (string, []any) {
 	return strings.Join(clauses, " AND "), args
 }
 
-func buildAggregationSQL(query AggregationQuery, groupExpr string, extraPredicate string) (string, []any) {
+func buildAggregationSQL(query AggregationQuery, groupExpr string, targetTable string, extraPredicate string) (string, []any) {
+	timeCol := "bucket"
 	valueExpr := "SUM(bytes)"
 	nullPredicate := "bytes IS NOT NULL"
-	switch query.Metric {
-	case AggregationMetricPackets:
-		valueExpr = "SUM(packets)"
-		nullPredicate = "packets IS NOT NULL"
-	case AggregationMetricFlows:
-		valueExpr = "COUNT(*)"
-		nullPredicate = "true"
+
+	if targetTable == "quiver.flow_records" {
+		timeCol = "event_start_time"
+		switch query.Metric {
+		case AggregationMetricPackets:
+			valueExpr = "SUM(packets)"
+			nullPredicate = "packets IS NOT NULL"
+		case AggregationMetricFlows:
+			valueExpr = "COUNT(*)"
+			nullPredicate = "true"
+		}
+	} else {
+		switch query.Metric {
+		case AggregationMetricPackets:
+			valueExpr = "SUM(packets)"
+			nullPredicate = "packets IS NOT NULL"
+		case AggregationMetricFlows:
+			valueExpr = "SUM(flow_count)"
+			nullPredicate = "true"
+		}
 	}
-	clauses := []string{"event_start_time >= $1", "event_start_time < $2", nullPredicate, extraPredicate}
+
+	clauses := []string{timeCol + " >= $1", timeCol + " < $2", nullPredicate, extraPredicate}
 	args := []any{query.From, query.To}
 	add := func(clause string, value any) {
 		args = append(args, value)
@@ -649,8 +668,16 @@ func buildAggregationSQL(query AggregationQuery, groupExpr string, extraPredicat
 		add("source_type = $%d", string(*query.SourceType))
 	}
 	args = append(args, query.Limit)
-	return `SELECT ` + groupExpr + `, ` + valueExpr + ` AS value, COUNT(*) AS flow_count
-FROM quiver.flow_records
+
+	var flowsSelect string
+	if targetTable == "quiver.flow_records" {
+		flowsSelect = "COUNT(*) AS flow_count"
+	} else {
+		flowsSelect = "SUM(flow_count) AS flow_count"
+	}
+
+	return `SELECT ` + groupExpr + `, ` + valueExpr + ` AS value, ` + flowsSelect + `
+FROM ` + targetTable + `
 WHERE ` + strings.Join(clauses, " AND ") + `
 GROUP BY ` + groupExpr + `
 ORDER BY value DESC, flow_count DESC
