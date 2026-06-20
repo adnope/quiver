@@ -13,7 +13,7 @@ QUIVER_DATABASE_DSN ?=
 OPENAPI_DIR ?= api/openapi
 OPENAPI_FILE ?= $(OPENAPI_DIR)/quiver.v1.yaml
 
-.PHONY: build build-quiver build-client fmt lint test test-unit test-integration test-race coverage proto proto-check swagger swagger-check openapi openapi-check migrate-up docker-up docker-down demo verify-demo verify-vector-shipper load-smoke
+.PHONY: build build-quiver build-client fmt lint test test-unit test-up test-down test-integration test-all test-race coverage proto proto-check swagger swagger-check openapi openapi-check migrate-up dev-up dev-down dev-demo dev-load-smoke verify-demo verify-vector-shipper
 
 build: build-quiver build-client
 
@@ -34,10 +34,18 @@ test: test-unit
 test-unit:
 	$(GO) test ./...
 
+test-up:
+	docker compose -f docker-compose.test.yml -p quiver-test up -d --build
+
+test-down:
+	docker compose -f docker-compose.test.yml -p quiver-test down -v
+
 test-integration:
-	QUIVER_DATABASE_DSN="postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@localhost:$(POSTGRES_HOST_PORT)/$(POSTGRES_DB)?sslmode=$(POSTGRES_SSLMODE)" \
-	QUIVER_KAFKA_BROKERS="localhost:$(KAFKA_HOST_PORT)" \
+	QUIVER_DATABASE_DSN="postgres://postgres:postgres@localhost:5434/quiver?sslmode=disable" \
+	QUIVER_KAFKA_BROKERS="localhost:9096" \
 	$(GO) test -tags=integration ./...
+
+test-all: test-up test-unit test-integration test-down
 
 test-race:
 	$(GO) test -race ./internal/...
@@ -97,13 +105,13 @@ migrate-up:
 		-database "$(QUIVER_DATABASE_DSN)" \
 		up
 
-docker-up:
-	docker compose up -d --build
+dev-up:
+	docker compose up -d --build --scale quiver=3
 
-docker-down:
-	docker compose down -v
+dev-down:
+	docker compose down
 
-demo:
+dev-demo:
 	$(GO) run tools/restgen/main.go -target http://localhost:$(QUIVER_HOST_PORT) -key $(REST_INGEST_DEMO_CLIENT_KEY) -count 10
 	$(GO) run tools/zeekloggen/main.go -target http://localhost:$(QUIVER_HOST_PORT) -key $(ZEEK_SHIPPER_DEMO_KEY) -count 10
 	$(GO) run tools/netflowgen/main.go -target localhost:$(NETFLOW_PORT) -count 5 -seq 10
@@ -114,5 +122,5 @@ verify-demo:
 verify-vector-shipper:
 	./scripts/verify-vector-shipper.sh
 
-load-smoke:
+dev-load-smoke:
 	$(GO) run tools/loadsmoke/main.go -rest http://localhost:$(QUIVER_HOST_PORT) -udp localhost:$(NETFLOW_PORT) -duration 30
