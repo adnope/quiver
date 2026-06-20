@@ -14,7 +14,6 @@ import (
 
 	"github.com/adnope/quiver/internal/api"
 	collectorNetflow "github.com/adnope/quiver/internal/collector/netflow"
-	collectorZeek "github.com/adnope/quiver/internal/collector/zeek"
 	"github.com/adnope/quiver/internal/config"
 	"github.com/adnope/quiver/internal/ingest"
 	"github.com/adnope/quiver/internal/kafka"
@@ -69,12 +68,6 @@ func main() {
 		logger.ErrorContext(ctx, "create flow repository failed", slog.String("component", "cmd"), slog.Any("error", err))
 		os.Exit(1)
 	}
-	stateStore, err := postgres.NewStateStore(db)
-	if err != nil {
-		logger.ErrorContext(ctx, "create collector state store failed", slog.String("component", "cmd"), slog.Any("error", err))
-		os.Exit(1)
-	}
-
 	publisher, err := kafka.NewFranzPublisher(kafka.ConfigFromApp(cfg))
 	if err != nil {
 		logger.ErrorContext(ctx, "create kafka publisher failed", slog.String("component", "cmd"), slog.Any("error", err))
@@ -161,7 +154,7 @@ func main() {
 			stop()
 		}
 	}()
-	startCollectors(ctx, stop, cfg, stateStore, publisher, metrics, logger, registry, netflowCollectors)
+	startCollectors(ctx, stop, logger, registry, netflowCollectors)
 
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Shutdown.Timeout.Std())
@@ -175,34 +168,10 @@ func main() {
 func startCollectors(
 	ctx context.Context,
 	stop context.CancelFunc,
-	cfg config.Config,
-	stateStore postgres.CollectorStateStore,
-	publisher kafka.RawEventPublisher,
-	metrics *observability.Registry,
 	logger *slog.Logger,
 	registry *collectorsRegistry,
 	netflowCollectors []*collectorNetflow.Collector,
 ) {
-	for _, collectorCfg := range cfg.Collectors.ZeekConnJSON {
-		if !collectorCfg.Enabled {
-			continue
-		}
-		collector, err := collectorZeek.NewCollector(collectorCfg, stateStore, publisher, metrics, logger)
-		if err != nil {
-			logger.ErrorContext(ctx, "create zeek collector failed", slog.String("component", "cmd"), slog.Any("error", err))
-			registry.Set(collectorCfg.CollectorID, "failed")
-			stop()
-			return
-		}
-		registry.Set(collectorCfg.CollectorID, "running")
-		go func(id string) {
-			if err := collector.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				logger.Error("zeek collector stopped", slog.String("component", "cmd"), slog.String("collector_id", id), slog.Any("error", err))
-				registry.Set(id, "stopped")
-				stop()
-			}
-		}(collectorCfg.CollectorID)
-	}
 	for _, collector := range netflowCollectors {
 		id := collector.CollectorID()
 		registry.Set(id, "running")

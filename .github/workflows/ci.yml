@@ -46,6 +46,9 @@ jobs:
       - name: API Spec (Swagger) Freshness Check
         run: make openapi-check
 
+      - name: Vector Shipper Verification
+        run: make verify-vector-shipper
+
       - name: Run Unit Tests
         run: make test-unit
 

@@ -1,0 +1,72 @@
+data_dir: /var/lib/vector
+
+api:
+  enabled: true
+  address: 0.0.0.0:8686
+
+sources:
+  zeek_conn_log:
+    type: file
+    include:
+      - "${VECTOR_ZEEK_LOG_PATH:-/var/log/zeek/current/conn.log}"
+    # Use "end" for normal production tailing. Change to "beginning" only for
+    # initial backfill or demos.
+    read_from: end
+    line_delimiter: "\n"
+    max_line_bytes: 1048576
+    fingerprint:
+      # Vector owns file checkpointing on the Zeek host. Device+inode is a good
+      # fit for a single mounted conn.log path and avoids relying on line checksums.
+      strategy: device_and_inode
+
+transforms:
+  quiver_zeek_record:
+    type: remap
+    inputs:
+      - zeek_conn_log
+    drop_on_error: false
+    source: |-
+      # Send valid Zeek JSON lines as record objects. Keep malformed lines as
+      # explicit records so Quiver can reject/DLQ them centrally.
+      line = string!(.message)
+      parsed, err = parse_json(line)
+      if err == null {
+        . = parsed
+      } else {
+        . = { "raw": line }
+      }
+
+sinks:
+  quiver_zeek_ingest:
+    type: http
+    inputs:
+      - quiver_zeek_record
+    uri: "${QUIVER_ZEEK_INGEST_URL:-http://quiver:8080/api/v1/ingest/zeek/conn}"
+    method: post
+
+    request:
+      timeout_secs: 30
+      retry_initial_backoff_secs: 1
+      retry_max_duration_secs: 30
+      headers:
+        Content-Type: application/json
+        X-API-Key: "${ZEEK_SHIPPER_API_KEY}"
+
+    batch:
+      max_events: 500
+      max_bytes: 4194304
+      timeout_secs: 1
+
+    buffer:
+      type: disk
+      max_size: 268435488
+      when_full: block
+
+    encoding:
+      codec: json
+
+    # Vector's HTTP sink serializes the batch as a JSON array. These wrappers
+    # turn that array into Quiver's exact request body:
+    # {"records":[...]}
+    payload_prefix: '{"records":'
+    payload_suffix: '}'

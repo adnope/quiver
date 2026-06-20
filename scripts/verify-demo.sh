@@ -35,9 +35,6 @@ fi
 if [ -z "${KAFKA_HOST_PORT:-}" ] || [ "${KAFKA_HOST_PORT}" = "9094" ]; then
   export KAFKA_HOST_PORT=9095
 fi
-if [ -z "${ZEEK_LOG_DIR:-}" ] || [ "${ZEEK_LOG_DIR}" = "/tmp/zeek" ]; then
-  export ZEEK_LOG_DIR=/tmp/zeek-verify
-fi
 if [ -z "${QUIVER_CONFIG:-}" ] || [ "${QUIVER_CONFIG}" = "/configs/quiver.dev.yaml" ]; then
   export QUIVER_CONFIG=/configs/quiver.demo.yaml
 fi
@@ -45,16 +42,14 @@ export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-quiver-verify}
 
 export QUIVER_DEMO_ADMIN_API_KEY=${QUIVER_DEMO_ADMIN_API_KEY:-demoadminkey123}
 export REST_INGEST_DEMO_CLIENT_KEY=${REST_INGEST_DEMO_CLIENT_KEY:-democlientkey456}
+export NETFLOW_GATEWAY_DEMO_KEY=${NETFLOW_GATEWAY_DEMO_KEY:-netflowgatewaykey456}
+export ZEEK_SHIPPER_DEMO_KEY=${ZEEK_SHIPPER_DEMO_KEY:-zeekshipperkey456}
 export KAFKA_TOPIC_DLQ=${KAFKA_TOPIC_DLQ:-flow.dead_letter}
 
 echo "=================================================="
 # 1. Start Docker Compose
 echo "Starting Docker Compose services for project: ${COMPOSE_PROJECT_NAME}..."
 docker compose down -v || true
-# Ensure clean zeek directory
-docker run --rm -v /tmp:/tmp alpine rm -rf "${ZEEK_LOG_DIR}" || rm -rf "${ZEEK_LOG_DIR}" || true
-mkdir -p "${ZEEK_LOG_DIR}"
-chmod 777 "${ZEEK_LOG_DIR}"
 
 docker compose up -d --build
 
@@ -92,19 +87,10 @@ go run tools/restgen/main.go -target http://localhost:${QUIVER_HOST_PORT} -key "
 go run tools/restgen/main.go -target http://localhost:${QUIVER_HOST_PORT} -key "${REST_INGEST_DEMO_CLIENT_KEY}" -count 1 -malformed || true
 
 echo "=================================================="
-# 3. Ingest Zeek conn.log
-echo "Seeding Zeek conn.log..."
-# Append 5 valid records
-go run tools/zeekloggen/main.go -file "${ZEEK_LOG_DIR}/conn.log" -mode append -count 5
-
-# Append 1 malformed JSON record (destined for DLQ)
-go run tools/zeekloggen/main.go -file "${ZEEK_LOG_DIR}/conn.log" -mode append -malformed
-
-# Sync to docker container in case volume mount is not sharing the same filesystem (e.g. in containerized CI)
-if docker ps --format '{{.Names}}' | grep -q "${COMPOSE_PROJECT_NAME}-app"; then
-  docker exec "${COMPOSE_PROJECT_NAME}-app" mkdir -p /var/log/zeek/current || true
-  docker cp "${ZEEK_LOG_DIR}/conn.log" "${COMPOSE_PROJECT_NAME}-app":/var/log/zeek/current/conn.log || true
-fi
+# 3. Ingest Zeek conn.log records through the authenticated shipper HTTP path
+echo "Posting Zeek conn.log records through HTTP ingest..."
+go run tools/zeekloggen/main.go -target "http://localhost:${QUIVER_HOST_PORT}" -key "${ZEEK_SHIPPER_DEMO_KEY}" -count 5
+go run tools/zeekloggen/main.go -target "http://localhost:${QUIVER_HOST_PORT}" -key "${ZEEK_SHIPPER_DEMO_KEY}" -count 1 -malformed || true
 
 echo "=================================================="
 # 4. Ingest NetFlow UDP

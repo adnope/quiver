@@ -13,7 +13,7 @@ QUIVER_DATABASE_DSN ?=
 OPENAPI_DIR ?= api/openapi
 OPENAPI_FILE ?= $(OPENAPI_DIR)/quiver.v1.yaml
 
-.PHONY: build build-quiver build-client fmt lint test test-unit test-integration test-race coverage proto proto-check swagger swagger-check openapi openapi-check migrate-up docker-up docker-down demo verify-demo load-smoke
+.PHONY: build build-quiver build-client fmt lint test test-unit test-integration test-race coverage proto proto-check swagger swagger-check openapi openapi-check migrate-up docker-up docker-down demo verify-demo verify-vector-shipper load-smoke
 
 build: build-quiver build-client
 
@@ -105,11 +105,14 @@ docker-down:
 
 demo:
 	$(GO) run tools/restgen/main.go -target http://localhost:$(QUIVER_HOST_PORT) -key $(REST_INGEST_DEMO_CLIENT_KEY) -count 10
-	$(GO) run tools/zeekloggen/main.go -file /tmp/zeek/conn.log -mode append -count 10
+	$(GO) run tools/zeekloggen/main.go -target http://localhost:$(QUIVER_HOST_PORT) -key $(ZEEK_SHIPPER_DEMO_KEY) -count 10
 	$(GO) run tools/netflowgen/main.go -target localhost:$(NETFLOW_PORT) -count 5 -seq 10
 
 verify-demo:
 	./scripts/verify-demo.sh
+
+verify-vector-shipper:
+	./scripts/verify-vector-shipper.sh
 
 load-smoke:
 	$(GO) run tools/loadsmoke/main.go -rest http://localhost:$(QUIVER_HOST_PORT) -udp localhost:$(NETFLOW_PORT) -duration 30

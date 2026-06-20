@@ -36,6 +36,7 @@ type Config struct {
 	StorageWriter        StorageWriterConfig         `yaml:"storage_writer"`
 	API                  APIConfig                   `yaml:"api"`
 	RestIngest           RESTIngestConfig            `yaml:"rest_ingest"`
+	ZeekIngest           ZeekIngestConfig            `yaml:"zeek_ingest"`
 	QuiverClientGateways []QuiverClientGatewayConfig `yaml:"quiver_client_gateways"`
 	Collectors           CollectorsConfig            `yaml:"collectors"`
 	DeadLetter           DeadLetterConfig            `yaml:"dead_letter"`
@@ -146,6 +147,12 @@ type RESTAPIKeyConfig struct {
 	KeyEnv     string `yaml:"key_env"`
 }
 
+type ZeekIngestConfig struct {
+	Enabled      bool   `yaml:"enabled"`
+	CollectorID  string `yaml:"collector_id"`
+	MaxBatchSize int    `yaml:"max_batch_size"`
+}
+
 type QuiverClientGatewayConfig struct {
 	Name       string `yaml:"name"`
 	SourceHost string `yaml:"source_host"`
@@ -153,8 +160,7 @@ type QuiverClientGatewayConfig struct {
 }
 
 type CollectorsConfig struct {
-	NetFlowV5    []NetFlowV5CollectorConfig `yaml:"netflow_v5"`
-	ZeekConnJSON []ZeekCollectorConfig      `yaml:"zeek_conn_json"`
+	NetFlowV5 []NetFlowV5CollectorConfig `yaml:"netflow_v5"`
 }
 
 type NetFlowV5CollectorConfig struct {
@@ -176,17 +182,6 @@ func (n *NetFlowV5CollectorConfig) UnmarshalYAML(value *yaml.Node) error {
 	}
 	*n = NetFlowV5CollectorConfig(aux)
 	return nil
-}
-
-type ZeekCollectorConfig struct {
-	Enabled       bool     `yaml:"enabled"`
-	CollectorID   string   `yaml:"collector_id"`
-	SourceHost    string   `yaml:"source_host"`
-	FilePath      string   `yaml:"file_path"`
-	PollInterval  Duration `yaml:"poll_interval"`
-	StartPosition string   `yaml:"start_position"`
-	MaxLineBytes  int      `yaml:"max_line_bytes"`
-	StateKey      string   `yaml:"state_key"`
 }
 
 type DeadLetterConfig struct {
@@ -332,6 +327,7 @@ func Default() Config {
 			Metrics: EndpointAuthConfig{AuthRequired: true},
 		},
 		RestIngest: RESTIngestConfig{MaxBatchSize: DefaultMaxBatchSize},
+		ZeekIngest: ZeekIngestConfig{MaxBatchSize: DefaultMaxBatchSize},
 		DeadLetter: DeadLetterConfig{MaxRawPacketBytes: 1500},
 		Shutdown:   ShutdownConfig{Timeout: DefaultShutdownTimeout},
 	}
@@ -357,6 +353,9 @@ func (c Config) Validate(lookupEnv func(string) string) error {
 		return err
 	}
 	if err := c.validateRESTIngest(lookupEnv); err != nil {
+		return err
+	}
+	if err := c.validateZeekIngest(); err != nil {
 		return err
 	}
 	if err := c.validateQuiverClientGateways(lookupEnv); err != nil {
@@ -511,8 +510,26 @@ func (c Config) validateRESTIngest(lookupEnv func(string) string) error {
 	return nil
 }
 
+func (c Config) validateZeekIngest() error {
+	if !c.ZeekIngest.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(c.ZeekIngest.CollectorID) == "" {
+		return fmt.Errorf("%w: zeek_ingest.collector_id is required", ErrInvalidConfig)
+	}
+	if c.ZeekIngest.MaxBatchSize <= 0 || c.ZeekIngest.MaxBatchSize > DefaultMaxBatchSize {
+		return fmt.Errorf("%w: zeek_ingest.max_batch_size must be within 1..1000", ErrInvalidConfig)
+	}
+	return nil
+}
+
 func (c Config) validateCollectors() error {
 	collectorIDs := map[string]struct{}{}
+	if c.ZeekIngest.Enabled {
+		if err := reserveCollectorID(collectorIDs, c.ZeekIngest.CollectorID); err != nil {
+			return err
+		}
+	}
 	for _, collector := range c.Collectors.NetFlowV5 {
 		if !collector.Enabled {
 			continue
@@ -522,32 +539,6 @@ func (c Config) validateCollectors() error {
 		}
 		if _, _, err := net.SplitHostPort(collector.ListenAddr); err != nil {
 			return fmt.Errorf("%w: netflow_v5.listen_addr must be host:port: %w", ErrInvalidConfig, err)
-		}
-	}
-	for _, collector := range c.Collectors.ZeekConnJSON {
-		if !collector.Enabled {
-			continue
-		}
-		if err := reserveCollectorID(collectorIDs, collector.CollectorID); err != nil {
-			return err
-		}
-		if strings.TrimSpace(collector.SourceHost) == "" {
-			return fmt.Errorf("%w: zeek_conn_json.source_host is required", ErrInvalidConfig)
-		}
-		if strings.TrimSpace(collector.FilePath) == "" {
-			return fmt.Errorf("%w: zeek_conn_json.file_path is required", ErrInvalidConfig)
-		}
-		if collector.PollInterval <= 0 {
-			return fmt.Errorf("%w: zeek_conn_json.poll_interval must be positive", ErrInvalidConfig)
-		}
-		if collector.StartPosition != "end" && collector.StartPosition != "beginning" {
-			return fmt.Errorf("%w: zeek_conn_json.start_position must be end or beginning", ErrInvalidConfig)
-		}
-		if collector.MaxLineBytes <= 0 {
-			return fmt.Errorf("%w: zeek_conn_json.max_line_bytes must be positive", ErrInvalidConfig)
-		}
-		if strings.TrimSpace(collector.StateKey) == "" {
-			return fmt.Errorf("%w: zeek_conn_json.state_key is required", ErrInvalidConfig)
 		}
 	}
 	return nil

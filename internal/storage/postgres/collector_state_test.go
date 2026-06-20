@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/adnope/quiver/internal/config"
+	"github.com/adnope/quiver/internal/domain"
 )
 
 const fakeStateDriverName = "quiver_state_store_test"
@@ -55,25 +56,16 @@ func TestStateStoreSaveThenLoad(t *testing.T) {
 		t.Fatal("loaded updated_at is zero")
 	}
 
-	var zeekState ZeekState
-	if err := json.Unmarshal(loaded.State, &zeekState); err != nil {
-		t.Fatalf("unmarshal loaded zeek state: %v", err)
+	var loadedState genericState
+	if err := json.Unmarshal(loaded.State, &loadedState); err != nil {
+		t.Fatalf("unmarshal loaded state: %v", err)
 	}
-	if zeekState.Offset != 128 || zeekState.LastFileSize != 512 {
-		t.Fatalf("loaded zeek state = %+v", zeekState)
+	if loadedState.Offset != 128 || loadedState.Cursor != "first" {
+		t.Fatalf("loaded state = %+v", loadedState)
 	}
 
-	updated := validZeekState()
-	updated.Offset = 256
-	updatedState, err := NewZeekCollectorState(
-		state.StateKey,
-		state.CollectorID,
-		state.SourceHost,
-		updated,
-	)
-	if err != nil {
-		t.Fatalf("NewZeekCollectorState() error = %v", err)
-	}
+	updatedState := state
+	updatedState.State = json.RawMessage(`{"cursor":"second","offset":256}`)
 	if err := store.Save(context.Background(), updatedState); err != nil {
 		t.Fatalf("Save(updated) error = %v", err)
 	}
@@ -85,11 +77,11 @@ func TestStateStoreSaveThenLoad(t *testing.T) {
 	if !found {
 		t.Fatal("Load(updated) found = false, want true")
 	}
-	if err := json.Unmarshal(loaded.State, &zeekState); err != nil {
-		t.Fatalf("unmarshal updated zeek state: %v", err)
+	if err := json.Unmarshal(loaded.State, &loadedState); err != nil {
+		t.Fatalf("unmarshal updated state: %v", err)
 	}
-	if zeekState.Offset != 256 {
-		t.Fatalf("updated offset = %d, want 256", zeekState.Offset)
+	if loadedState.Offset != 256 || loadedState.Cursor != "second" {
+		t.Fatalf("updated state = %+v", loadedState)
 	}
 }
 
@@ -121,7 +113,7 @@ func TestStateStoreRejectsInvalidState(t *testing.T) {
 	}
 
 	state := validCollectorState(t)
-	state.State = json.RawMessage(`{"file_path":"/var/log/zeek/current/conn.log","device_id":42,"inode":4242,"offset":513,"last_file_size":512,"last_committed_at":"2026-06-16T10:15:20Z"}`)
+	state.State = json.RawMessage(`{invalid-json`)
 	err = store.Save(context.Background(), state)
 	if !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("Save(invalid) error = %v, want ErrInvalidState", err)
@@ -164,16 +156,10 @@ func TestStateStoreConstructorsValidateInputs(t *testing.T) {
 		t.Fatalf("nil StateStore.Save() error = %v, want ErrInvalidState", err)
 	}
 
-	invalidZeekState := validZeekState()
-	invalidZeekState.DeviceID = 0
-	_, err := NewZeekCollectorState(
-		"zeek-conn-01:zeek_conn_json:zeek-probe-01:/var/log/zeek/current/conn.log",
-		"zeek-conn-01",
-		"zeek-probe-01",
-		invalidZeekState,
-	)
-	if !errors.Is(err, ErrInvalidState) {
-		t.Fatalf("NewZeekCollectorState(invalid) error = %v, want ErrInvalidState", err)
+	invalid := validCollectorState(t)
+	invalid.SourceHost = ""
+	if err := ValidateCollectorState(invalid); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("ValidateCollectorState(invalid) error = %v, want ErrInvalidState", err)
 	}
 }
 
@@ -220,27 +206,22 @@ func TestOpenHonorsCanceledContextBeforeDial(t *testing.T) {
 func validCollectorState(t *testing.T) CollectorState {
 	t.Helper()
 
-	state, err := NewZeekCollectorState(
-		"zeek-conn-01:zeek_conn_json:zeek-probe-01:/var/log/zeek/current/conn.log",
-		"zeek-conn-01",
-		"zeek-probe-01",
-		validZeekState(),
-	)
-	if err != nil {
-		t.Fatalf("NewZeekCollectorState() error = %v", err)
+	state := CollectorState{
+		StateKey:    "rest-ingest-main:rest_json:rest-demo-client",
+		CollectorID: "rest-ingest-main",
+		SourceType:  domain.SourceTypeRESTJSON,
+		SourceHost:  "rest-demo-client",
+		State:       json.RawMessage(`{"cursor":"first","offset":128}`),
+	}
+	if err := ValidateCollectorState(state); err != nil {
+		t.Fatalf("ValidateCollectorState() error = %v", err)
 	}
 	return state
 }
 
-func validZeekState() ZeekState {
-	return ZeekState{
-		FilePath:        "/var/log/zeek/current/conn.log",
-		DeviceID:        42,
-		Inode:           4242,
-		Offset:          128,
-		LastFileSize:    512,
-		LastCommittedAt: time.Date(2026, 6, 16, 10, 15, 20, 0, time.UTC),
-	}
+type genericState struct {
+	Cursor string `json:"cursor"`
+	Offset int64  `json:"offset"`
 }
 
 func openFakeStateDB(t *testing.T) *sql.DB {

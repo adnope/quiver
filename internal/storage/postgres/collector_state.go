@@ -30,15 +30,6 @@ type CollectorState struct {
 	UpdatedAt   time.Time         `json:"updated_at"`
 }
 
-type ZeekState struct {
-	FilePath        string    `json:"file_path"`
-	DeviceID        uint64    `json:"device_id"`
-	Inode           uint64    `json:"inode"`
-	Offset          int64     `json:"offset"`
-	LastFileSize    int64     `json:"last_file_size"`
-	LastCommittedAt time.Time `json:"last_committed_at"`
-}
-
 type StateStore struct {
 	db *sql.DB
 }
@@ -151,62 +142,5 @@ func ValidateCollectorState(state CollectorState) error {
 	if len(state.State) == 0 || !json.Valid(state.State) {
 		return fmt.Errorf("%w: state must be valid json", ErrInvalidState)
 	}
-	if state.SourceType == domain.SourceTypeZeekConnJSON {
-		var zeekState ZeekState
-		if err := json.Unmarshal(state.State, &zeekState); err != nil {
-			return fmt.Errorf("%w: decode zeek state: %w", ErrInvalidState, err)
-		}
-		if err := ValidateZeekState(zeekState); err != nil {
-			return err
-		}
-	}
 	return nil
-}
-
-func ValidateZeekState(state ZeekState) error {
-	if strings.TrimSpace(state.FilePath) == "" {
-		return fmt.Errorf("%w: zeek file_path is required", ErrInvalidState)
-	}
-	if state.DeviceID == 0 {
-		return fmt.Errorf("%w: zeek device_id is required", ErrInvalidState)
-	}
-	if state.Inode == 0 {
-		return fmt.Errorf("%w: zeek inode is required", ErrInvalidState)
-	}
-	if state.Offset < 0 {
-		return fmt.Errorf("%w: zeek offset cannot be negative", ErrInvalidState)
-	}
-	if state.LastFileSize < 0 {
-		return fmt.Errorf("%w: zeek last_file_size cannot be negative", ErrInvalidState)
-	}
-	if state.Offset > state.LastFileSize {
-		return fmt.Errorf("%w: zeek offset cannot exceed last_file_size", ErrInvalidState)
-	}
-	if state.LastCommittedAt.IsZero() {
-		return fmt.Errorf("%w: zeek last_committed_at is required", ErrInvalidState)
-	}
-	return nil
-}
-
-func NewZeekCollectorState(
-	stateKey string,
-	collectorID string,
-	sourceHost string,
-	state ZeekState,
-) (CollectorState, error) {
-	data, err := json.Marshal(state)
-	if err != nil {
-		return CollectorState{}, fmt.Errorf("marshal zeek state: %w", err)
-	}
-	collectorState := CollectorState{
-		StateKey:    stateKey,
-		CollectorID: collectorID,
-		SourceType:  domain.SourceTypeZeekConnJSON,
-		SourceHost:  sourceHost,
-		State:       data,
-	}
-	if err := ValidateCollectorState(collectorState); err != nil {
-		return CollectorState{}, err
-	}
-	return collectorState, nil
 }

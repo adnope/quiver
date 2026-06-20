@@ -84,6 +84,13 @@ func NewServerWithCollectors(
 		"POST /api/v1/ingest/flows",
 		route(metrics, "POST /api/v1/ingest/flows", RequestIDMiddleware(RequireScope(auth, limiter, ScopeIngest, ingestHandler))),
 	)
+	if cfg.ZeekIngest.Enabled {
+		zeekIngestHandler := NewZeekConnIngestHandler(cfg, publisher)
+		mux.Handle(
+			"POST /api/v1/ingest/zeek/conn",
+			route(metrics, "POST /api/v1/ingest/zeek/conn", RequestIDMiddleware(RequireScope(auth, limiter, ScopeIngest, zeekIngestHandler))),
+		)
+	}
 	proxyHandler := NewProxyHandler(cfg, netflowCollectors)
 	mux.Handle(
 		"POST /api/v1/ingest/proxy-netflow",

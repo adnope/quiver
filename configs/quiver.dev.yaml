@@ -68,10 +68,18 @@ rest_ingest:
       source_host: "rest-demo-client"
       key_env: "REST_INGEST_DEMO_CLIENT_KEY"
 
+zeek_ingest:
+  enabled: true
+  collector_id: "zeek-conn-http"
+  max_batch_size: 1000
+
 quiver_client_gateways:
-  - name: "demo-client"
-    source_host: "rest-demo-client"
-    key_env: "REST_INGEST_DEMO_CLIENT_KEY"
+  - name: "netflow-demo-gateway"
+    source_host: "netflow-gateway-01"
+    key_env: "NETFLOW_GATEWAY_DEMO_KEY"
+  - name: "zeek-demo-shipper"
+    source_host: "zeek-probe-01"
+    key_env: "ZEEK_SHIPPER_DEMO_KEY"
 
 collectors:
   netflow_v5:
@@ -81,15 +89,6 @@ collectors:
       read_buffer_bytes: 4194304
       packet_buffer_bytes: 65535
       auth_required: true
-  zeek_conn_json:
-    - enabled: true
-      collector_id: "zeek-conn-01"
-      source_host: "zeek-probe-01"
-      file_path: "${ZEEK_CONN_LOG_PATH}"
-      poll_interval: "1s"
-      start_position: "end"
-      max_line_bytes: 1048576
-      state_key: "zeek-conn-01:zeek_conn_json:zeek-probe-01:local-testing"
 
 dead_letter:
   max_raw_packet_bytes: 1500

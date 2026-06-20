@@ -42,6 +42,9 @@ jobs:
       - name: API Spec (Swagger) Freshness Check
         run: make openapi-check
 
+      - name: Vector Shipper Verification
+        run: make verify-vector-shipper
+
       - name: Run Unit Tests
         run: make test-unit
 
@@ -126,4 +129,3 @@ jobs:
             adnope/quiver-client:sha-${{ steps.slug.outputs.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-

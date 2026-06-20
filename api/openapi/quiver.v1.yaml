@@ -230,6 +230,16 @@ definitions:
       to:
         type: string
     type: object
+  internal_api.ZeekConnIngestRequest:
+    properties:
+      records:
+        items:
+          items:
+            format: int32
+            type: integer
+          type: array
+        type: array
+    type: object
 info:
   contact: {}
   description: 'Network flow ingestion and query API. Protected endpoints use X-API-Key
@@ -729,6 +739,66 @@ paths:
       security:
       - ApiKeyAuth: []
       summary: Ingest normalized-like flow records
+      tags:
+      - ingest
+  /api/v1/ingest/zeek/conn:
+    post:
+      consumes:
+      - application/json
+      description: Accepts Zeek conn.log JSON object batches, or JSON strings containing
+        raw Zeek JSON lines, from authenticated log shippers. Valid records publish
+        as flow.v1.RawFlowEventEnvelope protobuf messages after Kafka ACK. Invalid
+        records publish to the dead-letter topic.
+      parameters:
+      - description: API key with ingest scope and source_host mapping
+        in: header
+        name: X-API-Key
+        required: true
+        type: string
+      - description: Optional request ID
+        in: header
+        name: X-Request-ID
+        type: string
+      - description: Zeek conn.log batch
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.ZeekConnIngestRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/internal_api.IngestResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "413":
+          description: Request Entity Too Large
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "429":
+          description: Too Many Requests
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Ingest Zeek conn.log records
       tags:
       - ingest
   /health:
