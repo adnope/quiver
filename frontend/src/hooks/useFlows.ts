@@ -9,7 +9,7 @@ import {
 import { useAppStore } from '@/store/app-store'
 import type { FlowSearchParams } from '@/types/api'
 
-export function useFlows(params: Omit<FlowSearchParams, 'cursor'>) {
+export function useFlows(params: Omit<FlowSearchParams, 'cursor'>, options?: { enabled?: boolean }) {
   const apiBaseUrl = useAppStore((state) => state.apiBaseUrl)
   const apiKey = useAppStore((state) => state.apiKey)
   const setLastApiLatency = useAppStore((state) => state.setLastApiLatency)
@@ -17,6 +17,7 @@ export function useFlows(params: Omit<FlowSearchParams, 'cursor'>) {
   return useInfiniteQuery({
     queryKey: ['flows', params, apiBaseUrl, Boolean(apiKey)],
     initialPageParam: undefined as string | undefined,
+    enabled: options?.enabled !== false,
     queryFn: async ({ pageParam, signal }) => {
       const queryParams: FlowSearchParams = pageParam
         ? { ...params, cursor: pageParam }

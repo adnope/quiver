@@ -2,9 +2,15 @@ import { MaterialIcon } from '@/components/shell/MaterialIcon'
 import { Button } from '@/components/ui/button'
 import { MetricAreaChart } from '@/components/dashboard/MetricAreaChart'
 import { formatMetricValue } from '@/lib/format'
-import { buildHistoryChart, type MetricRange, type MetricWidget } from '@/lib/metrics-parser'
+import {
+  buildHistoryChart,
+  liveSnapshotsToHistoryPoints,
+  type MetricRange,
+  type MetricWidget,
+} from '@/lib/metrics-parser'
 import { useLiveMetrics, useMetricsHistory } from '@/hooks/useMetrics'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { MetricHistoryPoint, MetricSnapshot } from '@/types/api'
 
 const cards = [
   {
@@ -49,18 +55,54 @@ const ranges = [
 
 export function DashboardView() {
   const [range, setRange] = useState<MetricRange>('1h')
+  const [livePoints, setLivePoints] = useState<MetricHistoryPoint[]>([])
+  const previousLiveMetrics = useRef<MetricSnapshot[]>([])
   const live = useLiveMetrics()
-  const history = useMetricsHistory(range)
+  const history = useMetricsHistory(range, range !== '1m')
+
+  useEffect(() => {
+    const metrics = live.data?.metrics
+    if (!metrics) {
+      return
+    }
+    if (previousLiveMetrics.current.length === 0) {
+      previousLiveMetrics.current = metrics
+      return
+    }
+
+    const now = new Date()
+    const nextPoints = liveSnapshotsToHistoryPoints(
+      metrics,
+      previousLiveMetrics.current,
+      now,
+    )
+    previousLiveMetrics.current = metrics
+    const cutoff = now.getTime() - 60_000
+    setLivePoints((current) => [
+      ...current.filter((point) => Date.parse(point.timestamp) >= cutoff),
+      ...nextPoints,
+    ])
+  }, [live.data])
+
   const charts = useMemo(
-    () =>
-      Object.fromEntries(
+    () => {
+      const chartPoints = range === '1m'
+        ? livePoints
+        : (history.data?.points ?? [])
+      return Object.fromEntries(
         cards.map((card) => [
           card.widget,
-          buildHistoryChart(history.data?.points ?? [], card.widget, range),
+          buildHistoryChart(chartPoints, card.widget, range),
         ]),
-      ) as Record<MetricWidget, ReturnType<typeof buildHistoryChart>>,
-    [history.data?.points, range],
+      ) as Record<MetricWidget, ReturnType<typeof buildHistoryChart>>
+    },
+    [history.data?.points, livePoints, range],
   )
+  const chartIsLoading = range === '1m'
+    ? live.isLoading || livePoints.length === 0
+    : history.isLoading
+  const chartIsError = range === '1m' ? live.isError : history.isError
+  const refetchCharts = range === '1m' ? live.refetch : history.refetch
 
   return (
     <section className="space-y-4">
@@ -108,12 +150,12 @@ export function DashboardView() {
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
-                  {history.isError ? (
+                  {chartIsError ? (
                     <Button
                       type="button"
                       variant="ghost"
                       size="sm"
-                      onClick={() => void history.refetch()}
+                      onClick={() => void refetchCharts()}
                     >
                       Retry
                     </Button>
@@ -131,9 +173,9 @@ export function DashboardView() {
                 range={range}
                 data={chart.data}
                 series={chart.series}
-                isLoading={history.isLoading}
-                onRetry={() => void history.refetch()}
-                {...(history.isError
+                isLoading={chartIsLoading}
+                onRetry={() => void refetchCharts()}
+                {...(chartIsError
                   ? { error: 'Metrics unavailable. Try again.' }
                   : {})}
               />

@@ -270,6 +270,27 @@ export function buildLiveWidgetSnapshot(
   ])
 }
 
+export function liveSnapshotsToHistoryPoints(
+  current: ReadonlyArray<MetricSnapshot>,
+  previous: ReadonlyArray<MetricSnapshot>,
+  timestamp = new Date(),
+): MetricHistoryPoint[] {
+  const previousByKey = mapSnapshots(previous)
+  return current.map((snapshot) => {
+    const previousSnapshot = previousByKey.get(snapshotKey(snapshot))
+    return {
+      timestamp: timestamp.toISOString(),
+      name: snapshot.name,
+      labels: snapshot.labels ?? null,
+      value: snapshot.value,
+      delta: Math.max(
+        0,
+        snapshot.value - (previousSnapshot?.value ?? snapshot.value),
+      ),
+    }
+  })
+}
+
 function buildHistoricalWidgetPoints(
   points: ReadonlyArray<MetricHistoryPoint>,
   widget: MetricWidget,

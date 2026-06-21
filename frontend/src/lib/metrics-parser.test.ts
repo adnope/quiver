@@ -3,6 +3,7 @@ import {
   buildHistoryChart,
   buildLiveWidgetSnapshot,
   labelForMetric,
+  liveSnapshotsToHistoryPoints,
   metricWidgetForName,
   parsePrometheusMetrics,
 } from '@/lib/metrics-parser'
@@ -94,6 +95,42 @@ ignored_bucket{le="+Inf"} +Inf
     expect(chart.data[0]?.rest_json).toBe(25)
     expect(chart.data[0]?.zeek_conn_json).toBe(0)
     expect(chart.data[0]?.total).toBe(25)
+  })
+
+  it('converts live snapshots into one-second history deltas', () => {
+    const previous: MetricSnapshot[] = [
+      {
+        name: 'flow_records_normalized_total',
+        labels: { source_type: 'rest_json' },
+        value: 100,
+      },
+      {
+        name: 'flow_records_failed_total',
+        labels: { reason: 'validation_failed' },
+        value: 10,
+      },
+    ]
+    const current: MetricSnapshot[] = [
+      {
+        name: 'flow_records_normalized_total',
+        labels: { source_type: 'rest_json' },
+        value: 112,
+      },
+      {
+        name: 'flow_records_failed_total',
+        labels: { reason: 'validation_failed' },
+        value: 2,
+      },
+    ]
+
+    const points = liveSnapshotsToHistoryPoints(
+      current,
+      previous,
+      new Date('2026-06-22T10:00:01Z'),
+    )
+
+    expect(points.map((point) => point.delta)).toEqual([12, 0])
+    expect(points.every((point) => point.timestamp === '2026-06-22T10:00:01.000Z')).toBe(true)
   })
 
   it('derives DB latency from duration total and count deltas', () => {

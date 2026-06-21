@@ -19,16 +19,18 @@ export function useLiveMetrics() {
   })
 }
 
-export function useMetricsHistory(range: MetricRange) {
+export function useMetricsHistory(range: MetricRange, enabled = true) {
   const apiBaseUrl = useAppStore((state) => state.apiBaseUrl)
   const apiKey = useAppStore((state) => state.apiKey)
 
   return useQuery({
     queryKey: ['metrics', 'history', range, apiBaseUrl, Boolean(apiKey)],
+    enabled,
     queryFn: ({ signal }) =>
       getMetricsHistory(range, { baseUrl: apiBaseUrl, apiKey, signal }),
     retry: 2,
     staleTime: 10_000,
+    refetchInterval: 10_000,
     gcTime: 5 * 60_000,
   })
 }
