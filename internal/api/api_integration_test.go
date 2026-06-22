@@ -210,7 +210,6 @@ func TestAPIIntegrationWithTimescaleDB(t *testing.T) {
 	}
 }
 
-
 func validDomainRecord(id string, idempotencyKey string, start time.Time, src, dst string, dstPort uint16, bytes uint64, packets uint64) domain.NormalizedFlowRecord {
 	srcPort := uint16(12345)
 	return domain.NormalizedFlowRecord{

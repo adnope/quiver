@@ -2,6 +2,8 @@ services:
   timescaledb:
     image: timescale/timescaledb:latest-pg17
     container_name: ${COMPOSE_PROJECT_NAME:-quiver}-timescaledb
+    # cpus: 2.0
+    # mem_limit: 2g
     env_file:
       - .env
     ports:
@@ -11,10 +13,22 @@ services:
       interval: 3s
       timeout: 3s
       retries: 10
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
 
   kafka:
-    image: confluentinc/cp-kafka:8.2.2
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM edenhill/kcat:1.7.1 AS kcat
+        FROM confluentinc/cp-kafka:8.2.2
+        USER root
+        COPY --from=kcat / /opt/kcat/
+        RUN mkdir -p /tmp/kraft-combined-logs && chown appuser:appuser /tmp/kraft-combined-logs
+        USER appuser
     container_name: ${COMPOSE_PROJECT_NAME:-quiver}-kafka
+    # cpus: 1.0
+    # mem_limit: 1024m
     ports:
       - "${KAFKA_HOST_PORT:-9094}:9094"
     environment:
@@ -34,14 +48,18 @@ services:
       KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
       CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
     healthcheck:
-      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      test: ["CMD-SHELL", "LD_LIBRARY_PATH=/opt/kcat/lib:/opt/kcat/usr/lib /opt/kcat/lib/ld-musl-x86_64.so.1 /opt/kcat/usr/bin/kcat -b localhost:9092 -L >/dev/null"]
       interval: 3s
       timeout: 3s
       retries: 15
+    volumes:
+      - kafka_data:/tmp/kraft-combined-logs
 
   migration:
     image: migrate/migrate:v4.19.1
     container_name: ${COMPOSE_PROJECT_NAME:-quiver}-migration
+    # cpus: 0.25
+    # mem_limit: 128m
     volumes:
       - ./internal/storage/postgres/migrations:/migrations
     command: -path=/migrations -database="${QUIVER_DATABASE_DSN}" up
@@ -51,6 +69,8 @@ services:
 
   quiver:
     build: .
+    # cpus: 1
+    # mem_limit: 256m
     command: ["-config", "${QUIVER_CONFIG:-/configs/quiver.dev.yaml}"]
     env_file:
       - .env
@@ -72,6 +92,8 @@ services:
   quiver-lb:
     image: nginx:alpine
     container_name: ${COMPOSE_PROJECT_NAME:-quiver}-lb
+    # cpus: 0.10
+    # mem_limit: 128m
     env_file:
       - .env
     ports:
@@ -106,6 +128,8 @@ services:
       context: .
       dockerfile: Dockerfile.client
     container_name: ${COMPOSE_PROJECT_NAME:-quiver}-client
+    # cpus: 0.15
+    # mem_limit: 128m
     command: ["--backend-url", "http://quiver-lb:8080", "--api-key", "${NETFLOW_GATEWAY_DEMO_KEY}", "--listen-addr", "0.0.0.0:2055"]
     env_file:
       - .env
@@ -114,3 +138,7 @@ services:
     depends_on:
       quiver-lb:
         condition: service_started
+
+volumes:
+  timescaledb_data:
+  kafka_data:

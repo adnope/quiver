@@ -57,8 +57,10 @@ func (s *MetricsSaver) run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			// Save one final snapshot before exiting
-			s.saveSnapshot(context.Background())
+			// Preserve context values while allowing a bounded final write after cancellation.
+			finalCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			s.saveSnapshot(finalCtx)
+			cancel()
 			return
 		case <-ticker.C:
 			s.saveSnapshot(ctx)
@@ -90,7 +92,7 @@ func (s *MetricsSaver) saveSnapshot(ctx context.Context) {
 		s.logger.Error("failed to prepare statement for metrics saving", slog.Any("error", err))
 		return
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	for _, snap := range snapshots {
 		labelsJSON, err := json.Marshal(snap.Labels)

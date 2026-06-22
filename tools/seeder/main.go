@@ -201,7 +201,7 @@ func main() {
 					for _, row := range localBatch {
 						flatArgs = append(flatArgs, row...)
 					}
-					
+
 					for attempt := 1; attempt <= 3; attempt++ {
 						_, err := db.Exec(sqlStr, flatArgs...)
 						if err == nil {
@@ -233,7 +233,7 @@ func main() {
 			// Random time within this specific day
 			offsetSeconds := r.Intn(24 * 3600)
 			eventStart := dayStart.Add(time.Duration(offsetSeconds) * time.Second)
-			
+
 			// Realistic traffic template
 			tpl := templates[r.Intn(len(templates))]
 
@@ -273,7 +273,7 @@ func main() {
 			if packetsVal == 0 {
 				packetsVal = 1
 			}
-			bytesVal := uint64(packetsVal * uint64(tpl.avgBytes + r.Int63n(100)))
+			bytesVal := uint64(packetsVal * uint64(tpl.avgBytes+r.Int63n(100)))
 
 			// Sources mapping
 			sourceIndex := r.Intn(3)
@@ -319,39 +319,39 @@ func main() {
 
 			// Scan fields in query order
 			row := []any{
-				id,                                   // id
-				"flow.v1",                            // schema_version
-				idKey,                                // idempotency_key
-				rawEventID,                           // raw_event_id
-				sourceType,                           // source_type
-				collectorID,                          // collector_id
-				sourceHost,                           // source_host
-				sourceIPStr,                          // source_ip
-				eventStart.Add(2 * time.Second),      // ingested_at
-				eventStart.Add(3 * time.Second),      // normalized_at
-				eventStart,                           // event_start_time
-				eventEnd,                             // event_end_time
-				durationMS,                           // duration_ms
-				srcIP,                                // src_ip
-				dstIP,                                // dst_ip
-				int(srcPortVal),                      // src_port
-				int(dstPortVal),                      // dst_port
-				4,                                    // ip_version
-				tpl.protocol,                         // transport_protocol
-				tpl.protocolNumber,                   // protocol_number
-				int64(bytesVal),                      // bytes
-				int64(packetsVal),                    // packets
-				tcpFlags,                             // tcp_flags
-				"ESTABLISHED",                        // flow_state
-				direction,                            // direction
-				10,                                   // input_interface
-				11,                                   // output_interface
-				"172.20.0.1",                         // next_hop_ip
-				tpl.app,                              // application_protocol
-				1,                                    // sampling_rate
-				"ok",                                 // normalization_status
-				nil,                                  // normalization_error
-				attributesJson,                       // attributes
+				id,                              // id
+				"flow.v1",                       // schema_version
+				idKey,                           // idempotency_key
+				rawEventID,                      // raw_event_id
+				sourceType,                      // source_type
+				collectorID,                     // collector_id
+				sourceHost,                      // source_host
+				sourceIPStr,                     // source_ip
+				eventStart.Add(2 * time.Second), // ingested_at
+				eventStart.Add(3 * time.Second), // normalized_at
+				eventStart,                      // event_start_time
+				eventEnd,                        // event_end_time
+				durationMS,                      // duration_ms
+				srcIP,                           // src_ip
+				dstIP,                           // dst_ip
+				int(srcPortVal),                 // src_port
+				int(dstPortVal),                 // dst_port
+				4,                               // ip_version
+				tpl.protocol,                    // transport_protocol
+				tpl.protocolNumber,              // protocol_number
+				int64(bytesVal),                 // bytes
+				int64(packetsVal),               // packets
+				tcpFlags,                        // tcp_flags
+				"ESTABLISHED",                   // flow_state
+				direction,                       // direction
+				10,                              // input_interface
+				11,                              // output_interface
+				"172.20.0.1",                    // next_hop_ip
+				tpl.app,                         // application_protocol
+				1,                               // sampling_rate
+				"ok",                            // normalization_status
+				nil,                             // normalization_error
+				attributesJson,                  // attributes
 			}
 
 			jobs <- row

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -317,4 +318,78 @@ func TestProxyHandlerValidationAndErrors(t *testing.T) {
 			t.Errorf("expected 0 accepted, 1 rejected; got %+v", resp)
 		}
 	})
+}
+
+func TestProxyHandlerEnforcesBodyAndBatchLimits(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Config{}
+	cfg.API.MaxRequestBodyBytes = 64
+	cfg.API.RateLimits.Ingest.RequestsPerMinute = 60
+	cfg.QuiverClientGateways = []config.QuiverClientGatewayConfig{{
+		Name:       "client-1",
+		SourceHost: "gateway-host-01",
+		KeyEnv:     "CLIENT_GATEWAY_KEY",
+	}}
+	env := func(key string) string {
+		if key == "CLIENT_GATEWAY_KEY" {
+			return "valid-gateway-key"
+		}
+		return ""
+	}
+	server, err := NewServerWithCollectors(
+		cfg,
+		nil,
+		nil,
+		nil,
+		env,
+		nil,
+		StaticHealthChecker{Value: HealthOK},
+		[]InjectableCollector{&mockCollector{}},
+	)
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/ingest/proxy-netflow",
+		bytes.NewReader([]byte(`{"records":[{"source_ip":"192.0.2.1","packet_data":"`+strings.Repeat("A", 80)+`"}]}`)),
+	)
+	req.Header.Set(APIKeyHeader, "valid-gateway-key")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized body status = %d, want %d", w.Code, http.StatusRequestEntityTooLarge)
+	}
+
+	cfg.API.MaxRequestBodyBytes = config.DefaultMaxRequestBodyBytes
+	server, err = NewServerWithCollectors(
+		cfg,
+		nil,
+		nil,
+		nil,
+		env,
+		nil,
+		StaticHealthChecker{Value: HealthOK},
+		[]InjectableCollector{&mockCollector{}},
+	)
+	if err != nil {
+		t.Fatalf("create batch-limit server: %v", err)
+	}
+	records := make([]ProxyRecord, config.DefaultMaxBatchSize+1)
+	for i := range records {
+		records[i] = ProxyRecord{SourceIP: "192.0.2.1", PacketData: "AA=="}
+	}
+	body, err := json.Marshal(ProxyRequest{Records: records})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader(body))
+	req.Header.Set(APIKeyHeader, "valid-gateway-key")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("oversized batch status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
 }

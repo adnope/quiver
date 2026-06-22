@@ -328,10 +328,10 @@ func MetricsHistoryHandler(db *sql.DB) http.Handler {
 			ORDER BY bucket ASC
 		`, interval, since)
 		if err != nil {
-			writeError(w, r, http.StatusInternalServerError, CodeInternalError, "Failed to query metrics history: "+err.Error(), nil)
+			writeError(w, r, http.StatusInternalServerError, CodeInternalError, "failed to query metrics history", nil)
 			return
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 
 		points := make([]MetricHistoryPoint, 0)
 		for rows.Next() {
@@ -339,7 +339,7 @@ func MetricsHistoryHandler(db *sql.DB) http.Handler {
 			var labelsJSON []byte
 			err := rows.Scan(&p.Timestamp, &p.Name, &labelsJSON, &p.Delta, &p.Value)
 			if err != nil {
-				writeError(w, r, http.StatusInternalServerError, CodeInternalError, "Failed to scan metrics history point: "+err.Error(), nil)
+				writeError(w, r, http.StatusInternalServerError, CodeInternalError, "failed to read metrics history", nil)
 				return
 			}
 			if len(labelsJSON) > 0 {
@@ -354,4 +354,3 @@ func MetricsHistoryHandler(db *sql.DB) http.Handler {
 		writeJSON(w, http.StatusOK, MetricHistoryResponse{Points: points})
 	})
 }
-

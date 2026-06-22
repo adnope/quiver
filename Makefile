@@ -13,7 +13,7 @@ QUIVER_DATABASE_DSN ?=
 OPENAPI_DIR ?= api/openapi
 OPENAPI_FILE ?= $(OPENAPI_DIR)/quiver.v1.yaml
 
-.PHONY: build build-quiver build-client frontend-install frontend-typecheck frontend-test frontend-build fmt lint test test-unit test-up test-down test-integration test-all test-race coverage proto proto-check swagger swagger-check openapi openapi-check migrate-up dev-up dev-down dev-demo dev-load-smoke verify-demo verify-vector-shipper
+.PHONY: build build-quiver build-client frontend-install frontend-typecheck frontend-test frontend-build fmt lint test test-unit test-up test-down test-integration test-all test-race coverage proto proto-check swagger swagger-check openapi openapi-check migrate-up dev-up dev-down dev-demo load-smoke dev-load-smoke verify-demo verify-vector-shipper
 
 build: build-quiver build-client
 
@@ -138,5 +138,15 @@ verify-demo:
 verify-vector-shipper:
 	./scripts/verify-vector-shipper.sh
 
-dev-load-smoke:
-	$(GO) run tools/loadsmoke/main.go -rest http://localhost:$(QUIVER_HOST_PORT) -udp localhost:$(NETFLOW_PORT) -duration 30
+load-smoke:
+	$(GO) run tools/loadsmoke/main.go \
+		-rest http://localhost:$(QUIVER_HOST_PORT) \
+		-udp localhost:$(NETFLOW_PORT) \
+		-db "$(QUIVER_DATABASE_DSN_HOST)" \
+		-zeek-mode http \
+		-admin-key "$(QUIVER_DEMO_ADMIN_API_KEY)" \
+		-client-key "$(REST_INGEST_DEMO_CLIENT_KEY)" \
+		-zeek-key "$(ZEEK_SHIPPER_DEMO_KEY)" \
+		-duration 30
+
+dev-load-smoke: load-smoke

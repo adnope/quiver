@@ -129,8 +129,6 @@ func (r *FlowRepository) DB() *sql.DB {
 	return r.db
 }
 
-
-
 func (r *FlowRepository) InsertFlowRecords(ctx context.Context, records []domain.NormalizedFlowRecord) (InsertResult, error) {
 	if ctx == nil {
 		return InsertResult{}, fmt.Errorf("%w: context is nil", ErrInvalidFlowQuery)
@@ -150,9 +148,26 @@ func (r *FlowRepository) InsertFlowRecords(ctx context.Context, records []domain
 		}
 	}
 
-	var builder strings.Builder
-	args := make([]any, 0, len(records)*33)
-	builder.WriteString(`INSERT INTO quiver.flow_records (
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return InsertResult{}, fmt.Errorf("begin flow insert transaction: %w", err)
+	}
+
+	const columnsPerRecord = 33
+	const maxRecordsPerChunk = 65535 / columnsPerRecord // 1985
+
+	var totalInserted int64
+
+	for startIdx := 0; startIdx < len(records); startIdx += maxRecordsPerChunk {
+		endIdx := startIdx + maxRecordsPerChunk
+		if endIdx > len(records) {
+			endIdx = len(records)
+		}
+		chunk := records[startIdx:endIdx]
+
+		var builder strings.Builder
+		args := make([]any, 0, len(chunk)*columnsPerRecord)
+		builder.WriteString(`INSERT INTO quiver.flow_records (
 id, schema_version, idempotency_key, raw_event_id,
 source_type, collector_id, source_host, source_ip, ingested_at, normalized_at,
 event_start_time, event_end_time, duration_ms,
@@ -161,48 +176,50 @@ bytes, packets, tcp_flags, flow_state,
 direction, input_interface, output_interface, next_hop_ip,
 application_protocol, sampling_rate, normalization_status, normalization_error, attributes
 ) VALUES `)
-	for i, record := range records {
-		if i > 0 {
-			builder.WriteString(", ")
-		}
-		builder.WriteString("(")
-		for col := 0; col < 33; col++ {
-			if col > 0 {
+		for i, record := range chunk {
+			if i > 0 {
 				builder.WriteString(", ")
 			}
-			fmt.Fprintf(&builder, "$%d", len(args)+col+1)
+			builder.WriteString("(")
+			for col := 0; col < columnsPerRecord; col++ {
+				if col > 0 {
+					builder.WriteString(", ")
+				}
+				fmt.Fprintf(&builder, "$%d", len(args)+col+1)
+			}
+			builder.WriteString(")")
+			args = append(args, insertArgs(record)...)
 		}
-		builder.WriteString(")")
-		args = append(args, insertArgs(record)...)
-	}
-	builder.WriteString(" ON CONFLICT (event_start_time, idempotency_key) DO NOTHING")
+		builder.WriteString(" ON CONFLICT (event_start_time, idempotency_key) DO NOTHING")
 
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return InsertResult{}, fmt.Errorf("begin flow insert transaction: %w", err)
-	}
-	result, execErr := tx.ExecContext(ctx, builder.String(), args...)
-	if execErr != nil {
-		rollbackErr := tx.Rollback()
-		if rollbackErr != nil {
-			return InsertResult{}, errors.Join(
-				fmt.Errorf("insert flow records: %w", execErr),
-				fmt.Errorf("rollback flow insert transaction: %w", rollbackErr),
-			)
+		result, execErr := tx.ExecContext(ctx, builder.String(), args...)
+		if execErr != nil {
+			rollbackErr := tx.Rollback()
+			if rollbackErr != nil {
+				return InsertResult{}, errors.Join(
+					fmt.Errorf("insert flow records: %w", execErr),
+					fmt.Errorf("rollback flow insert transaction: %w", rollbackErr),
+				)
+			}
+			return InsertResult{}, fmt.Errorf("insert flow records: %w", execErr)
 		}
-		return InsertResult{}, fmt.Errorf("insert flow records: %w", execErr)
+
+		inserted, err := result.RowsAffected()
+		if err != nil {
+			_ = tx.Rollback()
+			return InsertResult{}, fmt.Errorf("read inserted flow row count: %w", err)
+		}
+		totalInserted += inserted
 	}
+
 	if err := tx.Commit(); err != nil {
 		return InsertResult{}, fmt.Errorf("commit flow insert transaction: %w", err)
 	}
-	inserted, err := result.RowsAffected()
-	if err != nil {
-		return InsertResult{}, fmt.Errorf("read inserted flow row count: %w", err)
-	}
+
 	return InsertResult{
 		Attempted:    len(records),
-		Inserted:     int(inserted),
-		Deduplicated: len(records) - int(inserted),
+		Inserted:     int(totalInserted),
+		Deduplicated: len(records) - int(totalInserted),
 	}, nil
 }
 
@@ -215,7 +232,7 @@ func (r *FlowRepository) SearchFlows(ctx context.Context, query FlowSearchQuery)
 	args = append(args, limit)
 	// security: SQL fragments are fixed allow-listed clauses; all request values remain parameterized.
 	// #nosec G202
-	sqlQuery := `SELECT ` + flowRecordColumns() + `
+	sqlQuery := `SELECT ` + flowRecordColumns + `
 FROM quiver.flow_records
 WHERE ` + where + `
 ORDER BY event_start_time DESC, id DESC
@@ -261,9 +278,9 @@ func (r *FlowRepository) GetFlowByID(ctx context.Context, id string, eventStartT
 	// #nosec G202
 	var row *sql.Row
 	if eventStartTime != nil {
-		row = r.db.QueryRowContext(
+		row = r.db.QueryRowContext( //nolint:gosec // Projection is a fixed internal column list; values remain parameterized.
 			ctx,
-			`SELECT `+flowRecordColumns()+`
+			`SELECT `+flowRecordColumns+`
 FROM quiver.flow_records
 WHERE event_start_time = $1 AND id = $2
 LIMIT 1`,
@@ -271,9 +288,9 @@ LIMIT 1`,
 			id,
 		)
 	} else {
-		row = r.db.QueryRowContext(
+		row = r.db.QueryRowContext( //nolint:gosec // Projection is a fixed internal column list; values remain parameterized.
 			ctx,
-			`SELECT `+flowRecordColumns()+`
+			`SELECT `+flowRecordColumns+`
 FROM quiver.flow_records
 WHERE id = $1
 LIMIT 1`,
@@ -443,15 +460,13 @@ func insertArgs(record domain.NormalizedFlowRecord) []any {
 	}
 }
 
-func flowRecordColumns() string {
-	return `id, schema_version, idempotency_key, raw_event_id,
+const flowRecordColumns = `id, schema_version, idempotency_key, raw_event_id,
 source_type, collector_id, source_host, source_ip, ingested_at, normalized_at,
 event_start_time, event_end_time, duration_ms,
 src_ip, dst_ip, src_port, dst_port, ip_version, transport_protocol, protocol_number,
 bytes, packets, tcp_flags, flow_state,
 direction, input_interface, output_interface, next_hop_ip,
 application_protocol, sampling_rate, normalization_status, normalization_error, attributes`
-}
 
 type scanner interface {
 	Scan(dest ...any) error
