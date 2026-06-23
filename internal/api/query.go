@@ -16,7 +16,7 @@ import (
 
 type FlowStore interface {
 	SearchFlows(ctx context.Context, query postgres.FlowSearchQuery) (postgres.FlowSearchResult, error)
-	GetFlowByID(ctx context.Context, id string) (domain.NormalizedFlowRecord, bool, error)
+	GetFlowByID(ctx context.Context, id string, eventStartTime *time.Time) (domain.NormalizedFlowRecord, bool, error)
 }
 
 type QueryHandler struct {
@@ -165,7 +165,15 @@ func (h *QueryHandler) Lookup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, CodeInvalidParameter, "id must be uuidv7", nil)
 		return
 	}
-	record, found, err := h.store.GetFlowByID(r.Context(), id)
+	var eventStartTime *time.Time
+	if startTimeRaw := r.URL.Query().Get("start_time"); startTimeRaw != "" {
+		if t, err := time.Parse(time.RFC3339Nano, startTimeRaw); err == nil {
+			eventStartTime = &t
+		} else if t, err := time.Parse(time.RFC3339, startTimeRaw); err == nil {
+			eventStartTime = &t
+		}
+	}
+	record, found, err := h.store.GetFlowByID(r.Context(), id, eventStartTime)
 	if err != nil {
 		writeError(w, r, http.StatusServiceUnavailable, CodeDatabaseUnavailable, "database unavailable", nil)
 		return

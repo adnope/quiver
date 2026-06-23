@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/adnope/quiver/internal/config"
@@ -136,27 +137,72 @@ func (h *IngestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := IngestResponse{Errors: []IngestRecordError{}}
+	type publishResult struct {
+		valErr *recordValidationError
+		pubErr error
+	}
+
+	results := make([]publishResult, len(request.Records))
+	sem := make(chan struct{}, 50)
+	var wg sync.WaitGroup
+
 	for index, record := range request.Records {
-		event, recordErr := h.recordToEvent(r, principal.SourceHost, record)
-		if recordErr != nil {
-			response.Rejected++
-			response.Errors = append(response.Errors, IngestRecordError{
-				Index:   index,
-				Code:    recordErr.Code,
-				Message: recordErr.Message,
-			})
-			continue
-		}
-		if err := h.publisher.PublishRaw(r.Context(), event); err != nil {
-			if errors.Is(err, kafka.ErrQueueFull) {
-				writeError(w, r, http.StatusTooManyRequests, CodeRateLimitExceeded, "publisher queue full", nil)
+		wg.Add(1)
+		go func(idx int, rec IngestRecord) {
+			defer wg.Done()
+
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			event, valErr := h.recordToEvent(r, principal.SourceHost, rec)
+			if valErr != nil {
+				results[idx] = publishResult{valErr: valErr}
 				return
 			}
-			writeError(w, r, http.StatusServiceUnavailable, CodeServiceUnavailable, "kafka unavailable", nil)
-			return
+
+			if err := h.publisher.PublishRaw(r.Context(), event); err != nil {
+				results[idx] = publishResult{pubErr: err}
+				return
+			}
+		}(index, record)
+	}
+
+	wg.Wait()
+
+	// Check if there was any publisher error
+	var queueFullErr error
+	var otherPubErr error
+	for _, res := range results {
+		if res.pubErr != nil {
+			if errors.Is(res.pubErr, kafka.ErrQueueFull) {
+				queueFullErr = res.pubErr
+			} else {
+				otherPubErr = res.pubErr
+			}
 		}
-		response.Accepted++
+	}
+
+	if queueFullErr != nil {
+		writeError(w, r, http.StatusTooManyRequests, CodeRateLimitExceeded, "publisher queue full", nil)
+		return
+	}
+	if otherPubErr != nil {
+		writeError(w, r, http.StatusServiceUnavailable, CodeServiceUnavailable, "kafka unavailable", nil)
+		return
+	}
+
+	response := IngestResponse{Errors: []IngestRecordError{}}
+	for idx, res := range results {
+		if res.valErr != nil {
+			response.Rejected++
+			response.Errors = append(response.Errors, IngestRecordError{
+				Index:   idx,
+				Code:    res.valErr.Code,
+				Message: res.valErr.Message,
+			})
+		} else {
+			response.Accepted++
+		}
 	}
 	writeJSON(w, http.StatusAccepted, response)
 }

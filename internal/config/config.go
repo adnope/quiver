@@ -15,13 +15,14 @@ import (
 )
 
 const (
-	DefaultMaxRequestBodyBytes = 5 * 1024 * 1024
-	DefaultMaxBatchSize        = 1000
-	DefaultMaxQueryWindow      = Duration(7 * dayDuration)
-	DefaultQueryLimit          = 100
-	DefaultMaxQueryLimit       = 1000
-	DefaultAggregationLimit    = 20
-	DefaultShutdownTimeout     = Duration(10 * time.Second)
+	DefaultMaxRequestBodyBytes       = 5 * 1024 * 1024
+	DefaultMaxBatchSize              = 1000
+	DefaultMaxStorageWriterBatchSize = 5000
+	DefaultMaxQueryWindow            = Duration(7 * dayDuration)
+	DefaultQueryLimit                = 100
+	DefaultMaxQueryLimit             = 1000
+	DefaultAggregationLimit          = 20
+	DefaultShutdownTimeout           = Duration(10 * time.Second)
 )
 
 const dayDuration = 24 * time.Hour
@@ -35,6 +36,7 @@ type Config struct {
 	StorageWriter        StorageWriterConfig         `yaml:"storage_writer"`
 	API                  APIConfig                   `yaml:"api"`
 	RestIngest           RESTIngestConfig            `yaml:"rest_ingest"`
+	ZeekIngest           ZeekIngestConfig            `yaml:"zeek_ingest"`
 	QuiverClientGateways []QuiverClientGatewayConfig `yaml:"quiver_client_gateways"`
 	Collectors           CollectorsConfig            `yaml:"collectors"`
 	DeadLetter           DeadLetterConfig            `yaml:"dead_letter"`
@@ -89,6 +91,7 @@ type StorageWriterConfig struct {
 	MaxRetries     int      `yaml:"max_retries"`
 	InitialBackoff Duration `yaml:"initial_backoff"`
 	MaxBackoff     Duration `yaml:"max_backoff"`
+	Concurrency    int      `yaml:"concurrency"`
 }
 
 type APIConfig struct {
@@ -145,6 +148,12 @@ type RESTAPIKeyConfig struct {
 	KeyEnv     string `yaml:"key_env"`
 }
 
+type ZeekIngestConfig struct {
+	Enabled      bool   `yaml:"enabled"`
+	CollectorID  string `yaml:"collector_id"`
+	MaxBatchSize int    `yaml:"max_batch_size"`
+}
+
 type QuiverClientGatewayConfig struct {
 	Name       string `yaml:"name"`
 	SourceHost string `yaml:"source_host"`
@@ -152,8 +161,7 @@ type QuiverClientGatewayConfig struct {
 }
 
 type CollectorsConfig struct {
-	NetFlowV5    []NetFlowV5CollectorConfig `yaml:"netflow_v5"`
-	ZeekConnJSON []ZeekCollectorConfig      `yaml:"zeek_conn_json"`
+	NetFlowV5 []NetFlowV5CollectorConfig `yaml:"netflow_v5"`
 }
 
 type NetFlowV5CollectorConfig struct {
@@ -175,17 +183,6 @@ func (n *NetFlowV5CollectorConfig) UnmarshalYAML(value *yaml.Node) error {
 	}
 	*n = NetFlowV5CollectorConfig(aux)
 	return nil
-}
-
-type ZeekCollectorConfig struct {
-	Enabled       bool     `yaml:"enabled"`
-	CollectorID   string   `yaml:"collector_id"`
-	SourceHost    string   `yaml:"source_host"`
-	FilePath      string   `yaml:"file_path"`
-	PollInterval  Duration `yaml:"poll_interval"`
-	StartPosition string   `yaml:"start_position"`
-	MaxLineBytes  int      `yaml:"max_line_bytes"`
-	StateKey      string   `yaml:"state_key"`
 }
 
 type DeadLetterConfig struct {
@@ -309,11 +306,12 @@ func Default() Config {
 			},
 		},
 		StorageWriter: StorageWriterConfig{
-			BatchSize:      1000,
+			BatchSize:      3000,
 			FlushInterval:  Duration(time.Second),
 			MaxRetries:     10,
 			InitialBackoff: Duration(100 * time.Millisecond),
 			MaxBackoff:     Duration(5 * time.Second),
+			Concurrency:    8,
 		},
 		API: APIConfig{
 			MaxRequestBodyBytes: DefaultMaxRequestBodyBytes,
@@ -331,6 +329,7 @@ func Default() Config {
 			Metrics: EndpointAuthConfig{AuthRequired: true},
 		},
 		RestIngest: RESTIngestConfig{MaxBatchSize: DefaultMaxBatchSize},
+		ZeekIngest: ZeekIngestConfig{MaxBatchSize: DefaultMaxBatchSize},
 		DeadLetter: DeadLetterConfig{MaxRawPacketBytes: 1500},
 		Shutdown:   ShutdownConfig{Timeout: DefaultShutdownTimeout},
 	}
@@ -356,6 +355,9 @@ func (c Config) Validate(lookupEnv func(string) string) error {
 		return err
 	}
 	if err := c.validateRESTIngest(lookupEnv); err != nil {
+		return err
+	}
+	if err := c.validateZeekIngest(); err != nil {
 		return err
 	}
 	if err := c.validateQuiverClientGateways(lookupEnv); err != nil {
@@ -510,8 +512,26 @@ func (c Config) validateRESTIngest(lookupEnv func(string) string) error {
 	return nil
 }
 
+func (c Config) validateZeekIngest() error {
+	if !c.ZeekIngest.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(c.ZeekIngest.CollectorID) == "" {
+		return fmt.Errorf("%w: zeek_ingest.collector_id is required", ErrInvalidConfig)
+	}
+	if c.ZeekIngest.MaxBatchSize <= 0 || c.ZeekIngest.MaxBatchSize > DefaultMaxBatchSize {
+		return fmt.Errorf("%w: zeek_ingest.max_batch_size must be within 1..1000", ErrInvalidConfig)
+	}
+	return nil
+}
+
 func (c Config) validateCollectors() error {
 	collectorIDs := map[string]struct{}{}
+	if c.ZeekIngest.Enabled {
+		if err := reserveCollectorID(collectorIDs, c.ZeekIngest.CollectorID); err != nil {
+			return err
+		}
+	}
 	for _, collector := range c.Collectors.NetFlowV5 {
 		if !collector.Enabled {
 			continue
@@ -521,32 +541,6 @@ func (c Config) validateCollectors() error {
 		}
 		if _, _, err := net.SplitHostPort(collector.ListenAddr); err != nil {
 			return fmt.Errorf("%w: netflow_v5.listen_addr must be host:port: %w", ErrInvalidConfig, err)
-		}
-	}
-	for _, collector := range c.Collectors.ZeekConnJSON {
-		if !collector.Enabled {
-			continue
-		}
-		if err := reserveCollectorID(collectorIDs, collector.CollectorID); err != nil {
-			return err
-		}
-		if strings.TrimSpace(collector.SourceHost) == "" {
-			return fmt.Errorf("%w: zeek_conn_json.source_host is required", ErrInvalidConfig)
-		}
-		if strings.TrimSpace(collector.FilePath) == "" {
-			return fmt.Errorf("%w: zeek_conn_json.file_path is required", ErrInvalidConfig)
-		}
-		if collector.PollInterval <= 0 {
-			return fmt.Errorf("%w: zeek_conn_json.poll_interval must be positive", ErrInvalidConfig)
-		}
-		if collector.StartPosition != "end" && collector.StartPosition != "beginning" {
-			return fmt.Errorf("%w: zeek_conn_json.start_position must be end or beginning", ErrInvalidConfig)
-		}
-		if collector.MaxLineBytes <= 0 {
-			return fmt.Errorf("%w: zeek_conn_json.max_line_bytes must be positive", ErrInvalidConfig)
-		}
-		if strings.TrimSpace(collector.StateKey) == "" {
-			return fmt.Errorf("%w: zeek_conn_json.state_key is required", ErrInvalidConfig)
 		}
 	}
 	return nil
@@ -623,8 +617,8 @@ func (c Config) validateStorage() error {
 }
 
 func (c Config) validateStorageWriter() error {
-	if c.StorageWriter.BatchSize <= 0 || c.StorageWriter.BatchSize > DefaultMaxBatchSize {
-		return fmt.Errorf("%w: storage_writer.batch_size must be within 1..1000", ErrInvalidConfig)
+	if c.StorageWriter.BatchSize <= 0 || c.StorageWriter.BatchSize > DefaultMaxStorageWriterBatchSize {
+		return fmt.Errorf("%w: storage_writer.batch_size must be within 1..5000", ErrInvalidConfig)
 	}
 	if c.StorageWriter.FlushInterval <= 0 {
 		return fmt.Errorf("%w: storage_writer.flush_interval must be positive", ErrInvalidConfig)
@@ -637,6 +631,9 @@ func (c Config) validateStorageWriter() error {
 	}
 	if c.StorageWriter.InitialBackoff > c.StorageWriter.MaxBackoff {
 		return fmt.Errorf("%w: storage_writer.initial_backoff cannot exceed max_backoff", ErrInvalidConfig)
+	}
+	if c.StorageWriter.Concurrency <= 0 {
+		return fmt.Errorf("%w: storage_writer.concurrency must be positive", ErrInvalidConfig)
 	}
 	return nil
 }

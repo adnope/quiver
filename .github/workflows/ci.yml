@@ -17,6 +17,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm --prefix frontend ci
+
+      - name: Run frontend typecheck
+        run: npm --prefix frontend run typecheck
+
+      - name: Run frontend tests
+        run: npm --prefix frontend run test
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -26,8 +42,8 @@ jobs:
       - name: Install golangci-lint
         run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
 
-      - name: Run golangci-lint
-        run: golangci-lint run cmd/... internal/...
+      - name: Run lint
+        run: make lint
 
       - name: Run govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
@@ -46,42 +62,21 @@ jobs:
       - name: API Spec (Swagger) Freshness Check
         run: make openapi-check
 
+      - name: Vector Shipper Verification
+        run: make verify-vector-shipper
+
       - name: Run Unit Tests
         run: make test-unit
 
-      - name: Setup environment file
-        run: cp .env.example .env
-
-      - name: Start Services (Docker Compose)
-        run: |
-          docker compose up -d --build
-          
-          # Wait for TimescaleDB to be healthy
-          for i in {1..30}; do
-            if docker exec ${COMPOSE_PROJECT_NAME:-quiver}-timescaledb pg_isready -U postgres -d quiver; then
-              echo "TimescaleDB is healthy!"
-              break
-            fi
-            echo "Waiting for TimescaleDB..."
-            sleep 2
-          done
-          
-          # Wait for Kafka to be healthy
-          for i in {1..30}; do
-            if docker exec ${COMPOSE_PROJECT_NAME:-quiver}-kafka kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1; then
-              echo "Kafka is healthy!"
-              break
-            fi
-            echo "Waiting for Kafka..."
-            sleep 2
-          done
-
+      - name: Start Integration Test Stack
+        run: make test-up
+      
       - name: Run Integration Tests
         run: make test-integration
-
+      
+      - name: Tear Down Integration Test Stack
+        if: always()
+        run: make test-down
+      
       - name: Run Demo Verification Script
         run: make verify-demo
-
-      - name: Tear down Services
-        if: always()
-        run: docker compose down -v

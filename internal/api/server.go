@@ -1,12 +1,14 @@
 package api
 
 import (
+	"database/sql"
 	"net/http"
 	"strings"
 
 	"github.com/adnope/quiver/internal/config"
 	"github.com/adnope/quiver/internal/kafka"
 	"github.com/adnope/quiver/internal/observability"
+	"github.com/adnope/quiver/internal/web"
 )
 
 type Server struct {
@@ -74,7 +76,7 @@ func NewServerWithCollectors(
 	if err != nil {
 		return nil, err
 	}
-	if flowStore != nil && cursorCodec == nil {
+	if (flowStore != nil || aggregationStore != nil) && cursorCodec == nil {
 		return nil, ErrInvalidCursor
 	}
 	limiter := NewRateLimiter(cfg.API.RateLimits)
@@ -84,6 +86,13 @@ func NewServerWithCollectors(
 		"POST /api/v1/ingest/flows",
 		route(metrics, "POST /api/v1/ingest/flows", RequestIDMiddleware(RequireScope(auth, limiter, ScopeIngest, ingestHandler))),
 	)
+	if cfg.ZeekIngest.Enabled {
+		zeekIngestHandler := NewZeekConnIngestHandler(cfg, publisher)
+		mux.Handle(
+			"POST /api/v1/ingest/zeek/conn",
+			route(metrics, "POST /api/v1/ingest/zeek/conn", RequestIDMiddleware(RequireScope(auth, limiter, ScopeIngest, zeekIngestHandler))),
+		)
+	}
 	proxyHandler := NewProxyHandler(cfg, netflowCollectors)
 	mux.Handle(
 		"POST /api/v1/ingest/proxy-netflow",
@@ -98,7 +107,7 @@ func NewServerWithCollectors(
 		"GET /api/v1/flows/",
 		route(metrics, "GET /api/v1/flows/{id}", RequestIDMiddleware(RequireScope(auth, limiter, ScopeQuery, http.HandlerFunc(queryHandler.Lookup)))),
 	)
-	aggregationHandler := NewAggregationHandler(cfg, aggregationStore)
+	aggregationHandler := NewAggregationHandler(cfg, aggregationStore, cursorCodec)
 	mux.Handle(
 		"GET /api/v1/aggregations/top-talkers",
 		route(metrics, "GET /api/v1/aggregations/top-talkers", RequestIDMiddleware(RequireScope(auth, limiter, ScopeQuery, http.HandlerFunc(aggregationHandler.TopTalkers)))),
@@ -121,7 +130,24 @@ func NewServerWithCollectors(
 		metricsHandler = RequestIDMiddleware(RequireScope(auth, limiter, ScopeMetrics, metricsHandler))
 	}
 	mux.Handle("GET /metrics", route(metrics, "GET /metrics", metricsHandler))
+
+	var db *sql.DB
+	if provider, ok := flowStore.(interface{ DB() *sql.DB }); ok {
+		db = provider.DB()
+	}
+
+	liveHandler := LiveMetricsHandler(metrics)
+	historyHandler := MetricsHistoryHandler(db)
+	if cfg.API.Metrics.AuthRequired {
+		liveHandler = RequestIDMiddleware(RequireScope(auth, limiter, ScopeMetrics, liveHandler))
+		historyHandler = RequestIDMiddleware(RequireScope(auth, limiter, ScopeMetrics, historyHandler))
+	}
+	mux.Handle("GET /api/v1/metrics/live", route(metrics, "GET /api/v1/metrics/live", liveHandler))
+	mux.Handle("GET /api/v1/metrics/history", route(metrics, "GET /api/v1/metrics/history", historyHandler))
+	mux.Handle("GET /", route(metrics, "GET /", FrontendHandler(web.DistFS())))
+
 	return &Server{mux: mux}, nil
+
 }
 
 func (s *Server) Handler() http.Handler {

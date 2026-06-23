@@ -183,7 +183,7 @@ func (s *fakeFlowStore) SearchFlows(_ context.Context, query postgres.FlowSearch
 	return s.searchResult, nil
 }
 
-func (s *fakeFlowStore) GetFlowByID(context.Context, string) (domain.NormalizedFlowRecord, bool, error) {
+func (s *fakeFlowStore) GetFlowByID(context.Context, string, *time.Time) (domain.NormalizedFlowRecord, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lookupRecord, s.lookupFound, nil

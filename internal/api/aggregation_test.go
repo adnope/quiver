@@ -98,11 +98,68 @@ func TestAggregationEndpoints(t *testing.T) {
 	}
 }
 
+func TestAggregationCursorPagination(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeAggregationStore{
+		talkers: []postgres.TopTalkerRow{
+			{IP: netip.MustParseAddr("192.168.1.10"), Metric: postgres.AggregationMetricBytes, Value: 100, FlowCount: 2},
+			{IP: netip.MustParseAddr("192.168.1.20"), Metric: postgres.AggregationMetricBytes, Value: 90, FlowCount: 1},
+		},
+	}
+	handler := newQueryTestServer(t, nil, store)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, newQueryRequest(
+		"/api/v1/aggregations/top-talkers?from=2026-06-16T10:00:00Z&to=2026-06-16T11:00:00Z&direction=src&limit=1",
+		"query-key",
+	))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("first page status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	var firstPage TopTalkersResponse
+	decodeJSON(t, recorder, &firstPage)
+	if len(firstPage.Items) != 1 || firstPage.NextCursor == "" || firstPage.Limit != 1 {
+		t.Fatalf("first page = %+v", firstPage)
+	}
+	if store.lastTalkers.Limit != 2 {
+		t.Fatalf("store limit = %d, want limit+1", store.lastTalkers.Limit)
+	}
+
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, newQueryRequest(
+		"/api/v1/aggregations/top-talkers?from=2026-06-16T10:00:00Z&to=2026-06-16T11:00:00Z&direction=src&limit=1&cursor="+firstPage.NextCursor,
+		"query-key",
+	))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("second page status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	if store.lastTalkers.Cursor == nil || store.lastTalkers.Cursor.IP == nil || store.lastTalkers.Cursor.IP.String() != "192.168.1.10" {
+		t.Fatalf("decoded cursor = %+v", store.lastTalkers.Cursor)
+	}
+
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, newQueryRequest(
+		"/api/v1/aggregations/top-ports?from=2026-06-16T10:00:00Z&to=2026-06-16T11:00:00Z&direction=src&limit=1&cursor="+firstPage.NextCursor,
+		"query-key",
+	))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("wrong endpoint cursor status = %d", recorder.Code)
+	}
+	var errResponse ErrorResponse
+	decodeJSON(t, recorder, &errResponse)
+	if errResponse.Error.Code != CodeInvalidCursor {
+		t.Fatalf("error code = %q", errResponse.Error.Code)
+	}
+}
+
 type fakeAggregationStore struct {
-	talkers     []postgres.TopTalkerRow
-	ports       []postgres.TopPortRow
-	protocols   []postgres.ProtocolRow
-	lastTalkers postgres.AggregationQuery
+	talkers       []postgres.TopTalkerRow
+	ports         []postgres.TopPortRow
+	protocols     []postgres.ProtocolRow
+	lastTalkers   postgres.AggregationQuery
+	lastPorts     postgres.AggregationQuery
+	lastProtocols postgres.AggregationQuery
 }
 
 func (s *fakeAggregationStore) TopTalkers(_ context.Context, query postgres.AggregationQuery) ([]postgres.TopTalkerRow, error) {
@@ -110,10 +167,12 @@ func (s *fakeAggregationStore) TopTalkers(_ context.Context, query postgres.Aggr
 	return s.talkers, nil
 }
 
-func (s *fakeAggregationStore) TopPorts(context.Context, postgres.AggregationQuery) ([]postgres.TopPortRow, error) {
+func (s *fakeAggregationStore) TopPorts(_ context.Context, query postgres.AggregationQuery) ([]postgres.TopPortRow, error) {
+	s.lastPorts = query
 	return s.ports, nil
 }
 
-func (s *fakeAggregationStore) ProtocolDistribution(context.Context, postgres.AggregationQuery) ([]postgres.ProtocolRow, error) {
+func (s *fakeAggregationStore) ProtocolDistribution(_ context.Context, query postgres.AggregationQuery) ([]postgres.ProtocolRow, error) {
+	s.lastProtocols = query
 	return s.protocols, nil
 }

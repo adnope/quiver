@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/netip"
@@ -28,14 +29,20 @@ type ProxyRequest struct {
 }
 
 type ProxyHandler struct {
-	cfg        config.Config
-	collectors []InjectableCollector
+	maxBatchSize        int
+	maxRequestBodyBytes int64
+	collectors          []InjectableCollector
 }
 
 func NewProxyHandler(cfg config.Config, collectors []InjectableCollector) *ProxyHandler {
+	maxRequestBodyBytes := cfg.API.MaxRequestBodyBytes
+	if maxRequestBodyBytes <= 0 {
+		maxRequestBodyBytes = config.DefaultMaxRequestBodyBytes
+	}
 	return &ProxyHandler{
-		cfg:        cfg,
-		collectors: collectors,
+		maxBatchSize:        config.DefaultMaxBatchSize,
+		maxRequestBodyBytes: maxRequestBodyBytes,
+		collectors:          collectors,
 	}
 }
 
@@ -48,24 +55,48 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var bodyReader io.Reader = r.Body
+	if len(h.collectors) == 0 {
+		writeError(w, r, http.StatusServiceUnavailable, CodeServiceUnavailable, "netflow collector unavailable", nil)
+		return
+	}
+
+	compressedBody := http.MaxBytesReader(w, r.Body, h.maxRequestBodyBytes)
+	defer func() { _ = compressedBody.Close() }()
+	var bodyReader io.Reader = compressedBody
 	if r.Header.Get("Content-Encoding") == "gzip" {
-		gzipReader, err := gzip.NewReader(r.Body)
+		gzipReader, err := gzip.NewReader(compressedBody)
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":"bad_request","message":"invalid gzip encoding"}`))
+			writeError(w, r, http.StatusBadRequest, CodeInvalidRequest, "invalid gzip encoding", nil)
 			return
 		}
 		defer func() { _ = gzipReader.Close() }()
-		bodyReader = gzipReader
+		decompressedBody := http.MaxBytesReader(w, io.NopCloser(gzipReader), h.maxRequestBodyBytes)
+		defer func() { _ = decompressedBody.Close() }()
+		bodyReader = decompressedBody
 	}
 
 	var req ProxyRequest
-	if err := json.NewDecoder(bodyReader).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":"bad_request","message":"invalid JSON body"}`))
+	decoder := json.NewDecoder(bodyReader)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeError(w, r, http.StatusRequestEntityTooLarge, CodePayloadTooLarge, "request body too large", nil)
+			return
+		}
+		writeError(w, r, http.StatusBadRequest, CodeInvalidRequest, "invalid json body", nil)
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(w, r, http.StatusBadRequest, CodeInvalidRequest, "request body must contain one json object", nil)
+		return
+	}
+	if len(req.Records) == 0 {
+		writeError(w, r, http.StatusBadRequest, CodeInvalidRequest, "records is required", nil)
+		return
+	}
+	if len(req.Records) > h.maxBatchSize {
+		writeError(w, r, http.StatusBadRequest, CodeInvalidRequest, "batch contains too many records", nil)
 		return
 	}
 

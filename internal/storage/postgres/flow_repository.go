@@ -71,12 +71,34 @@ const (
 	AggregationDirectionDst AggregationDirection = "dst"
 )
 
+type AggregationEndpoint string
+
+const (
+	AggregationEndpointProtocols  AggregationEndpoint = "protocols"
+	AggregationEndpointTopPorts   AggregationEndpoint = "top-ports"
+	AggregationEndpointTopTalkers AggregationEndpoint = "top-talkers"
+)
+
+type AggregationCursor struct {
+	Endpoint          AggregationEndpoint
+	QueryHash         string
+	Metric            AggregationMetric
+	Direction         AggregationDirection
+	Value             uint64
+	FlowCount         uint64
+	IP                *netip.Addr
+	Port              *uint16
+	ProtocolNumber    *uint8
+	TransportProtocol *domain.TransportProtocol
+}
+
 type AggregationQuery struct {
 	From           time.Time
 	To             time.Time
 	Metric         AggregationMetric
 	Limit          int
 	Direction      AggregationDirection
+	Cursor         *AggregationCursor
 	SrcIP          *netip.Addr
 	DstIP          *netip.Addr
 	ProtocolNumber *uint8
@@ -122,6 +144,13 @@ func NewFlowRepository(db *sql.DB) (*FlowRepository, error) {
 	return &FlowRepository{db: db}, nil
 }
 
+func (r *FlowRepository) DB() *sql.DB {
+	if r == nil {
+		return nil
+	}
+	return r.db
+}
+
 func (r *FlowRepository) InsertFlowRecords(ctx context.Context, records []domain.NormalizedFlowRecord) (InsertResult, error) {
 	if ctx == nil {
 		return InsertResult{}, fmt.Errorf("%w: context is nil", ErrInvalidFlowQuery)
@@ -141,9 +170,127 @@ func (r *FlowRepository) InsertFlowRecords(ctx context.Context, records []domain
 		}
 	}
 
-	var builder strings.Builder
-	args := make([]any, 0, len(records)*33)
-	builder.WriteString(`INSERT INTO quiver.flow_records (
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return InsertResult{}, fmt.Errorf("begin flow insert transaction: %w", err)
+	}
+
+	const maxRecordsPerChunk = 2000
+
+	var totalInserted int64
+
+	for startIdx := 0; startIdx < len(records); startIdx += maxRecordsPerChunk {
+		endIdx := startIdx + maxRecordsPerChunk
+		if endIdx > len(records) {
+			endIdx = len(records)
+		}
+		chunk := records[startIdx:endIdx]
+
+		n := len(chunk)
+		ids := make([]string, n)
+		schemaVersions := make([]string, n)
+		idempotencyKeys := make([]string, n)
+		rawEventIDs := make([]string, n)
+		sourceTypes := make([]string, n)
+		collectorIDs := make([]string, n)
+		sourceHosts := make([]string, n)
+		sourceIPs := make([]*string, n)
+		ingestedAts := make([]time.Time, n)
+		normalizedAts := make([]time.Time, n)
+		eventStartTimes := make([]time.Time, n)
+		eventEndTimes := make([]*time.Time, n)
+		durationMSs := make([]*int64, n)
+		srcIPs := make([]string, n)
+		dstIPs := make([]string, n)
+		srcPorts := make([]*int32, n)
+		dstPorts := make([]*int32, n)
+		ipVersions := make([]int16, n)
+		transportProtocols := make([]string, n)
+		protocolNumbers := make([]int16, n)
+		bytesSlice := make([]*int64, n)
+		packetsSlice := make([]*int64, n)
+		tcpFlagsSlice := make([]*int32, n)
+		flowStates := make([]*string, n)
+		directions := make([]string, n)
+		inputInterfaces := make([]*int32, n)
+		outputInterfaces := make([]*int32, n)
+		nextHopIPs := make([]*string, n)
+		applicationProtocols := make([]*string, n)
+		samplingRates := make([]*int32, n)
+		normalizationStatuses := make([]string, n)
+		normalizationErrors := make([]*string, n)
+		attributesSlice := make([]string, n)
+
+		for i, rec := range chunk {
+			ids[i] = rec.ID
+			schemaVersions[i] = rec.SchemaVersion
+			idempotencyKeys[i] = rec.IdempotencyKey
+			rawEventIDs[i] = rec.RawEventID
+			sourceTypes[i] = string(rec.SourceType)
+			collectorIDs[i] = rec.CollectorID
+			sourceHosts[i] = rec.SourceHost
+			if rec.SourceIP != nil {
+				ipStr := rec.SourceIP.String()
+				sourceIPs[i] = &ipStr
+			}
+			ingestedAts[i] = rec.IngestedAt
+			normalizedAts[i] = rec.NormalizedAt
+			eventStartTimes[i] = rec.EventStartTime
+			if rec.EventEndTime != nil {
+				t := *rec.EventEndTime
+				eventEndTimes[i] = &t
+			}
+			durationMSs[i] = rec.DurationMS
+			srcIPs[i] = rec.SrcIP.String()
+			dstIPs[i] = rec.DstIP.String()
+			if rec.SrcPort != nil {
+				portVal := int32(*rec.SrcPort)
+				srcPorts[i] = &portVal
+			}
+			if rec.DstPort != nil {
+				portVal := int32(*rec.DstPort)
+				dstPorts[i] = &portVal
+			}
+			ipVersions[i] = int16(rec.IPVersion) //nolint:gosec
+			transportProtocols[i] = string(rec.TransportProtocol)
+			protocolNumbers[i] = int16(rec.ProtocolNumber)
+			if rec.Bytes != nil {
+				val := int64(*rec.Bytes) //nolint:gosec
+				bytesSlice[i] = &val
+			}
+			if rec.Packets != nil {
+				val := int64(*rec.Packets) //nolint:gosec
+				packetsSlice[i] = &val
+			}
+			if rec.TCPFlags != nil {
+				val := int32(*rec.TCPFlags)
+				tcpFlagsSlice[i] = &val
+			}
+			flowStates[i] = rec.FlowState
+			directions[i] = string(rec.Direction)
+			if rec.InputInterface != nil {
+				val := int32(*rec.InputInterface) //nolint:gosec
+				inputInterfaces[i] = &val
+			}
+			if rec.OutputInterface != nil {
+				val := int32(*rec.OutputInterface) //nolint:gosec
+				outputInterfaces[i] = &val
+			}
+			if rec.NextHopIP != nil {
+				ipStr := rec.NextHopIP.String()
+				nextHopIPs[i] = &ipStr
+			}
+			applicationProtocols[i] = rec.ApplicationProtocol
+			if rec.SamplingRate != nil {
+				val := int32(*rec.SamplingRate) //nolint:gosec
+				samplingRates[i] = &val
+			}
+			normalizationStatuses[i] = string(rec.NormalizationStatus)
+			normalizationErrors[i] = rec.NormalizationError
+			attributesSlice[i] = string(jsonBytes(rec.Attributes))
+		}
+
+		query := `INSERT INTO quiver.flow_records (
 id, schema_version, idempotency_key, raw_event_id,
 source_type, collector_id, source_host, source_ip, ingested_at, normalized_at,
 event_start_time, event_end_time, duration_ms,
@@ -151,49 +298,46 @@ src_ip, dst_ip, src_port, dst_port, ip_version, transport_protocol, protocol_num
 bytes, packets, tcp_flags, flow_state,
 direction, input_interface, output_interface, next_hop_ip,
 application_protocol, sampling_rate, normalization_status, normalization_error, attributes
-) VALUES `)
-	for i, record := range records {
-		if i > 0 {
-			builder.WriteString(", ")
-		}
-		builder.WriteString("(")
-		for col := 0; col < 33; col++ {
-			if col > 0 {
-				builder.WriteString(", ")
-			}
-			fmt.Fprintf(&builder, "$%d", len(args)+col+1)
-		}
-		builder.WriteString(")")
-		args = append(args, insertArgs(record)...)
-	}
-	builder.WriteString(" ON CONFLICT (event_start_time, idempotency_key) DO NOTHING")
+) SELECT * FROM UNNEST(
+$1::text[]::uuid[], $2::text[], $3::text[], $4::text[]::uuid[],
+$5::text[], $6::text[], $7::text[], $8::text[]::inet[], $9::timestamptz[], $10::timestamptz[],
+$11::timestamptz[], $12::timestamptz[], $13::bigint[],
+$14::text[]::inet[], $15::text[]::inet[], $16::integer[], $17::integer[], $18::smallint[], $19::text[], $20::smallint[],
+$21::bigint[], $22::bigint[], $23::integer[], $24::text[],
+$25::text[], $26::integer[], $27::integer[], $28::text[]::inet[],
+$29::text[], $30::integer[], $31::text[], $32::text[], $33::text[]::jsonb[]
+) ON CONFLICT (event_start_time, idempotency_key) DO NOTHING`
 
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return InsertResult{}, fmt.Errorf("begin flow insert transaction: %w", err)
-	}
-	result, execErr := tx.ExecContext(ctx, builder.String(), args...)
-	if execErr != nil {
-		rollbackErr := tx.Rollback()
-		if rollbackErr != nil {
-			return InsertResult{}, errors.Join(
-				fmt.Errorf("insert flow records: %w", execErr),
-				fmt.Errorf("rollback flow insert transaction: %w", rollbackErr),
-			)
+		result, execErr := tx.ExecContext(ctx, query,
+			ids, schemaVersions, idempotencyKeys, rawEventIDs,
+			sourceTypes, collectorIDs, sourceHosts, sourceIPs, ingestedAts, normalizedAts,
+			eventStartTimes, eventEndTimes, durationMSs,
+			srcIPs, dstIPs, srcPorts, dstPorts, ipVersions, transportProtocols, protocolNumbers,
+			bytesSlice, packetsSlice, tcpFlagsSlice, flowStates,
+			directions, inputInterfaces, outputInterfaces, nextHopIPs,
+			applicationProtocols, samplingRates, normalizationStatuses, normalizationErrors, attributesSlice,
+		)
+		if execErr != nil {
+			_ = tx.Rollback()
+			return InsertResult{}, fmt.Errorf("insert flow records unnest: %w", execErr)
 		}
-		return InsertResult{}, fmt.Errorf("insert flow records: %w", execErr)
+
+		inserted, err := result.RowsAffected()
+		if err != nil {
+			_ = tx.Rollback()
+			return InsertResult{}, fmt.Errorf("read inserted flow row count: %w", err)
+		}
+		totalInserted += inserted
 	}
+
 	if err := tx.Commit(); err != nil {
 		return InsertResult{}, fmt.Errorf("commit flow insert transaction: %w", err)
 	}
-	inserted, err := result.RowsAffected()
-	if err != nil {
-		return InsertResult{}, fmt.Errorf("read inserted flow row count: %w", err)
-	}
+
 	return InsertResult{
 		Attempted:    len(records),
-		Inserted:     int(inserted),
-		Deduplicated: len(records) - int(inserted),
+		Inserted:     int(totalInserted),
+		Deduplicated: len(records) - int(totalInserted),
 	}, nil
 }
 
@@ -206,7 +350,7 @@ func (r *FlowRepository) SearchFlows(ctx context.Context, query FlowSearchQuery)
 	args = append(args, limit)
 	// security: SQL fragments are fixed allow-listed clauses; all request values remain parameterized.
 	// #nosec G202
-	sqlQuery := `SELECT ` + flowRecordColumns() + `
+	sqlQuery := `SELECT ` + flowRecordColumns + `
 FROM quiver.flow_records
 WHERE ` + where + `
 ORDER BY event_start_time DESC, id DESC
@@ -244,20 +388,33 @@ LIMIT $` + fmt.Sprint(len(args))
 	return FlowSearchResult{Records: records, HasMore: hasMore}, nil
 }
 
-func (r *FlowRepository) GetFlowByID(ctx context.Context, id string) (domain.NormalizedFlowRecord, bool, error) {
+func (r *FlowRepository) GetFlowByID(ctx context.Context, id string, eventStartTime *time.Time) (domain.NormalizedFlowRecord, bool, error) {
 	if !domain.IsUUIDv7(id) {
 		return domain.NormalizedFlowRecord{}, false, fmt.Errorf("%w: id must be uuidv7", ErrInvalidFlowQuery)
 	}
 	// security: selected columns are a fixed internal list; id remains parameterized.
 	// #nosec G202
-	row := r.db.QueryRowContext(
-		ctx,
-		`SELECT `+flowRecordColumns()+`
+	var row *sql.Row
+	if eventStartTime != nil {
+		row = r.db.QueryRowContext( //nolint:gosec // Projection is a fixed internal column list; values remain parameterized.
+			ctx,
+			`SELECT `+flowRecordColumns+`
+FROM quiver.flow_records
+WHERE event_start_time = $1 AND id = $2
+LIMIT 1`,
+			*eventStartTime,
+			id,
+		)
+	} else {
+		row = r.db.QueryRowContext( //nolint:gosec // Projection is a fixed internal column list; values remain parameterized.
+			ctx,
+			`SELECT `+flowRecordColumns+`
 FROM quiver.flow_records
 WHERE id = $1
 LIMIT 1`,
-		id,
-	)
+			id,
+		)
+	}
 	record, err := scanFlowRecord(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -272,11 +429,22 @@ func (r *FlowRepository) TopTalkers(ctx context.Context, query AggregationQuery)
 	if err := validateAggregationQuery(query, true); err != nil {
 		return nil, err
 	}
+	if err := validateAggregationCursor(query, AggregationEndpointTopTalkers); err != nil {
+		return nil, err
+	}
 	groupColumn := "src_ip"
 	if query.Direction == AggregationDirectionDst {
 		groupColumn = "dst_ip"
 	}
-	sqlQuery, args := buildAggregationSQL(query, groupColumn, "true")
+	sqlQuery, args, err := buildAggregationSQL(query, aggregationGrouping{
+		Select:  groupColumn + " AS ip",
+		GroupBy: groupColumn,
+		OrderBy: "ip ASC",
+		Kind:    aggregationGroupIP,
+	}, "quiver.flow_hourly_talkers", "true")
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, sqlQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query top talkers: %w", err)
@@ -308,11 +476,26 @@ func (r *FlowRepository) TopPorts(ctx context.Context, query AggregationQuery) (
 	if err := validateAggregationQuery(query, true); err != nil {
 		return nil, err
 	}
+	if err := validateAggregationCursor(query, AggregationEndpointTopPorts); err != nil {
+		return nil, err
+	}
 	groupColumn := "src_port"
 	if query.Direction == AggregationDirectionDst {
 		groupColumn = "dst_port"
 	}
-	sqlQuery, args := buildAggregationSQL(query, groupColumn, groupColumn+" IS NOT NULL")
+	targetTable := "quiver.flow_hourly_ports"
+	if query.SrcIP != nil || query.DstIP != nil {
+		targetTable = "quiver.flow_records"
+	}
+	sqlQuery, args, err := buildAggregationSQL(query, aggregationGrouping{
+		Select:  groupColumn + " AS port",
+		GroupBy: groupColumn,
+		OrderBy: "port ASC",
+		Kind:    aggregationGroupPort,
+	}, targetTable, groupColumn+" IS NOT NULL")
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, sqlQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query top ports: %w", err)
@@ -344,7 +527,18 @@ func (r *FlowRepository) ProtocolDistribution(ctx context.Context, query Aggrega
 	if err := validateAggregationQuery(query, false); err != nil {
 		return nil, err
 	}
-	sqlQuery, args := buildAggregationSQL(query, "protocol_number, transport_protocol", "true")
+	if err := validateAggregationCursor(query, AggregationEndpointProtocols); err != nil {
+		return nil, err
+	}
+	sqlQuery, args, err := buildAggregationSQL(query, aggregationGrouping{
+		Select:  "protocol_number, transport_protocol",
+		GroupBy: "protocol_number, transport_protocol",
+		OrderBy: "protocol_number ASC, transport_protocol ASC",
+		Kind:    aggregationGroupProtocol,
+	}, "quiver.flow_hourly_talkers", "true")
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, sqlQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query protocol distribution: %w", err)
@@ -379,53 +573,13 @@ func (r *FlowRepository) ProtocolDistribution(ctx context.Context, query Aggrega
 	return items, nil
 }
 
-func insertArgs(record domain.NormalizedFlowRecord) []any {
-	return []any{
-		record.ID,
-		record.SchemaVersion,
-		record.IdempotencyKey,
-		record.RawEventID,
-		string(record.SourceType),
-		record.CollectorID,
-		record.SourceHost,
-		nullableAddr(record.SourceIP),
-		record.IngestedAt,
-		record.NormalizedAt,
-		record.EventStartTime,
-		record.EventEndTime,
-		record.DurationMS,
-		record.SrcIP.String(),
-		record.DstIP.String(),
-		record.SrcPort,
-		record.DstPort,
-		record.IPVersion,
-		string(record.TransportProtocol),
-		record.ProtocolNumber,
-		record.Bytes,
-		record.Packets,
-		record.TCPFlags,
-		record.FlowState,
-		string(record.Direction),
-		record.InputInterface,
-		record.OutputInterface,
-		nullableAddr(record.NextHopIP),
-		record.ApplicationProtocol,
-		record.SamplingRate,
-		string(record.NormalizationStatus),
-		record.NormalizationError,
-		jsonBytes(record.Attributes),
-	}
-}
-
-func flowRecordColumns() string {
-	return `id, schema_version, idempotency_key, raw_event_id,
+const flowRecordColumns = `id, schema_version, idempotency_key, raw_event_id,
 source_type, collector_id, source_host, source_ip, ingested_at, normalized_at,
 event_start_time, event_end_time, duration_ms,
 src_ip, dst_ip, src_port, dst_port, ip_version, transport_protocol, protocol_number,
 bytes, packets, tcp_flags, flow_state,
 direction, input_interface, output_interface, next_hop_ip,
 application_protocol, sampling_rate, normalization_status, normalization_error, attributes`
-}
 
 type scanner interface {
 	Scan(dest ...any) error
@@ -619,18 +773,48 @@ func buildFlowWhere(query FlowSearchQuery) (string, []any) {
 	return strings.Join(clauses, " AND "), args
 }
 
-func buildAggregationSQL(query AggregationQuery, groupExpr string, extraPredicate string) (string, []any) {
+type aggregationGroupKind string
+
+const (
+	aggregationGroupIP       aggregationGroupKind = "ip"
+	aggregationGroupPort     aggregationGroupKind = "port"
+	aggregationGroupProtocol aggregationGroupKind = "protocol"
+)
+
+type aggregationGrouping struct {
+	Select  string
+	GroupBy string
+	OrderBy string
+	Kind    aggregationGroupKind
+}
+
+func buildAggregationSQL(query AggregationQuery, grouping aggregationGrouping, targetTable string, extraPredicate string) (string, []any, error) {
+	timeCol := "bucket"
 	valueExpr := "SUM(bytes)"
 	nullPredicate := "bytes IS NOT NULL"
-	switch query.Metric {
-	case AggregationMetricPackets:
-		valueExpr = "SUM(packets)"
-		nullPredicate = "packets IS NOT NULL"
-	case AggregationMetricFlows:
-		valueExpr = "COUNT(*)"
-		nullPredicate = "true"
+
+	if targetTable == "quiver.flow_records" {
+		timeCol = "event_start_time"
+		switch query.Metric {
+		case AggregationMetricPackets:
+			valueExpr = "SUM(packets)"
+			nullPredicate = "packets IS NOT NULL"
+		case AggregationMetricFlows:
+			valueExpr = "COUNT(*)"
+			nullPredicate = "true"
+		}
+	} else {
+		switch query.Metric {
+		case AggregationMetricPackets:
+			valueExpr = "SUM(packets)"
+			nullPredicate = "packets IS NOT NULL"
+		case AggregationMetricFlows:
+			valueExpr = "SUM(flow_count)"
+			nullPredicate = "true"
+		}
 	}
-	clauses := []string{"event_start_time >= $1", "event_start_time < $2", nullPredicate, extraPredicate}
+
+	clauses := []string{timeCol + " >= $1", timeCol + " < $2", nullPredicate, extraPredicate}
 	args := []any{query.From, query.To}
 	add := func(clause string, value any) {
 		args = append(args, value)
@@ -648,13 +832,111 @@ func buildAggregationSQL(query AggregationQuery, groupExpr string, extraPredicat
 	if query.SourceType != nil {
 		add("source_type = $%d", string(*query.SourceType))
 	}
+
+	flowsSelect := "SUM(flow_count) AS flow_count"
+	if targetTable == "quiver.flow_records" {
+		flowsSelect = "COUNT(*) AS flow_count"
+	}
+
+	cursorPredicate, err := buildAggregationCursorPredicate(&args, query.Cursor, grouping.Kind)
+	if err != nil {
+		return "", nil, err
+	}
 	args = append(args, query.Limit)
-	return `SELECT ` + groupExpr + `, ` + valueExpr + ` AS value, COUNT(*) AS flow_count
-FROM quiver.flow_records
-WHERE ` + strings.Join(clauses, " AND ") + `
-GROUP BY ` + groupExpr + `
-ORDER BY value DESC, flow_count DESC
-LIMIT $` + fmt.Sprint(len(args)), args
+	limitPlaceholder := fmt.Sprintf("$%d", len(args))
+
+	outerWhere := ""
+	if cursorPredicate != "" {
+		outerWhere = "\nWHERE " + cursorPredicate
+	}
+
+	return `SELECT *
+FROM (
+	SELECT ` + grouping.Select + `, ` + valueExpr + ` AS value, ` + flowsSelect + `
+	FROM ` + targetTable + `
+	WHERE ` + strings.Join(clauses, " AND ") + `
+	GROUP BY ` + grouping.GroupBy + `
+) agg` + outerWhere + `
+ORDER BY value DESC, flow_count DESC, ` + grouping.OrderBy + `
+LIMIT ` + limitPlaceholder, args, nil
+}
+
+func buildAggregationCursorPredicate(args *[]any, cursor *AggregationCursor, kind aggregationGroupKind) (string, error) {
+	if cursor == nil {
+		return "", nil
+	}
+	add := func(value any) int {
+		*args = append(*args, value)
+		return len(*args)
+	}
+	valueArg := add(cursor.Value)
+	flowCountArg := add(cursor.FlowCount)
+
+	switch kind {
+	case aggregationGroupIP:
+		if cursor.IP == nil {
+			return "", fmt.Errorf("%w: aggregation cursor missing ip", ErrInvalidFlowQuery)
+		}
+		ipArg := add(cursor.IP.String())
+		return fmt.Sprintf(
+			"(value < $%d OR (value = $%d AND flow_count < $%d) OR (value = $%d AND flow_count = $%d AND ip > $%d::inet))",
+			valueArg, valueArg, flowCountArg, valueArg, flowCountArg, ipArg,
+		), nil
+	case aggregationGroupPort:
+		if cursor.Port == nil {
+			return "", fmt.Errorf("%w: aggregation cursor missing port", ErrInvalidFlowQuery)
+		}
+		portArg := add(*cursor.Port)
+		return fmt.Sprintf(
+			"(value < $%d OR (value = $%d AND flow_count < $%d) OR (value = $%d AND flow_count = $%d AND port > $%d))",
+			valueArg, valueArg, flowCountArg, valueArg, flowCountArg, portArg,
+		), nil
+	case aggregationGroupProtocol:
+		if cursor.ProtocolNumber == nil || cursor.TransportProtocol == nil {
+			return "", fmt.Errorf("%w: aggregation cursor missing protocol key", ErrInvalidFlowQuery)
+		}
+		protocolNumberArg := add(*cursor.ProtocolNumber)
+		transportProtocolArg := add(string(*cursor.TransportProtocol))
+		return fmt.Sprintf(
+			"(value < $%d OR (value = $%d AND flow_count < $%d) OR (value = $%d AND flow_count = $%d AND (protocol_number > $%d OR (protocol_number = $%d AND transport_protocol > $%d))))",
+			valueArg, valueArg, flowCountArg, valueArg, flowCountArg, protocolNumberArg, protocolNumberArg, transportProtocolArg,
+		), nil
+	default:
+		return "", fmt.Errorf("%w: invalid aggregation group", ErrInvalidFlowQuery)
+	}
+}
+
+func validateAggregationCursor(query AggregationQuery, endpoint AggregationEndpoint) error {
+	if query.Cursor == nil {
+		return nil
+	}
+	cursor := query.Cursor
+	if cursor.Endpoint != endpoint {
+		return fmt.Errorf("%w: aggregation cursor endpoint mismatch", ErrInvalidFlowQuery)
+	}
+	if cursor.Metric != query.Metric {
+		return fmt.Errorf("%w: aggregation cursor metric mismatch", ErrInvalidFlowQuery)
+	}
+	if endpoint != AggregationEndpointProtocols && cursor.Direction != query.Direction {
+		return fmt.Errorf("%w: aggregation cursor direction mismatch", ErrInvalidFlowQuery)
+	}
+	switch endpoint {
+	case AggregationEndpointTopTalkers:
+		if cursor.IP == nil {
+			return fmt.Errorf("%w: aggregation cursor missing ip", ErrInvalidFlowQuery)
+		}
+	case AggregationEndpointTopPorts:
+		if cursor.Port == nil {
+			return fmt.Errorf("%w: aggregation cursor missing port", ErrInvalidFlowQuery)
+		}
+	case AggregationEndpointProtocols:
+		if cursor.ProtocolNumber == nil || cursor.TransportProtocol == nil {
+			return fmt.Errorf("%w: aggregation cursor missing protocol key", ErrInvalidFlowQuery)
+		}
+	default:
+		return fmt.Errorf("%w: invalid aggregation endpoint", ErrInvalidFlowQuery)
+	}
+	return nil
 }
 
 func validateSearchQuery(query FlowSearchQuery) error {
@@ -683,13 +965,6 @@ func validateAggregationQuery(query AggregationQuery, requireDirection bool) err
 		return fmt.Errorf("%w: invalid direction", ErrInvalidFlowQuery)
 	}
 	return nil
-}
-
-func nullableAddr(addr *netip.Addr) any {
-	if addr == nil {
-		return nil
-	}
-	return addr.String()
 }
 
 func jsonBytes(attrs map[string]json.RawMessage) []byte {

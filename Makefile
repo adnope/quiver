@@ -13,31 +13,86 @@ QUIVER_DATABASE_DSN ?=
 OPENAPI_DIR ?= api/openapi
 OPENAPI_FILE ?= $(OPENAPI_DIR)/quiver.v1.yaml
 
-.PHONY: build build-quiver build-client fmt lint test test-unit test-integration test-race coverage proto proto-check swagger swagger-check openapi openapi-check migrate-up docker-up docker-down demo verify-demo load-smoke
+.PHONY: build build-quiver build-client frontend-install frontend-typecheck frontend-test frontend-build fmt lint lint-go lint-frontend test test-unit test-up test-down test-integration test-all test-race coverage proto proto-check swagger swagger-check openapi openapi-check migrate-up dev-up dev-down dev-demo load-smoke dev-load-smoke verify-demo verify-vector-shipper
 
 build: build-quiver build-client
 
-build-quiver:
+build-quiver: frontend-build
 	$(GO) build -o bin/quiver cmd/quiver/main.go
 
 build-client:
 	$(GO) build -o bin/quiver-client cmd/quiver-client/main.go
 
+frontend-install:
+	npm --prefix frontend ci
+
+frontend-typecheck:
+	npm --prefix frontend run typecheck
+
+frontend-test:
+	npm --prefix frontend run test
+
+frontend-build: frontend-install
+	npm --prefix frontend run build
+	rm -rf internal/web/dist
+	mkdir -p internal/web/dist
+	cp -R frontend/dist/. internal/web/dist/
+	printf '%s\n' "placeholder for Go embed before frontend assets are built" > internal/web/dist/keep.txt
+
 fmt:
 	$(GO) fmt ./...
 
-lint:
-	$(GOLANGCI_LINT) run cmd/... internal/...
+lint: lint-go lint-frontend
+
+lint-go:
+	$(GOLANGCI_LINT) run ./...
+
+lint-frontend:
+	npm --prefix frontend run lint
 
 test: test-unit
 
 test-unit:
 	$(GO) test ./...
 
+test-up:
+	docker compose -f docker-compose.test.yml -p quiver-test up -d --build
+	@for i in $$(seq 1 30); do \
+		if docker exec quiver-test-timescaledb pg_isready -U postgres -d quiver >/dev/null 2>&1; then \
+			echo "TimescaleDB test service is healthy!"; \
+			break; \
+		fi; \
+		if [ "$$i" -eq 30 ]; then \
+			echo "TimescaleDB test service did not become healthy."; \
+			docker compose -f docker-compose.test.yml -p quiver-test logs timescaledb; \
+			exit 1; \
+		fi; \
+		echo "Waiting for TimescaleDB test service..."; \
+		sleep 2; \
+	done
+	@for i in $$(seq 1 30); do \
+		if docker exec quiver-test-redpanda rpk cluster info --brokers=localhost:9092 >/dev/null 2>&1; then \
+			echo "Redpanda test service is healthy!"; \
+			break; \
+		fi; \
+		if [ "$$i" -eq 30 ]; then \
+			echo "Redpanda test service did not become healthy."; \
+			docker compose -f docker-compose.test.yml -p quiver-test logs kafka; \
+			exit 1; \
+		fi; \
+		echo "Waiting for Redpanda test service..."; \
+		sleep 2; \
+	done
+
+test-down:
+	docker compose -f docker-compose.test.yml -p quiver-test down -v
+
 test-integration:
-	QUIVER_DATABASE_DSN="postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@localhost:$(POSTGRES_HOST_PORT)/$(POSTGRES_DB)?sslmode=$(POSTGRES_SSLMODE)" \
-	QUIVER_KAFKA_BROKERS="localhost:$(KAFKA_HOST_PORT)" \
+	QUIVER_DATABASE_DSN="postgres://postgres:postgres@localhost:5434/quiver?sslmode=disable" \
+	QUIVER_KAFKA_BROKERS="localhost:9096" \
 	$(GO) test -tags=integration ./...
+
+test-all: test-up test-unit test-race test-integration test-down
 
 test-race:
 	$(GO) test -race ./internal/...
@@ -97,19 +152,30 @@ migrate-up:
 		-database "$(QUIVER_DATABASE_DSN)" \
 		up
 
-docker-up:
-	docker compose up -d --build
+dev-up:
+	docker compose up -d --build --scale quiver=3
 
-docker-down:
-	docker compose down -v
+dev-down:
+	docker compose down
 
-demo:
+dev-demo:
 	$(GO) run tools/restgen/main.go -target http://localhost:$(QUIVER_HOST_PORT) -key $(REST_INGEST_DEMO_CLIENT_KEY) -count 10
-	$(GO) run tools/zeekloggen/main.go -file /tmp/zeek/conn.log -mode append -count 10
+	$(GO) run tools/zeekloggen/main.go -target http://localhost:$(QUIVER_HOST_PORT) -key $(ZEEK_SHIPPER_DEMO_KEY) -count 10
 	$(GO) run tools/netflowgen/main.go -target localhost:$(NETFLOW_PORT) -count 5 -seq 10
 
 verify-demo:
 	./scripts/verify-demo.sh
 
+verify-vector-shipper:
+	./scripts/verify-vector-shipper.sh
+
 load-smoke:
-	$(GO) run tools/loadsmoke/main.go -rest http://localhost:$(QUIVER_HOST_PORT) -udp localhost:$(NETFLOW_PORT) -duration 30
+	$(GO) run tools/loadsmoke/main.go \
+		-rest http://localhost:$(QUIVER_HOST_PORT) \
+		-udp localhost:$(NETFLOW_PORT) \
+		-db "$(QUIVER_DATABASE_DSN_HOST)" \
+		-zeek-mode http \
+		-admin-key "$(QUIVER_DEMO_ADMIN_API_KEY)" \
+		-client-key "$(REST_INGEST_DEMO_CLIENT_KEY)" \
+		-zeek-key "$(ZEEK_SHIPPER_DEMO_KEY)" \
+		-duration 30

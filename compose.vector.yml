@@ -1,0 +1,30 @@
+services:
+  zeek-vector:
+    image: timberio/vector:0.56.0-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-quiver}-zeek-vector
+    restart: unless-stopped
+    command: ["--config", "/etc/vector/vector.yaml"]
+    environment:
+      # Full Quiver endpoint URL.
+      QUIVER_ZEEK_INGEST_URL: ${QUIVER_ZEEK_INGEST_URL:-http://quiver:8080/api/v1/ingest/zeek/conn}
+
+      # Must match an ingest-scoped Quiver API key that maps to a source_host.
+      ZEEK_SHIPPER_API_KEY: ${ZEEK_SHIPPER_API_KEY:?set ZEEK_SHIPPER_API_KEY}
+
+      # Container path used by vector.yaml.
+      VECTOR_ZEEK_LOG_PATH: ${VECTOR_ZEEK_LOG_PATH:-/var/log/zeek/current/conn.log}
+
+      VECTOR_LOG: ${VECTOR_LOG:-info}
+    volumes:
+      - ./vector.yaml:/etc/vector/vector.yaml:ro
+      - vector-data:/var/lib/vector
+
+      # Host Zeek conn.log file -> container path. Configure ZEEK_LOG_HOST_PATH
+      # to the real file on the Zeek host, for example:
+      # /opt/zeek/logs/current/conn.log
+      - ${ZEEK_LOG_HOST_PATH:-/var/log/zeek/current/conn.log}:${VECTOR_ZEEK_LOG_PATH:-/var/log/zeek/current/conn.log}:ro
+    ports:
+      - "${VECTOR_API_BIND:-127.0.0.1}:${VECTOR_API_PORT:-8686}:8686"
+
+volumes:
+  vector-data:

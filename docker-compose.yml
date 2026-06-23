@@ -2,6 +2,8 @@ services:
   timescaledb:
     image: timescale/timescaledb:latest-pg17
     container_name: ${COMPOSE_PROJECT_NAME:-quiver}-timescaledb
+    # cpus: 2.0
+    # mem_limit: 2g
     env_file:
       - .env
     ports:
@@ -11,36 +13,41 @@ services:
       interval: 3s
       timeout: 3s
       retries: 10
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+    command: ["postgres", "-c", "shared_buffers=512MB", "-c", "max_wal_size=4GB", "-c", "synchronous_commit=off", "-c", "work_mem=16MB"]
 
   kafka:
-    image: confluentinc/cp-kafka:8.2.2
-    container_name: ${COMPOSE_PROJECT_NAME:-quiver}-kafka
+    image: redpandadata/redpanda:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-quiver}-redpanda
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1G
+      - --reserve-memory=0M
+      - --overprovisioned
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:9094
+      - --advertise-kafka-addr=internal://kafka:9092,external://localhost:${KAFKA_HOST_PORT:-9094}
     ports:
       - "${KAFKA_HOST_PORT:-9094}:9094"
-    environment:
-      KAFKA_NODE_ID: 1
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
-      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:${KAFKA_HOST_PORT:-9094}'
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_PROCESS_ROLES: 'broker,controller'
-      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
-      KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:9094'
-      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
-      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
-      KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
-      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
     healthcheck:
-      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
-      interval: 3s
-      timeout: 3s
-      retries: 15
+      test: ["CMD-SHELL", "rpk cluster info --brokers=localhost:9092 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
 
   migration:
     image: migrate/migrate:v4.19.1
     container_name: ${COMPOSE_PROJECT_NAME:-quiver}-migration
+    # cpus: 0.25
+    # mem_limit: 128m
     volumes:
       - ./internal/storage/postgres/migrations:/migrations
     command: -path=/migrations -database="${QUIVER_DATABASE_DSN}" up
@@ -50,19 +57,18 @@ services:
 
   quiver:
     build: .
-    container_name: ${COMPOSE_PROJECT_NAME:-quiver}-app
+    # cpus: 1
+    # mem_limit: 256m
     command: ["-config", "${QUIVER_CONFIG:-/configs/quiver.dev.yaml}"]
     env_file:
       - .env
     environment:
       - QUIVER_DATABASE_DSN_HOST=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}?sslmode=${POSTGRES_SSLMODE}
       - KAFKA_BROKER_EXTERNAL=kafka:9092
-      - ZEEK_CONN_LOG_PATH=/var/log/zeek/current/conn.log
     volumes:
       - ./configs:/configs
-      - ${ZEEK_LOG_DIR:-/tmp/zeek}:/var/log/zeek/current
-    ports:
-      - "${QUIVER_HOST_PORT}:${QUIVER_INTERNAL_PORT}"
+    expose:
+      - "${QUIVER_INTERNAL_PORT}"
     depends_on:
       timescaledb:
         condition: service_healthy
@@ -71,17 +77,56 @@ services:
       migration:
         condition: service_completed_successfully
 
+  quiver-lb:
+    image: nginx:alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-quiver}-lb
+    # cpus: 0.10
+    # mem_limit: 128m
+    env_file:
+      - .env
+    ports:
+      - "${QUIVER_HOST_PORT}:${QUIVER_INTERNAL_PORT}"
+    command:
+      - /bin/sh
+      - -c
+      - |
+        cat > /etc/nginx/conf.d/default.conf <<EOF
+        resolver 127.0.0.11 valid=5s ipv6=off;
+
+        server {
+          listen ${QUIVER_INTERNAL_PORT};
+
+          location / {
+            proxy_pass http://quiver:${QUIVER_INTERNAL_PORT};
+            proxy_http_version 1.1;
+            proxy_set_header Host \$$host;
+            proxy_set_header X-Real-IP \$$remote_addr;
+            proxy_set_header X-Forwarded-For \$$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$$scheme;
+          }
+        }
+        EOF
+        nginx -g 'daemon off;'
+    depends_on:
+      quiver:
+        condition: service_started
+
   quiver-client:
     build:
       context: .
       dockerfile: Dockerfile.client
     container_name: ${COMPOSE_PROJECT_NAME:-quiver}-client
-    command: ["--backend-url", "http://quiver:8080", "--api-key", "${REST_INGEST_DEMO_CLIENT_KEY}", "--listen-addr", "0.0.0.0:2055"]
+    # cpus: 0.15
+    # mem_limit: 128m
+    command: ["--backend-url", "http://quiver-lb:8080", "--api-key", "${NETFLOW_GATEWAY_DEMO_KEY}", "--listen-addr", "0.0.0.0:2055"]
     env_file:
       - .env
     ports:
       - "${NETFLOW_PORT}:2055/udp"
     depends_on:
-      quiver:
+      quiver-lb:
         condition: service_started
 
+volumes:
+  timescaledb_data:
+  redpanda_data:

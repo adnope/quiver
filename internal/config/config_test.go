@@ -19,6 +19,8 @@ func TestConfigValidate(t *testing.T) {
 		cursorEnv:                     "cursor-key",
 		"QUIVER_DEMO_ADMIN_API_KEY":   "admin-key",
 		"REST_INGEST_DEMO_CLIENT_KEY": "ingest-key",
+		"NETFLOW_GATEWAY_DEMO_KEY":    "netflow-key",
+		"ZEEK_SHIPPER_DEMO_KEY":       "zeek-key",
 	})); err != nil {
 		t.Fatalf("valid config failed validation: %v", err)
 	}
@@ -42,7 +44,7 @@ func TestConfigValidateFailures(t *testing.T) {
 		{
 			name: "duplicate collector id",
 			mutate: func(c *Config) {
-				c.Collectors.ZeekConnJSON[0].CollectorID = c.Collectors.NetFlowV5[0].CollectorID
+				c.ZeekIngest.CollectorID = c.Collectors.NetFlowV5[0].CollectorID
 			},
 			expected: "duplicate collector_id",
 		},
@@ -69,11 +71,11 @@ func TestConfigValidateFailures(t *testing.T) {
 		},
 
 		{
-			name: "missing zeek state key",
+			name: "invalid zeek ingest batch size",
 			mutate: func(c *Config) {
-				c.Collectors.ZeekConnJSON[0].StateKey = ""
+				c.ZeekIngest.MaxBatchSize = 0
 			},
-			expected: "state_key",
+			expected: "zeek_ingest.max_batch_size",
 		},
 		{
 			name: "invalid rate limit",
@@ -102,6 +104,8 @@ func TestConfigValidateFailures(t *testing.T) {
 				cursorEnv:                     "cursor-key",
 				"QUIVER_DEMO_ADMIN_API_KEY":   "admin-key",
 				"REST_INGEST_DEMO_CLIENT_KEY": "ingest-key",
+				"NETFLOW_GATEWAY_DEMO_KEY":    "netflow-key",
+				"ZEEK_SHIPPER_DEMO_KEY":       "zeek-key",
 			}))
 			if err == nil {
 				t.Fatal("expected validation error")
@@ -121,6 +125,8 @@ func TestLoadBytes(t *testing.T) {
 		cursorEnv:                     "cursor-key",
 		"QUIVER_DEMO_ADMIN_API_KEY":   "admin-key",
 		"REST_INGEST_DEMO_CLIENT_KEY": "ingest-key",
+		"NETFLOW_GATEWAY_DEMO_KEY":    "netflow-key",
+		"ZEEK_SHIPPER_DEMO_KEY":       "zeek-key",
 	}))
 	if err != nil {
 		t.Fatalf("LoadBytes() error = %v", err)
@@ -149,6 +155,8 @@ func TestNetFlowV5CollectorDefaultAuthRequired(t *testing.T) {
 		cursorEnv:                     "cursor-key",
 		"QUIVER_DEMO_ADMIN_API_KEY":   "admin-key",
 		"REST_INGEST_DEMO_CLIENT_KEY": "ingest-key",
+		"NETFLOW_GATEWAY_DEMO_KEY":    "netflow-key",
+		"ZEEK_SHIPPER_DEMO_KEY":       "zeek-key",
 	}))
 	if err != nil {
 		t.Fatalf("LoadBytes() error = %v", err)
@@ -221,6 +229,8 @@ func TestExampleConfigLoads(t *testing.T) {
 		cursorSecretEnv:               fixtureValue("cursor"),
 		"QUIVER_DEMO_ADMIN_API_KEY":   fixtureValue("admin"),
 		"REST_INGEST_DEMO_CLIENT_KEY": fixtureValue("ingest"),
+		"NETFLOW_GATEWAY_DEMO_KEY":    fixtureValue("netflow"),
+		"ZEEK_SHIPPER_DEMO_KEY":       fixtureValue("zeek"),
 	}))
 	if err != nil {
 		t.Fatalf("example config failed to load: %v", err)
@@ -243,6 +253,8 @@ func TestDemoConfigLoads(t *testing.T) {
 		cursorSecretEnv:               fixtureValue("cursor"),
 		"QUIVER_DEMO_ADMIN_API_KEY":   fixtureValue("admin"),
 		"REST_INGEST_DEMO_CLIENT_KEY": fixtureValue("ingest"),
+		"NETFLOW_GATEWAY_DEMO_KEY":    fixtureValue("netflow"),
+		"ZEEK_SHIPPER_DEMO_KEY":       fixtureValue("zeek"),
 		"NETFLOW_PORT":                "2055",
 		"POSTGRES_POOL_SIZE":          "20",
 		"POSTGRES_MAX_IDLE_CONNS":     "10",
@@ -268,10 +280,11 @@ func TestDevConfigLoads(t *testing.T) {
 		cursorSecretEnv:               fixtureValue("cursor"),
 		"QUIVER_DEMO_ADMIN_API_KEY":   fixtureValue("admin"),
 		"REST_INGEST_DEMO_CLIENT_KEY": fixtureValue("ingest"),
+		"NETFLOW_GATEWAY_DEMO_KEY":    fixtureValue("netflow"),
+		"ZEEK_SHIPPER_DEMO_KEY":       fixtureValue("zeek"),
 		"NETFLOW_PORT":                "2055",
 		"POSTGRES_POOL_SIZE":          "20",
 		"POSTGRES_MAX_IDLE_CONNS":     "10",
-		"ZEEK_CONN_LOG_PATH":          "/tmp/zeek/conn.log",
 	}))
 	if err != nil {
 		t.Fatalf("dev config failed to load: %v", err)
@@ -302,6 +315,9 @@ func validConfig() Config {
 			KeyEnv:     "REST_INGEST_DEMO_CLIENT_KEY",
 		},
 	}
+	cfg.ZeekIngest.Enabled = true
+	cfg.ZeekIngest.CollectorID = "zeek-conn-http"
+	cfg.ZeekIngest.MaxBatchSize = 1000
 	cfg.Collectors.NetFlowV5 = []NetFlowV5CollectorConfig{
 		{
 			Enabled:      true,
@@ -312,21 +328,14 @@ func validConfig() Config {
 	}
 	cfg.QuiverClientGateways = []QuiverClientGatewayConfig{
 		{
-			Name:       "demo-client",
-			SourceHost: "rest-demo-client",
-			KeyEnv:     "REST_INGEST_DEMO_CLIENT_KEY",
+			Name:       "netflow-demo-gateway",
+			SourceHost: "netflow-gateway-01",
+			KeyEnv:     "NETFLOW_GATEWAY_DEMO_KEY",
 		},
-	}
-	cfg.Collectors.ZeekConnJSON = []ZeekCollectorConfig{
 		{
-			Enabled:       true,
-			CollectorID:   "zeek-conn-01",
-			SourceHost:    "zeek-probe-01",
-			FilePath:      "/var/log/zeek/current/conn.log",
-			PollInterval:  Duration(time.Second),
-			StartPosition: "end",
-			MaxLineBytes:  1048576,
-			StateKey:      "zeek-conn-01",
+			Name:       "zeek-demo-shipper",
+			SourceHost: "zeek-probe-01",
+			KeyEnv:     "ZEEK_SHIPPER_DEMO_KEY",
 		},
 	}
 	return cfg
@@ -369,24 +378,22 @@ rest_ingest:
     - name: demo-client
       source_host: rest-demo-client
       key_env: REST_INGEST_DEMO_CLIENT_KEY
+zeek_ingest:
+  enabled: true
+  collector_id: zeek-conn-http
+  max_batch_size: 1000
 collectors:
   netflow_v5:
     - enabled: true
       collector_id: netflow-main
       listen_addr: "0.0.0.0:2055"
       auth_required: false
-  zeek_conn_json:
-    - enabled: true
-      collector_id: zeek-conn-01
-      source_host: zeek-probe-01
-      file_path: /var/log/zeek/current/conn.log
-      poll_interval: "1s"
-      start_position: end
-      max_line_bytes: 1048576
-      state_key: zeek-conn-01
 quiver_client_gateways:
-  - name: demo-client
-    source_host: rest-demo-client
-    key_env: REST_INGEST_DEMO_CLIENT_KEY
+  - name: netflow-demo-gateway
+    source_host: netflow-gateway-01
+    key_env: NETFLOW_GATEWAY_DEMO_KEY
+  - name: zeek-demo-shipper
+    source_host: zeek-probe-01
+    key_env: ZEEK_SHIPPER_DEMO_KEY
 `
 }

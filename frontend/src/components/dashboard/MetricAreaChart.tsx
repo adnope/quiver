@@ -1,0 +1,214 @@
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts'
+import { formatMetricValue, formatTimestamp } from '@/lib/format'
+import type {
+  ChartDatum,
+  ChartSeries,
+  MetricRange,
+  MetricWidget,
+} from '@/lib/metrics-parser'
+
+interface MetricAreaChartProps {
+  widget: MetricWidget
+  range: MetricRange
+  data: ChartDatum[]
+  series: ChartSeries[]
+  isLoading: boolean
+  error?: string
+  onRetry: () => void
+}
+
+export function MetricAreaChart({
+  widget,
+  range,
+  data,
+  series,
+  isLoading,
+  error,
+  onRetry,
+}: MetricAreaChartProps) {
+  if (isLoading) {
+    return <ChartSkeleton />
+  }
+
+  if (error) {
+    return (
+      <div className="grid h-44 place-items-center rounded-md border border-red-500/30 bg-red-500/10 text-sm text-red-200">
+        <button type="button" className="cursor-pointer" onClick={onRetry}>
+          {error}
+        </button>
+      </div>
+    )
+  }
+
+  const hasData = data.some((datum) => datum.total > 0)
+  const visibleData = data.length > 0 ? data : [{ timestamp: new Date().toISOString(), total: 0 }]
+
+  return (
+    <div className="relative h-44">
+      <ResponsiveContainer width="100%" height="100%">
+        <AreaChart data={visibleData} margin={{ top: 10, right: 8, left: -18, bottom: 0 }}>
+          <defs>
+            {series.map((item) => (
+              <linearGradient key={item.key} id={`fill-${widget}-${item.key}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor={item.color} stopOpacity={0.15} />
+                <stop offset="95%" stopColor={item.color} stopOpacity={0} />
+              </linearGradient>
+            ))}
+          </defs>
+          <CartesianGrid
+            vertical={false}
+            stroke="var(--chart-grid)"
+            strokeDasharray="3 3"
+          />
+          <XAxis
+            dataKey="timestamp"
+            minTickGap={32}
+            tickLine={false}
+            axisLine={false}
+            tick={{ fill: 'var(--text-secondary)', fontSize: 11 }}
+            tickFormatter={(value: string) => formatTimestamp(value, range)}
+          />
+          <YAxis
+            tickLine={false}
+            axisLine={false}
+            width={54}
+            tick={{ fill: 'var(--text-secondary)', fontSize: 11 }}
+            tickFormatter={(value: number) => formatShortAxis(value)}
+          />
+          <Tooltip
+            content={<MetricTooltip widget={widget} range={range} series={series} />}
+            cursor={{ stroke: 'var(--border)', strokeDasharray: '3 3' }}
+          />
+          {series.length > 0 ? (
+            series.map((item) => (
+              <Area
+                key={item.key}
+                type="monotone"
+                dataKey={item.key}
+                stackId="1"
+                stroke={item.color}
+                strokeWidth={1.5}
+                fill={`url(#fill-${widget}-${item.key})`}
+                isAnimationActive
+                animationDuration={300}
+                dot={false}
+                activeDot={{ r: 3, strokeWidth: 0 }}
+              />
+            ))
+          ) : (
+            <Area
+              type="monotone"
+              dataKey="total"
+              stroke="var(--border)"
+              strokeWidth={1.5}
+              fill="transparent"
+              dot={false}
+              isAnimationActive={false}
+            />
+          )}
+        </AreaChart>
+      </ResponsiveContainer>
+      {!hasData ? (
+        <div className="absolute inset-0 grid place-items-center">
+          <div className="rounded-md border border-[var(--border)] bg-[var(--empty-overlay)] px-3 py-2 text-xs text-[var(--text-secondary)] backdrop-blur-sm">
+            No active flows detected. Waiting for ingestion...
+          </div>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+interface MetricTooltipPayload {
+  dataKey?: string | number
+  value?: number | string
+}
+
+interface MetricTooltipProps {
+  active?: boolean
+  payload?: MetricTooltipPayload[]
+  label?: string | number
+  widget: MetricWidget
+  range: MetricRange
+  series: ChartSeries[]
+}
+
+function MetricTooltip({
+  active,
+  payload,
+  label,
+  widget,
+  range,
+  series,
+}: MetricTooltipProps) {
+  if (!active || !payload || payload.length === 0) {
+    return null
+  }
+
+  const byKey = new Map(series.map((item) => [item.key, item]))
+  const rows = payload
+    .filter((item): item is MetricTooltipPayload & { dataKey: string | number } =>
+      Boolean(item.dataKey) && item.dataKey !== 'total',
+    )
+    .map((item) => {
+      const key = String(item.dataKey)
+      const seriesItem = byKey.get(key)
+      return {
+        key,
+        label: seriesItem?.label ?? key,
+        color: seriesItem?.color ?? '#3B82F6',
+        value: typeof item.value === 'number' ? item.value : 0,
+      }
+    })
+  const total = rows.reduce((sum: number, row) => sum + row.value, 0)
+
+  return (
+    <div className="min-w-48 rounded-lg border border-[var(--tooltip-border)] bg-[var(--tooltip-bg)] p-3 text-xs text-[var(--text-primary)] shadow-md backdrop-blur">
+      <div className="mb-2 font-mono text-[11px] text-[var(--text-secondary)]">
+        {formatTimestamp(String(label), range)}
+      </div>
+      <div className="space-y-1.5">
+        {rows.map((row) => (
+          <div key={row.key} className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2">
+            <span className="h-4 w-1.5 rounded-full" style={{ background: row.color }} />
+            <span className="truncate">{row.label}</span>
+            <span className="font-semibold">{formatMetricValue(widget, row.value)}</span>
+          </div>
+        ))}
+      </div>
+      <hr className="my-2 border-t border-[var(--tooltip-border)]" />
+      <div className="flex items-center justify-between gap-4 font-semibold">
+        <span>Total</span>
+        <span>{formatMetricValue(widget, total)}</span>
+      </div>
+    </div>
+  )
+}
+
+function ChartSkeleton() {
+  return (
+    <div className="h-44 animate-pulse rounded-md border border-[var(--border)] bg-[var(--chart-surface)]">
+      <div className="mt-8 h-px bg-[var(--border)]" />
+      <div className="mt-10 h-px bg-[var(--border)]" />
+      <div className="mt-10 h-px bg-[var(--border)]" />
+    </div>
+  )
+}
+
+function formatShortAxis(value: number) {
+  if (value >= 1_000_000) {
+    return `${Math.round(value / 1_000_000)}M`
+  }
+  if (value >= 1_000) {
+    return `${Math.round(value / 1_000)}k`
+  }
+  return String(Math.round(value))
+}

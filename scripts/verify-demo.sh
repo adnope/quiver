@@ -6,21 +6,78 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/.."
 
-# Load environment variables from .env without overwriting existing environment variables
-if [ -f .env ]; then
+load_env_file() {
+  local env_file="$1"
+  [ -f "$env_file" ] || return 0
+
   while IFS= read -r line || [ -n "$line" ]; do
-    # Skip comments and empty lines
-    [[ "$line" =~ ^#.*$ ]] && continue
-    [[ -z "$line" ]] && continue
-    # Extract key and value
+    line="${line#export }"
+    [[ "$line" =~ ^[[:space:]]*#.*$ ]] && continue
+    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+    [[ "$line" != *=* ]] && continue
+
     key="${line%%=*}"
     val="${line#*=}"
-    # Only export if key is not already defined in environment
-    if [ -z "${!key+x}" ]; then
+    key="${key//[[:space:]]/}"
+    val="${val%$'\r'}"
+
+    if [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && [ -z "${!key+x}" ]; then
       export "$key=$val"
     fi
-  done < .env
+  done < "$env_file"
+}
+
+load_env_file .env.example
+load_env_file .env
+
+export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-quiver-verify}
+export QUIVER_INTERNAL_PORT=${QUIVER_INTERNAL_PORT:-8080}
+export POSTGRES_USER=${POSTGRES_USER:-postgres}
+export POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+export POSTGRES_DB=${POSTGRES_DB:-quiver}
+export POSTGRES_SSLMODE=${POSTGRES_SSLMODE:-disable}
+export POSTGRES_POOL_SIZE=${POSTGRES_POOL_SIZE:-20}
+export POSTGRES_MAX_IDLE_CONNS=${POSTGRES_MAX_IDLE_CONNS:-10}
+export QUIVER_HTTP_ADDR=${QUIVER_HTTP_ADDR:-0.0.0.0:${QUIVER_INTERNAL_PORT}}
+export KAFKA_BROKER_INTERNAL=${KAFKA_BROKER_INTERNAL:-kafka:9092}
+export KAFKA_TOPIC_RAW=${KAFKA_TOPIC_RAW:-flow.raw}
+export QUIVER_API_CURSOR_SECRET=${QUIVER_API_CURSOR_SECRET:-verysecretkey_mustbe32byteslong!!!}
+export QUIVER_DATABASE_DSN=${QUIVER_DATABASE_DSN:-postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}?sslmode=${POSTGRES_SSLMODE}}
+
+GENERATED_ENV=false
+if [ ! -f .env ]; then
+  GENERATED_ENV=true
+  cat > .env <<EOF
+POSTGRES_USER=${POSTGRES_USER}
+POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+POSTGRES_DB=${POSTGRES_DB}
+POSTGRES_SSLMODE=${POSTGRES_SSLMODE}
+POSTGRES_POOL_SIZE=${POSTGRES_POOL_SIZE}
+POSTGRES_MAX_IDLE_CONNS=${POSTGRES_MAX_IDLE_CONNS}
+QUIVER_HTTP_ADDR=${QUIVER_HTTP_ADDR}
+KAFKA_BROKER_INTERNAL=${KAFKA_BROKER_INTERNAL}
+KAFKA_TOPIC_RAW=${KAFKA_TOPIC_RAW}
+QUIVER_DATABASE_DSN=${QUIVER_DATABASE_DSN}
+QUIVER_INTERNAL_PORT=${QUIVER_INTERNAL_PORT}
+QUIVER_HOST_PORT=${QUIVER_HOST_PORT:-8237}
+POSTGRES_HOST_PORT=${POSTGRES_HOST_PORT:-5433}
+NETFLOW_PORT=${NETFLOW_PORT:-2056}
+KAFKA_HOST_PORT=${KAFKA_HOST_PORT:-9095}
+QUIVER_CONFIG=${QUIVER_CONFIG:-/configs/quiver.demo.yaml}
+QUIVER_API_CURSOR_SECRET=${QUIVER_API_CURSOR_SECRET}
+QUIVER_DEMO_ADMIN_API_KEY=${QUIVER_DEMO_ADMIN_API_KEY:-demoadminkey123}
+REST_INGEST_DEMO_CLIENT_KEY=${REST_INGEST_DEMO_CLIENT_KEY:-democlientkey456}
+NETFLOW_GATEWAY_DEMO_KEY=${NETFLOW_GATEWAY_DEMO_KEY:-netflowgatewaykey456}
+ZEEK_SHIPPER_DEMO_KEY=${ZEEK_SHIPPER_DEMO_KEY:-zeekshipperkey456}
+KAFKA_TOPIC_DLQ=${KAFKA_TOPIC_DLQ:-flow.dead_letter}
+EOF
 fi
+cleanup_generated_env() {
+  if [ "$GENERATED_ENV" = "true" ]; then
+    rm -f .env
+  fi
+}
+trap cleanup_generated_env EXIT
 
 # Set isolated defaults, overriding the standard dev stack values if present
 if [ -z "${QUIVER_HOST_PORT:-}" ] || [ "${QUIVER_HOST_PORT}" = "8236" ]; then
@@ -35,26 +92,19 @@ fi
 if [ -z "${KAFKA_HOST_PORT:-}" ] || [ "${KAFKA_HOST_PORT}" = "9094" ]; then
   export KAFKA_HOST_PORT=9095
 fi
-if [ -z "${ZEEK_LOG_DIR:-}" ] || [ "${ZEEK_LOG_DIR}" = "/tmp/zeek" ]; then
-  export ZEEK_LOG_DIR=/tmp/zeek-verify
-fi
 if [ -z "${QUIVER_CONFIG:-}" ] || [ "${QUIVER_CONFIG}" = "/configs/quiver.dev.yaml" ]; then
   export QUIVER_CONFIG=/configs/quiver.demo.yaml
 fi
-export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-quiver-verify}
-
 export QUIVER_DEMO_ADMIN_API_KEY=${QUIVER_DEMO_ADMIN_API_KEY:-demoadminkey123}
 export REST_INGEST_DEMO_CLIENT_KEY=${REST_INGEST_DEMO_CLIENT_KEY:-democlientkey456}
+export NETFLOW_GATEWAY_DEMO_KEY=${NETFLOW_GATEWAY_DEMO_KEY:-netflowgatewaykey456}
+export ZEEK_SHIPPER_DEMO_KEY=${ZEEK_SHIPPER_DEMO_KEY:-zeekshipperkey456}
 export KAFKA_TOPIC_DLQ=${KAFKA_TOPIC_DLQ:-flow.dead_letter}
 
 echo "=================================================="
 # 1. Start Docker Compose
 echo "Starting Docker Compose services for project: ${COMPOSE_PROJECT_NAME}..."
 docker compose down -v || true
-# Ensure clean zeek directory
-docker run --rm -v /tmp:/tmp alpine rm -rf "${ZEEK_LOG_DIR}" || rm -rf "${ZEEK_LOG_DIR}" || true
-mkdir -p "${ZEEK_LOG_DIR}"
-chmod 777 "${ZEEK_LOG_DIR}"
 
 docker compose up -d --build
 
@@ -86,25 +136,16 @@ echo "=================================================="
 # 2. Ingest REST batch flow records
 echo "Ingesting REST Batch JSON flows..."
 # Run restgen valid batch
-go run tools/restgen/main.go -target http://localhost:${QUIVER_HOST_PORT} -key "${REST_INGEST_DEMO_CLIENT_KEY}" -count 5
+go run tools/restgen/main.go -target "http://localhost:${QUIVER_HOST_PORT}" -key "${REST_INGEST_DEMO_CLIENT_KEY}" -count 5
 
 # Run restgen malformed batch (triggers partial batch return)
-go run tools/restgen/main.go -target http://localhost:${QUIVER_HOST_PORT} -key "${REST_INGEST_DEMO_CLIENT_KEY}" -count 1 -malformed || true
+go run tools/restgen/main.go -target "http://localhost:${QUIVER_HOST_PORT}" -key "${REST_INGEST_DEMO_CLIENT_KEY}" -count 1 -malformed || true
 
 echo "=================================================="
-# 3. Ingest Zeek conn.log
-echo "Seeding Zeek conn.log..."
-# Append 5 valid records
-go run tools/zeekloggen/main.go -file "${ZEEK_LOG_DIR}/conn.log" -mode append -count 5
-
-# Append 1 malformed JSON record (destined for DLQ)
-go run tools/zeekloggen/main.go -file "${ZEEK_LOG_DIR}/conn.log" -mode append -malformed
-
-# Sync to docker container in case volume mount is not sharing the same filesystem (e.g. in containerized CI)
-if docker ps --format '{{.Names}}' | grep -q "${COMPOSE_PROJECT_NAME}-app"; then
-  docker exec "${COMPOSE_PROJECT_NAME}-app" mkdir -p /var/log/zeek/current || true
-  docker cp "${ZEEK_LOG_DIR}/conn.log" "${COMPOSE_PROJECT_NAME}-app":/var/log/zeek/current/conn.log || true
-fi
+# 3. Ingest Zeek conn.log records through the authenticated shipper HTTP path
+echo "Posting Zeek conn.log records through HTTP ingest..."
+go run tools/zeekloggen/main.go -target "http://localhost:${QUIVER_HOST_PORT}" -key "${ZEEK_SHIPPER_DEMO_KEY}" -count 5
+go run tools/zeekloggen/main.go -target "http://localhost:${QUIVER_HOST_PORT}" -key "${ZEEK_SHIPPER_DEMO_KEY}" -count 1 -malformed || true
 
 echo "=================================================="
 # 4. Ingest NetFlow UDP
@@ -170,13 +211,22 @@ fi
 echo "Metrics verification PASS!"
 
 echo "=================================================="
-# 8. Verify DLQ (Kafka dead_letter topic)
+# 8. Verify DLQ (Redpanda Kafka-compatible dead_letter topic)
 echo "Verifying ${KAFKA_TOPIC_DLQ} topic has messages..."
-# Consume from dead_letter topic using docker cp-kafka tools
-DLQ_COUNT=$(docker exec "${COMPOSE_PROJECT_NAME}-kafka" kafka-get-offsets --bootstrap-server localhost:9092 --topic "${KAFKA_TOPIC_DLQ}" | cut -d':' -f3 | awk '{s+=$1} END {print s}')
+# Consume two messages from the beginning using Redpanda's rpk CLI.
+# docker-compose.yml keeps the service name as "kafka" for compatibility,
+# but the actual container name is ${COMPOSE_PROJECT_NAME}-redpanda.
+DLQ_MESSAGES=$(timeout 10s docker exec "${COMPOSE_PROJECT_NAME}-redpanda" \
+  rpk topic consume "${KAFKA_TOPIC_DLQ}" \
+  --brokers=localhost:9092 \
+  --offset=start \
+  --num=2 2>/dev/null || true)
+DLQ_COUNT=$(printf '%s\n' "$DLQ_MESSAGES" | awk '/"topic"[[:space:]]*:/ {count++} END {print count+0}')
 echo "DLQ message count: $DLQ_COUNT"
 if [ -z "$DLQ_COUNT" ] || [ "$DLQ_COUNT" -lt 2 ]; then
   echo "ERROR: Expected at least 2 messages in ${KAFKA_TOPIC_DLQ}, got: ${DLQ_COUNT:-0}"
+  echo "Redpanda topic list:"
+  docker exec "${COMPOSE_PROJECT_NAME}-redpanda" rpk topic list --brokers=localhost:9092 || true
   exit 1
 fi
 echo "DLQ verification PASS!"

@@ -1,5 +1,16 @@
 basePath: /
 definitions:
+  github_com_adnope_quiver_internal_observability.MetricSnapshot:
+    properties:
+      labels:
+        additionalProperties:
+          type: string
+        type: object
+      name:
+        type: string
+      value:
+        type: integer
+    type: object
   internal_api.APIError:
     properties:
       code:
@@ -156,6 +167,35 @@ definitions:
       rejected:
         type: integer
     type: object
+  internal_api.LiveMetricsResponse:
+    properties:
+      metrics:
+        items:
+          $ref: '#/definitions/github_com_adnope_quiver_internal_observability.MetricSnapshot'
+        type: array
+    type: object
+  internal_api.MetricHistoryPoint:
+    properties:
+      delta:
+        type: number
+      labels:
+        additionalProperties:
+          type: string
+        type: object
+      name:
+        type: string
+      timestamp:
+        type: string
+      value:
+        type: number
+    type: object
+  internal_api.MetricHistoryResponse:
+    properties:
+      points:
+        items:
+          $ref: '#/definitions/internal_api.MetricHistoryPoint'
+        type: array
+    type: object
   internal_api.ProtocolResponse:
     properties:
       flow_count:
@@ -179,6 +219,8 @@ definitions:
         type: array
       limit:
         type: integer
+      next_cursor:
+        type: string
       to:
         type: string
     type: object
@@ -203,6 +245,8 @@ definitions:
         type: array
       limit:
         type: integer
+      next_cursor:
+        type: string
       to:
         type: string
     type: object
@@ -227,8 +271,20 @@ definitions:
         type: array
       limit:
         type: integer
+      next_cursor:
+        type: string
       to:
         type: string
+    type: object
+  internal_api.ZeekConnIngestRequest:
+    properties:
+      records:
+        items:
+          items:
+            format: int32
+            type: integer
+          type: array
+        type: array
     type: object
 info:
   contact: {}
@@ -263,6 +319,10 @@ paths:
         in: query
         name: limit
         type: integer
+      - description: Signed pagination cursor
+        in: query
+        name: cursor
+        type: string
       - description: Source type filter
         enum:
         - netflow_v5
@@ -346,6 +406,10 @@ paths:
         in: query
         name: limit
         type: integer
+      - description: Signed pagination cursor
+        in: query
+        name: cursor
+        type: string
       - description: Source type filter
         enum:
         - netflow_v5
@@ -429,6 +493,10 @@ paths:
         in: query
         name: limit
         type: integer
+      - description: Signed pagination cursor
+        in: query
+        name: cursor
+        type: string
       - description: Source type filter
         enum:
         - netflow_v5
@@ -731,6 +799,142 @@ paths:
       summary: Ingest normalized-like flow records
       tags:
       - ingest
+  /api/v1/ingest/zeek/conn:
+    post:
+      consumes:
+      - application/json
+      description: Accepts Zeek conn.log JSON object batches, or JSON strings containing
+        raw Zeek JSON lines, from authenticated log shippers. Valid records publish
+        as flow.v1.RawFlowEventEnvelope protobuf messages after Kafka ACK. Invalid
+        records publish to the dead-letter topic.
+      parameters:
+      - description: API key with ingest scope and source_host mapping
+        in: header
+        name: X-API-Key
+        required: true
+        type: string
+      - description: Optional request ID
+        in: header
+        name: X-Request-ID
+        type: string
+      - description: Zeek conn.log batch
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.ZeekConnIngestRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/internal_api.IngestResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "413":
+          description: Request Entity Too Large
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "429":
+          description: Too Many Requests
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Ingest Zeek conn.log records
+      tags:
+      - ingest
+  /api/v1/metrics/history:
+    get:
+      description: Returns downsampled system metrics from TimescaleDB based on range
+        parameter (1m, 1h, 12h, 24h, 1w, 30d).
+      parameters:
+      - description: API key with metrics scope when metrics auth is enabled
+        in: header
+        name: X-API-Key
+        required: true
+        type: string
+      - default: 1h
+        description: Metrics range window
+        enum:
+        - 1m
+        - 1h
+        - 12h
+        - 24h
+        - 1w
+        - 30d
+        in: query
+        name: range
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.MetricHistoryResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Historical metrics timeseries
+      tags:
+      - metrics
+  /api/v1/metrics/live:
+    get:
+      description: Returns the current in-memory metrics registry snapshots as structured
+        JSON.
+      parameters:
+      - description: API key with metrics scope when metrics auth is enabled
+        in: header
+        name: X-API-Key
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.LiveMetricsResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Live Prometheus metrics in JSON format
+      tags:
+      - metrics
   /health:
     get:
       description: Returns a top-level process health status. If X-API-Key with metrics

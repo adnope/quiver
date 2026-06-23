@@ -249,6 +249,14 @@ func validAPICfg() config.Config {
 		SourceHost: "rest-client-host",
 		KeyEnv:     "REST_KEY",
 	}}
+	cfg.ZeekIngest.Enabled = true
+	cfg.ZeekIngest.CollectorID = "zeek-conn-http"
+	cfg.ZeekIngest.MaxBatchSize = 1000
+	cfg.QuiverClientGateways = []config.QuiverClientGatewayConfig{{
+		Name:       "zeek-shipper",
+		SourceHost: "zeek-probe-01",
+		KeyEnv:     "ZEEK_KEY",
+	}}
 	cfg.API.Keys = []config.APIKeyConfig{
 		{
 			Name:   "query-only",
@@ -270,6 +278,7 @@ func validAPICfg() config.Config {
 func envLookup() func(string) string {
 	values := map[string]string{
 		"REST_KEY":    "ingest-key",
+		"ZEEK_KEY":    "zeek-key",
 		"QUERY_KEY":   "query-key",
 		"METRICS_KEY": "metrics-key",
 	}
@@ -301,6 +310,7 @@ func validRESTRecord() string {
 type testPublisher struct {
 	mu      sync.Mutex
 	raw     []*flowv1.RawFlowEventEnvelope
+	dlq     []*flowv1.DeadLetterEvent
 	started chan struct{}
 	release chan error
 	err     error
@@ -333,8 +343,20 @@ func (p *testPublisher) PublishRaw(ctx context.Context, event *flowv1.RawFlowEve
 	return p.err
 }
 
-func (p *testPublisher) PublishDeadLetter(context.Context, *flowv1.DeadLetterEvent) error {
-	return nil
+func (p *testPublisher) PublishDeadLetter(ctx context.Context, event *flowv1.DeadLetterEvent) error {
+	p.mu.Lock()
+	p.dlq = append(p.dlq, event)
+	p.mu.Unlock()
+	if p.started != nil {
+		p.started <- struct{}{}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-p.release:
+			return err
+		}
+	}
+	return p.err
 }
 
 func (p *testPublisher) Flush(context.Context) error {
@@ -360,6 +382,14 @@ func (p *testPublisher) rawEvents() []*flowv1.RawFlowEventEnvelope {
 	defer p.mu.Unlock()
 	events := make([]*flowv1.RawFlowEventEnvelope, len(p.raw))
 	copy(events, p.raw)
+	return events
+}
+
+func (p *testPublisher) deadLetterEvents() []*flowv1.DeadLetterEvent {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	events := make([]*flowv1.DeadLetterEvent, len(p.dlq))
+	copy(events, p.dlq)
 	return events
 }
 

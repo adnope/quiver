@@ -23,9 +23,15 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+type kafkaClient interface {
+	PollRecords(ctx context.Context, num int) kgo.Fetches
+	CommitRecords(ctx context.Context, records ...*kgo.Record) error
+	Close()
+}
+
 type Pipeline struct {
 	cfg           config.Config
-	client        *kgo.Client
+	client        kafkaClient
 	storageWriter *postgres.StorageWriter
 	publisher     kafka.RawEventPublisher
 	logger        *slog.Logger
@@ -36,7 +42,7 @@ type Pipeline struct {
 }
 
 type franzCommitter struct {
-	client  *kgo.Client
+	client  kafkaClient
 	records []*kgo.Record
 }
 
@@ -157,6 +163,13 @@ func (p *Pipeline) run() {
 }
 
 func (p *Pipeline) processBatch(ctx context.Context, records []*kgo.Record) error {
+	if len(records) < 200 {
+		return p.processBatchSequential(ctx, records)
+	}
+	return p.processBatchConcurrent(ctx, records)
+}
+
+func (p *Pipeline) processBatchSequential(ctx context.Context, records []*kgo.Record) error {
 	batchItems := make([]postgres.StorageBatchItem, 0, len(records))
 
 	for _, krec := range records {
@@ -231,6 +244,162 @@ func (p *Pipeline) processBatch(ctx context.Context, records []*kgo.Record) erro
 	}
 
 	return nil
+}
+
+func (p *Pipeline) processBatchConcurrent(ctx context.Context, records []*kgo.Record) error {
+	concurrency := p.cfg.StorageWriter.Concurrency
+	if concurrency <= 0 {
+		concurrency = 8
+	}
+
+	chunks := splitRecords(records, concurrency)
+	var wg sync.WaitGroup
+	errs := make([]error, len(chunks))
+	writeResults := make([]postgres.StorageWriteResult, len(chunks))
+
+	for i, chunk := range chunks {
+		wg.Add(1)
+		go func(workerIdx int, chunkRecords []*kgo.Record) {
+			defer wg.Done()
+
+			defer func() {
+				if r := recover(); r != nil {
+					errs[workerIdx] = fmt.Errorf("consumer worker panicked: %v", r)
+				}
+			}()
+
+			batchItems := make([]postgres.StorageBatchItem, 0, len(chunkRecords))
+			for _, krec := range chunkRecords {
+				var envelope flowv1.RawFlowEventEnvelope
+				if err := proto.Unmarshal(krec.Value, &envelope); err != nil {
+					p.logger.Error("failed to unmarshal RawFlowEventEnvelope from kafka", slog.Any("error", err))
+					if err := p.publishCorruptRecordToDLQ(ctx, krec, err); err != nil {
+						errs[workerIdx] = fmt.Errorf("publish corrupt record to DLQ: %w", err)
+						return
+					}
+					p.metric("flow_records_failed_total", map[string]string{"reason": "unmarshal_failed"})
+					continue
+				}
+
+				p.metric("flow_records_received_total", map[string]string{
+					"collector_id": envelope.GetSource().GetCollectorId(),
+					"source_type":  envelope.GetSource().GetSourceType().String(),
+				})
+
+				if err := validation.ValidateRawEventEnvelope(&envelope); err != nil {
+					p.logger.Error("raw event validation failed in pipeline", slog.Any("error", err))
+					if err := p.publishRawEventToDLQ(ctx, &envelope, "invalid_raw_envelope", err.Error()); err != nil {
+						errs[workerIdx] = fmt.Errorf("publish invalid raw envelope to DLQ: %w", err)
+						return
+					}
+					p.metric("flow_records_failed_total", map[string]string{"reason": "validation_failed"})
+					continue
+				}
+				p.metric("flow_records_validated_total", map[string]string{
+					"collector_id": envelope.GetSource().GetCollectorId(),
+					"source_type":  envelope.GetSource().GetSourceType().String(),
+				})
+
+				opts := normalize.Options{
+					Now:           time.Now,
+					LocalNetworks: domain.DefaultLocalNetworks(),
+				}
+				normalized, err := normalize.NormalizeRawEvent(&envelope, opts)
+				if err != nil {
+					p.logger.Error("normalization failed in pipeline", slog.Any("error", err))
+					if err := p.publishRawEventToDLQ(ctx, &envelope, "normalization_failed", err.Error()); err != nil {
+						errs[workerIdx] = fmt.Errorf("publish normalization failure to DLQ: %w", err)
+						return
+					}
+					p.metric("flow_records_failed_total", map[string]string{"reason": "normalization_failed"})
+					continue
+				}
+				p.metric("flow_records_normalized_total", map[string]string{
+					"collector_id": envelope.GetSource().GetCollectorId(),
+					"source_type":  envelope.GetSource().GetSourceType().String(),
+				})
+
+				batchItems = append(batchItems, postgres.StorageBatchItem{
+					Record:   normalized,
+					RawEvent: &envelope,
+				})
+			}
+
+			if len(batchItems) > 0 {
+				writeResult, err := p.storageWriter.WriteBatch(ctx, batchItems, nil)
+				if err != nil {
+					errs[workerIdx] = fmt.Errorf("write storage batch in worker %d: %w", workerIdx, err)
+					return
+				}
+				writeResults[workerIdx] = writeResult
+			}
+		}(i, chunk)
+	}
+
+	wg.Wait()
+
+	// Check if any worker failed
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+
+	// Commit offsets since all workers succeeded
+	committer := &franzCommitter{client: p.client, records: records}
+	if err := committer.Commit(ctx); err != nil {
+		return fmt.Errorf("commit storage offsets: %w", err)
+	}
+
+	// Aggregate metrics and log results
+	var totalAttempted, totalInserted, totalDeduplicated, totalDeadLettered int
+	for _, res := range writeResults {
+		totalAttempted += res.Attempted
+		totalInserted += res.Inserted
+		totalDeduplicated += res.Deduplicated
+		totalDeadLettered += res.DeadLettered
+	}
+
+	p.logger.Debug("batch processed successfully",
+		slog.Int("attempted", totalAttempted),
+		slog.Int("inserted", totalInserted),
+		slog.Int("deduplicated", totalDeduplicated),
+		slog.Int("dead_lettered", totalDeadLettered),
+	)
+
+	if p.metrics != nil {
+		p.metrics.Add("flow_records_stored_total", nil, uint64(totalInserted))                                               //nolint:gosec
+		p.metrics.Add("flow_records_failed_total", map[string]string{"reason": "storage_failed"}, uint64(totalDeadLettered)) //nolint:gosec
+	}
+
+	return nil
+}
+
+func splitRecords(records []*kgo.Record, concurrency int) [][]*kgo.Record {
+	if len(records) == 0 {
+		return nil
+	}
+	if concurrency <= 0 {
+		concurrency = 8
+	}
+	if concurrency > len(records) {
+		concurrency = len(records)
+	}
+
+	chunks := make([][]*kgo.Record, concurrency)
+	base := len(records) / concurrency
+	rem := len(records) % concurrency
+
+	start := 0
+	for i := 0; i < concurrency; i++ {
+		size := base
+		if i < rem {
+			size++
+		}
+		chunks[i] = records[start : start+size]
+		start += size
+	}
+	return chunks
 }
 
 func (p *Pipeline) publishCorruptRecordToDLQ(ctx context.Context, krec *kgo.Record, unmarshalErr error) error {
