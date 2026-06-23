@@ -156,13 +156,22 @@ fi
 echo "Metrics verification PASS!"
 
 echo "=================================================="
-# 8. Verify DLQ (Kafka dead_letter topic)
+# 8. Verify DLQ (Redpanda Kafka-compatible dead_letter topic)
 echo "Verifying ${KAFKA_TOPIC_DLQ} topic has messages..."
-# Consume from dead_letter topic using docker cp-kafka tools
-DLQ_COUNT=$(docker exec "${COMPOSE_PROJECT_NAME}-kafka" kafka-get-offsets --bootstrap-server localhost:9092 --topic "${KAFKA_TOPIC_DLQ}" | cut -d':' -f3 | awk '{s+=$1} END {print s}')
+# Consume two messages from the beginning using Redpanda's rpk CLI.
+# docker-compose.yml keeps the service name as "kafka" for compatibility,
+# but the actual container name is ${COMPOSE_PROJECT_NAME}-redpanda.
+DLQ_MESSAGES=$(timeout 10s docker exec "${COMPOSE_PROJECT_NAME}-redpanda" \
+  rpk topic consume "${KAFKA_TOPIC_DLQ}" \
+  --brokers=localhost:9092 \
+  --offset=start \
+  --num=2 2>/dev/null || true)
+DLQ_COUNT=$(printf '%s\n' "$DLQ_MESSAGES" | awk '/"topic"[[:space:]]*:/ {count++} END {print count+0}')
 echo "DLQ message count: $DLQ_COUNT"
 if [ -z "$DLQ_COUNT" ] || [ "$DLQ_COUNT" -lt 2 ]; then
   echo "ERROR: Expected at least 2 messages in ${KAFKA_TOPIC_DLQ}, got: ${DLQ_COUNT:-0}"
+  echo "Redpanda topic list:"
+  docker exec "${COMPOSE_PROJECT_NAME}-redpanda" rpk topic list --brokers=localhost:9092 || true
   exit 1
 fi
 echo "DLQ verification PASS!"

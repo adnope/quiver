@@ -71,39 +71,15 @@ jobs:
       - name: Run Unit Tests
         run: make test-unit
 
-      - name: Setup environment file
-        run: cp .env.example .env
-
-      - name: Start Services (Docker Compose)
-        run: |
-          docker compose up -d --build
-          
-          # Wait for TimescaleDB to be healthy
-          for i in {1..30}; do
-            if docker exec ${COMPOSE_PROJECT_NAME:-quiver}-timescaledb pg_isready -U postgres -d quiver; then
-              echo "TimescaleDB is healthy!"
-              break
-            fi
-            echo "Waiting for TimescaleDB..."
-            sleep 2
-          done
-          
-          # Wait for Kafka to be healthy
-          for i in {1..30}; do
-            if docker exec ${COMPOSE_PROJECT_NAME:-quiver}-kafka kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1; then
-              echo "Kafka is healthy!"
-              break
-            fi
-            echo "Waiting for Kafka..."
-            sleep 2
-          done
-
+      - name: Start Integration Test Stack
+        run: make test-up
+      
       - name: Run Integration Tests
         run: make test-integration
-
+      
+      - name: Tear Down Integration Test Stack
+        if: always()
+        run: make test-down
+      
       - name: Run Demo Verification Script
         run: make verify-demo
-
-      - name: Tear down Services
-        if: always()
-        run: docker compose down -v

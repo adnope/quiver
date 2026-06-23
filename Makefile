@@ -52,6 +52,32 @@ test-unit:
 
 test-up:
 	docker compose -f docker-compose.test.yml -p quiver-test up -d --build
+	@for i in $$(seq 1 30); do \
+		if docker exec quiver-test-timescaledb pg_isready -U postgres -d quiver >/dev/null 2>&1; then \
+			echo "TimescaleDB test service is healthy!"; \
+			break; \
+		fi; \
+		if [ "$$i" -eq 30 ]; then \
+			echo "TimescaleDB test service did not become healthy."; \
+			docker compose -f docker-compose.test.yml -p quiver-test logs timescaledb; \
+			exit 1; \
+		fi; \
+		echo "Waiting for TimescaleDB test service..."; \
+		sleep 2; \
+	done
+	@for i in $$(seq 1 30); do \
+		if docker exec quiver-test-redpanda rpk cluster info --brokers=localhost:9092 >/dev/null 2>&1; then \
+			echo "Redpanda test service is healthy!"; \
+			break; \
+		fi; \
+		if [ "$$i" -eq 30 ]; then \
+			echo "Redpanda test service did not become healthy."; \
+			docker compose -f docker-compose.test.yml -p quiver-test logs kafka; \
+			exit 1; \
+		fi; \
+		echo "Waiting for Redpanda test service..."; \
+		sleep 2; \
+	done
 
 test-down:
 	docker compose -f docker-compose.test.yml -p quiver-test down -v
