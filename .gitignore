@@ -7,3 +7,4 @@
 artifacts
 *.test
 .env
+ai_context

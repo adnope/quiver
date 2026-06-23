@@ -36,6 +36,12 @@ export POSTGRES_USER=${POSTGRES_USER:-postgres}
 export POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
 export POSTGRES_DB=${POSTGRES_DB:-quiver}
 export POSTGRES_SSLMODE=${POSTGRES_SSLMODE:-disable}
+export POSTGRES_POOL_SIZE=${POSTGRES_POOL_SIZE:-20}
+export POSTGRES_MAX_IDLE_CONNS=${POSTGRES_MAX_IDLE_CONNS:-10}
+export QUIVER_HTTP_ADDR=${QUIVER_HTTP_ADDR:-0.0.0.0:${QUIVER_INTERNAL_PORT}}
+export KAFKA_BROKER_INTERNAL=${KAFKA_BROKER_INTERNAL:-kafka:9092}
+export KAFKA_TOPIC_RAW=${KAFKA_TOPIC_RAW:-flow.raw}
+export QUIVER_API_CURSOR_SECRET=${QUIVER_API_CURSOR_SECRET:-verysecretkey_mustbe32byteslong!!!}
 export QUIVER_DATABASE_DSN=${QUIVER_DATABASE_DSN:-postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}?sslmode=${POSTGRES_SSLMODE}}
 
 GENERATED_ENV=false
@@ -46,6 +52,11 @@ POSTGRES_USER=${POSTGRES_USER}
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 POSTGRES_DB=${POSTGRES_DB}
 POSTGRES_SSLMODE=${POSTGRES_SSLMODE}
+POSTGRES_POOL_SIZE=${POSTGRES_POOL_SIZE}
+POSTGRES_MAX_IDLE_CONNS=${POSTGRES_MAX_IDLE_CONNS}
+QUIVER_HTTP_ADDR=${QUIVER_HTTP_ADDR}
+KAFKA_BROKER_INTERNAL=${KAFKA_BROKER_INTERNAL}
+KAFKA_TOPIC_RAW=${KAFKA_TOPIC_RAW}
 QUIVER_DATABASE_DSN=${QUIVER_DATABASE_DSN}
 QUIVER_INTERNAL_PORT=${QUIVER_INTERNAL_PORT}
 QUIVER_HOST_PORT=${QUIVER_HOST_PORT:-8237}
@@ -53,6 +64,7 @@ POSTGRES_HOST_PORT=${POSTGRES_HOST_PORT:-5433}
 NETFLOW_PORT=${NETFLOW_PORT:-2056}
 KAFKA_HOST_PORT=${KAFKA_HOST_PORT:-9095}
 QUIVER_CONFIG=${QUIVER_CONFIG:-/configs/quiver.demo.yaml}
+QUIVER_API_CURSOR_SECRET=${QUIVER_API_CURSOR_SECRET}
 QUIVER_DEMO_ADMIN_API_KEY=${QUIVER_DEMO_ADMIN_API_KEY:-demoadminkey123}
 REST_INGEST_DEMO_CLIENT_KEY=${REST_INGEST_DEMO_CLIENT_KEY:-democlientkey456}
 NETFLOW_GATEWAY_DEMO_KEY=${NETFLOW_GATEWAY_DEMO_KEY:-netflowgatewaykey456}
@@ -124,10 +136,10 @@ echo "=================================================="
 # 2. Ingest REST batch flow records
 echo "Ingesting REST Batch JSON flows..."
 # Run restgen valid batch
-go run tools/restgen/main.go -target http://localhost:${QUIVER_HOST_PORT} -key "${REST_INGEST_DEMO_CLIENT_KEY}" -count 5
+go run tools/restgen/main.go -target "http://localhost:${QUIVER_HOST_PORT}" -key "${REST_INGEST_DEMO_CLIENT_KEY}" -count 5
 
 # Run restgen malformed batch (triggers partial batch return)
-go run tools/restgen/main.go -target http://localhost:${QUIVER_HOST_PORT} -key "${REST_INGEST_DEMO_CLIENT_KEY}" -count 1 -malformed || true
+go run tools/restgen/main.go -target "http://localhost:${QUIVER_HOST_PORT}" -key "${REST_INGEST_DEMO_CLIENT_KEY}" -count 1 -malformed || true
 
 echo "=================================================="
 # 3. Ingest Zeek conn.log records through the authenticated shipper HTTP path

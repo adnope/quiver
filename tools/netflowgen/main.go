@@ -1,9 +1,11 @@
+//nolint:gosec // This CLI emits bounded synthetic NetFlow packets for local verification.
 package main
 
 import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"time"
@@ -26,23 +28,38 @@ func main() {
 		fmt.Printf("Failed to dial target: %v\n", err)
 		os.Exit(1)
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			fmt.Printf("Failed to close UDP connection: %v\n", err)
+		}
+	}()
+
+	if *count < 0 || *count > math.MaxUint16 {
+		fmt.Printf("Invalid count %d: must be between 0 and %d\n", *count, math.MaxUint16)
+		os.Exit(1)
+	}
+	if *sequence < 0 || *sequence > math.MaxUint32 {
+		fmt.Printf("Invalid sequence %d: must be between 0 and %d\n", *sequence, uint64(math.MaxUint32))
+		os.Exit(1)
+	}
+	seq := uint32(*sequence)
+	recordCount := uint16(*count)
 
 	var payload []byte
 	switch *malformed {
 	case "short":
 		payload = []byte{0x00, 0x05, 0x00, 0x01} // Too short
 	case "version":
-		payload = generatePacket(uint32(*sequence), uint16(*count))
+		payload = generatePacket(seq, recordCount)
 		binary.BigEndian.PutUint16(payload[0:2], 9) // Version 9 instead of 5
 	case "mismatch":
-		payload = generatePacket(uint32(*sequence), uint16(*count))
+		payload = generatePacket(seq, recordCount)
 		// Truncate the payload so record count doesn't match physical size
 		if len(payload) > v5HeaderLen {
 			payload = payload[:len(payload)-10]
 		}
 	default:
-		payload = generatePacket(uint32(*sequence), uint16(*count))
+		payload = generatePacket(seq, recordCount)
 	}
 
 	_, err = conn.Write(payload)

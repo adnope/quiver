@@ -1,3 +1,4 @@
+//nolint:gosec // This demo seeder intentionally uses non-cryptographic randomness, bounded numeric casts, and local demo DSN defaults.
 package main
 
 import (
@@ -35,10 +36,6 @@ var (
 		"web-server-01", "web-server-02", "db-primary-01", "db-replica-01",
 		"app-gateway-01", "app-gateway-02", "mail-server-01", "redis-cache-01",
 		"developer-workstation-mac", "marketing-pc-01", "finance-pc-02",
-	}
-
-	collectorIDs = []string{
-		"rest-ingest-main", "zeek-sensor-eth0", "netflow-v5-gateway-router",
 	}
 )
 
@@ -81,7 +78,7 @@ func buildBatchInsert(batchSize int) string {
 			if j > 0 {
 				buf.WriteString(",")
 			}
-			buf.WriteString(fmt.Sprintf("$%d", paramIdx))
+			fmt.Fprintf(&buf, "$%d", paramIdx)
 			paramIdx++
 		}
 		buf.WriteString(")")
@@ -159,7 +156,11 @@ func main() {
 		fmt.Printf("Connection error: %v\n", err)
 		os.Exit(1)
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			fmt.Printf("Failed to close database connection: %v\n", err)
+		}
+	}()
 	db.SetMaxOpenConns(*concurrency + 2)
 
 	if err := db.Ping(); err != nil {

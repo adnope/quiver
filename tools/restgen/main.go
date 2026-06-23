@@ -113,7 +113,11 @@ func main() {
 		fmt.Printf("HTTP request failed: %v\n", err)
 		os.Exit(1)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Printf("Failed to close response body: %v\n", err)
+		}
+	}()
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	fmt.Printf("HTTP Status: %d\n", resp.StatusCode)

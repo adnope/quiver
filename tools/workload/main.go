@@ -1,3 +1,4 @@
+//nolint:gosec // This live workload generator intentionally uses non-cryptographic randomness and bounded numeric casts.
 package main
 
 import (
@@ -136,7 +137,11 @@ func main() {
 					atomic.AddInt64(&errorCount, 1)
 					return
 				}
-				defer resp.Body.Close()
+				defer func() {
+					if err := resp.Body.Close(); err != nil {
+						fmt.Printf("[Warn] Failed to close response body: %v\n", err)
+					}
+				}()
 
 				if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
 					fmt.Printf("[Warn] Request rejected by backend. Status: %d\n", resp.StatusCode)

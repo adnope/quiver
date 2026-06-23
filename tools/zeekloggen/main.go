@@ -2,10 +2,11 @@ package main
 
 import (
 	"bytes"
+	cryptorand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -48,7 +49,7 @@ func main() {
 	}
 
 	dir := filepath.Dir(*filePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0750); err != nil {
 		fmt.Printf("Failed to create directory %s: %v\n", dir, err)
 		os.Exit(1)
 	}
@@ -62,12 +63,16 @@ func main() {
 		fmt.Printf("Rotated log file to %s\n", rotatedPath)
 	}
 
-	file, err := os.OpenFile(*filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(*filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		fmt.Printf("Failed to open file %s: %v\n", *filePath, err)
 		os.Exit(1)
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			fmt.Printf("Failed to close file %s: %v\n", *filePath, err)
+		}
+	}()
 
 	if *malformed {
 		_, err := file.WriteString("{bad-json\n")
@@ -172,7 +177,7 @@ func buildRecords(count int, malformed bool) ([]json.RawMessage, error) {
 func newRecord(index int) ZeekRecord {
 	return ZeekRecord{
 		TS:        float64(time.Now().UnixNano()) / 1e9,
-		UID:       fmt.Sprintf("C%x", rand.Int63()),
+		UID:       randomZeekUID(),
 		OrigH:     "192.168.1.50",
 		OrigP:     49000 + index,
 		RespH:     "8.8.8.8",
@@ -186,4 +191,12 @@ func newRecord(index int) ZeekRecord {
 		RespPkts:  1,
 		ConnState: "SF",
 	}
+}
+
+func randomZeekUID() string {
+	var b [8]byte
+	if _, err := cryptorand.Read(b[:]); err != nil {
+		return fmt.Sprintf("C%x", time.Now().UnixNano())
+	}
+	return "C" + hex.EncodeToString(b[:])
 }

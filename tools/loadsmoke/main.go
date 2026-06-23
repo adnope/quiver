@@ -1,3 +1,4 @@
+//nolint:gosec // This load generator intentionally uses non-cryptographic randomness and local artifact files.
 package main
 
 import (
@@ -155,7 +156,7 @@ func main() {
 		fmt.Printf("Fatal: Invalid DB connection string: %v\n", err)
 		os.Exit(1)
 	}
-	defer db.Close()
+	defer closeAndLog("database connection", db)
 	db.SetMaxOpenConns(2)
 
 	initialPersisted, err := getDatabaseInsertCount(ctx, db)
@@ -245,6 +246,7 @@ func main() {
 		fmt.Printf("Mode: Ramping | Start: %d | Step: %d | Interval: %s | Max: %d\n", cfg.RampStart, cfg.RampStep, cfg.RampInterval, cfg.RampMax)
 		currentRPS := cfg.RampStart
 
+	rampLoop:
 		for {
 			targetRPS = currentRPS
 			updateRPS(currentRPS)
@@ -254,11 +256,11 @@ func main() {
 
 			select {
 			case <-ctx.Done():
-				break
+				break rampLoop
 			case <-time.After(cfg.RampInterval):
 			}
 			if ctx.Err() != nil {
-				break
+				break rampLoop
 			}
 
 			endAccepted := atomic.LoadInt64(&accepted)
@@ -385,9 +387,16 @@ func main() {
 	}
 
 	artifactPath := "artifacts/performance-smoke.json"
-	_ = os.MkdirAll("artifacts", 0755)
-	fileBytes, _ := json.MarshalIndent(result, "", "    ")
-	_ = os.WriteFile(artifactPath, fileBytes, 0644)
+	if err := os.MkdirAll("artifacts", 0750); err != nil {
+		fmt.Printf("Failed to create artifacts directory: %v\n", err)
+	} else {
+		fileBytes, err := json.MarshalIndent(result, "", "    ")
+		if err != nil {
+			fmt.Printf("Failed to encode performance artifact: %v\n", err)
+		} else if err := os.WriteFile(artifactPath, fileBytes, 0600); err != nil {
+			fmt.Printf("Failed to write performance artifact: %v\n", err)
+		}
+	}
 
 	fmt.Printf("\n=== Results ===\n")
 	fmt.Printf("Average Ingestion Rate:   %.2f records/sec (over %.2fs active load)\n", avgIngestionRPS, actualDuration)
@@ -476,7 +485,11 @@ func runRESTWorker(ctx context.Context, cfg Config, targetRPS *atomic.Int64) {
 				continue
 			}
 
-			req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
+			req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
+			if err != nil {
+				atomic.AddInt64(&failed, int64(batchSize))
+				continue
+			}
 			req.Header.Set("X-API-Key", cfg.ClientKey)
 			req.Header.Set("Content-Type", "application/json")
 
@@ -500,7 +513,9 @@ func runRESTWorker(ctx context.Context, cfg Config, targetRPS *atomic.Int64) {
 			} else {
 				atomic.AddInt64(&failed, int64(batchSize))
 			}
-			resp.Body.Close()
+			if err := resp.Body.Close(); err != nil {
+				fmt.Printf("Failed to close REST ingest response body: %v\n", err)
+			}
 		}
 	}
 }
@@ -511,7 +526,7 @@ func runUDPWorker(ctx context.Context, cfg Config, targetRPS *atomic.Int64) {
 		fmt.Printf("UDP connection failed: %v\n", err)
 		return
 	}
-	defer conn.Close()
+	defer closeAndLog("UDP connection", conn)
 
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	batchSize := 10
@@ -608,13 +623,16 @@ func runZeekWorker(ctx context.Context, cfg Config, targetRPS *atomic.Int64) {
 
 	if cfg.ZeekMode == "file" && cfg.TargetZeek != "" {
 		dir := filepath.Dir(cfg.TargetZeek)
-		_ = os.MkdirAll(dir, 0755)
-		file, err = os.OpenFile(cfg.TargetZeek, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		if err := os.MkdirAll(dir, 0750); err != nil {
+			fmt.Printf("Failed to create Zeek log directory %s: %v\n", dir, err)
+			return
+		}
+		file, err = os.OpenFile(cfg.TargetZeek, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 		if err != nil {
 			fmt.Printf("Failed to open Zeek log file %s: %v\n", cfg.TargetZeek, err)
 			return
 		}
-		defer file.Close()
+		defer closeAndLog("Zeek log file", file)
 	}
 
 	for {
@@ -650,7 +668,11 @@ func runZeekWorker(ctx context.Context, cfg Config, targetRPS *atomic.Int64) {
 				}
 
 				payload, _ := json.Marshal(map[string]any{"records": records})
-				req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payload))
+				req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payload))
+				if err != nil {
+					atomic.AddInt64(&failed, int64(batchSize))
+					continue
+				}
 				req.Header.Set("Content-Type", "application/json")
 				req.Header.Set("X-API-Key", cfg.ZeekKey)
 
@@ -664,7 +686,9 @@ func runZeekWorker(ctx context.Context, cfg Config, targetRPS *atomic.Int64) {
 				} else {
 					atomic.AddInt64(&failed, int64(batchSize))
 				}
-				resp.Body.Close()
+				if err := resp.Body.Close(); err != nil {
+					fmt.Printf("Failed to close Zeek ingest response body: %v\n", err)
+				}
 			} else if file != nil {
 				// File mode
 				var buf bytes.Buffer
@@ -733,13 +757,19 @@ func runQueryWorker(ctx context.Context, client *http.Client, targetREST, adminK
 			queryURL := fmt.Sprintf("%s/api/v1/flows?from=%s&to=%s&limit=25", targetREST, url.QueryEscape(fromTime), url.QueryEscape(toTime))
 
 			qStart := time.Now()
-			req, _ := http.NewRequestWithContext(ctx, "GET", queryURL, nil)
+			req, err := http.NewRequestWithContext(ctx, "GET", queryURL, nil)
+			if err != nil {
+				continue
+			}
 			req.Header.Set("X-API-Key", adminKey)
 
 			resp, err := client.Do(req)
 			if err == nil {
-				resp.Body.Close()
-				if resp.StatusCode == http.StatusOK {
+				statusCode := resp.StatusCode
+				if err := resp.Body.Close(); err != nil {
+					fmt.Printf("Failed to close query response body: %v\n", err)
+				}
+				if statusCode == http.StatusOK {
 					lat := float64(time.Since(qStart).Milliseconds())
 					mu.Lock()
 					*latencies = append(*latencies, lat)
@@ -747,5 +777,11 @@ func runQueryWorker(ctx context.Context, client *http.Client, targetREST, adminK
 				}
 			}
 		}
+	}
+}
+
+func closeAndLog(name string, closer interface{ Close() error }) {
+	if err := closer.Close(); err != nil {
+		fmt.Printf("Failed to close %s: %v\n", name, err)
 	}
 }

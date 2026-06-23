@@ -26,9 +26,6 @@ jobs:
       - name: Run frontend typecheck
         run: npm --prefix frontend run typecheck
 
-      - name: Run frontend lint
-        run: npm --prefix frontend run lint
-
       - name: Run frontend tests
         run: npm --prefix frontend run test
 
@@ -41,8 +38,8 @@ jobs:
       - name: Install golangci-lint
         run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
 
-      - name: Run golangci-lint
-        run: golangci-lint run cmd/... internal/...
+      - name: Run lint
+        run: make lint
 
       - name: Run govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...

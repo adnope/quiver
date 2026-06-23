@@ -13,7 +13,7 @@ QUIVER_DATABASE_DSN ?=
 OPENAPI_DIR ?= api/openapi
 OPENAPI_FILE ?= $(OPENAPI_DIR)/quiver.v1.yaml
 
-.PHONY: build build-quiver build-client frontend-install frontend-typecheck frontend-test frontend-build fmt lint test test-unit test-up test-down test-integration test-all test-race coverage proto proto-check swagger swagger-check openapi openapi-check migrate-up dev-up dev-down dev-demo load-smoke dev-load-smoke verify-demo verify-vector-shipper
+.PHONY: build build-quiver build-client frontend-install frontend-typecheck frontend-test frontend-build fmt lint lint-go lint-frontend test test-unit test-up test-down test-integration test-all test-race coverage proto proto-check swagger swagger-check openapi openapi-check migrate-up dev-up dev-down dev-demo load-smoke dev-load-smoke verify-demo verify-vector-shipper
 
 build: build-quiver build-client
 
@@ -42,8 +42,13 @@ frontend-build: frontend-install
 fmt:
 	$(GO) fmt ./...
 
-lint:
-	$(GOLANGCI_LINT) run cmd/... internal/...
+lint: lint-go lint-frontend
+
+lint-go:
+	$(GOLANGCI_LINT) run ./...
+
+lint-frontend:
+	npm --prefix frontend run lint
 
 test: test-unit
 
@@ -87,7 +92,7 @@ test-integration:
 	QUIVER_KAFKA_BROKERS="localhost:9096" \
 	$(GO) test -tags=integration ./...
 
-test-all: test-up test-unit test-integration test-down
+test-all: test-up test-unit test-race test-integration test-down
 
 test-race:
 	$(GO) test -race ./internal/...
@@ -174,5 +179,3 @@ load-smoke:
 		-client-key "$(REST_INGEST_DEMO_CLIENT_KEY)" \
 		-zeek-key "$(ZEEK_SHIPPER_DEMO_KEY)" \
 		-duration 30
-
-dev-load-smoke: load-smoke
