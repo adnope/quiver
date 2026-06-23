@@ -6,21 +6,66 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/.."
 
-# Load environment variables from .env without overwriting existing environment variables
-if [ -f .env ]; then
+load_env_file() {
+  local env_file="$1"
+  [ -f "$env_file" ] || return 0
+
   while IFS= read -r line || [ -n "$line" ]; do
-    # Skip comments and empty lines
-    [[ "$line" =~ ^#.*$ ]] && continue
-    [[ -z "$line" ]] && continue
-    # Extract key and value
+    line="${line#export }"
+    [[ "$line" =~ ^[[:space:]]*#.*$ ]] && continue
+    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+    [[ "$line" != *=* ]] && continue
+
     key="${line%%=*}"
     val="${line#*=}"
-    # Only export if key is not already defined in environment
-    if [ -z "${!key+x}" ]; then
+    key="${key//[[:space:]]/}"
+    val="${val%$'\r'}"
+
+    if [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && [ -z "${!key+x}" ]; then
       export "$key=$val"
     fi
-  done < .env
+  done < "$env_file"
+}
+
+load_env_file .env.example
+load_env_file .env
+
+export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-quiver-verify}
+export QUIVER_INTERNAL_PORT=${QUIVER_INTERNAL_PORT:-8080}
+export POSTGRES_USER=${POSTGRES_USER:-postgres}
+export POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+export POSTGRES_DB=${POSTGRES_DB:-quiver}
+export POSTGRES_SSLMODE=${POSTGRES_SSLMODE:-disable}
+export QUIVER_DATABASE_DSN=${QUIVER_DATABASE_DSN:-postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}?sslmode=${POSTGRES_SSLMODE}}
+
+GENERATED_ENV=false
+if [ ! -f .env ]; then
+  GENERATED_ENV=true
+  cat > .env <<EOF
+POSTGRES_USER=${POSTGRES_USER}
+POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+POSTGRES_DB=${POSTGRES_DB}
+POSTGRES_SSLMODE=${POSTGRES_SSLMODE}
+QUIVER_DATABASE_DSN=${QUIVER_DATABASE_DSN}
+QUIVER_INTERNAL_PORT=${QUIVER_INTERNAL_PORT}
+QUIVER_HOST_PORT=${QUIVER_HOST_PORT:-8237}
+POSTGRES_HOST_PORT=${POSTGRES_HOST_PORT:-5433}
+NETFLOW_PORT=${NETFLOW_PORT:-2056}
+KAFKA_HOST_PORT=${KAFKA_HOST_PORT:-9095}
+QUIVER_CONFIG=${QUIVER_CONFIG:-/configs/quiver.demo.yaml}
+QUIVER_DEMO_ADMIN_API_KEY=${QUIVER_DEMO_ADMIN_API_KEY:-demoadminkey123}
+REST_INGEST_DEMO_CLIENT_KEY=${REST_INGEST_DEMO_CLIENT_KEY:-democlientkey456}
+NETFLOW_GATEWAY_DEMO_KEY=${NETFLOW_GATEWAY_DEMO_KEY:-netflowgatewaykey456}
+ZEEK_SHIPPER_DEMO_KEY=${ZEEK_SHIPPER_DEMO_KEY:-zeekshipperkey456}
+KAFKA_TOPIC_DLQ=${KAFKA_TOPIC_DLQ:-flow.dead_letter}
+EOF
 fi
+cleanup_generated_env() {
+  if [ "$GENERATED_ENV" = "true" ]; then
+    rm -f .env
+  fi
+}
+trap cleanup_generated_env EXIT
 
 # Set isolated defaults, overriding the standard dev stack values if present
 if [ -z "${QUIVER_HOST_PORT:-}" ] || [ "${QUIVER_HOST_PORT}" = "8236" ]; then
@@ -38,8 +83,6 @@ fi
 if [ -z "${QUIVER_CONFIG:-}" ] || [ "${QUIVER_CONFIG}" = "/configs/quiver.dev.yaml" ]; then
   export QUIVER_CONFIG=/configs/quiver.demo.yaml
 fi
-export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-quiver-verify}
-
 export QUIVER_DEMO_ADMIN_API_KEY=${QUIVER_DEMO_ADMIN_API_KEY:-demoadminkey123}
 export REST_INGEST_DEMO_CLIENT_KEY=${REST_INGEST_DEMO_CLIENT_KEY:-democlientkey456}
 export NETFLOW_GATEWAY_DEMO_KEY=${NETFLOW_GATEWAY_DEMO_KEY:-netflowgatewaykey456}
