@@ -76,7 +76,7 @@ func NewServerWithCollectors(
 	if err != nil {
 		return nil, err
 	}
-	if flowStore != nil && cursorCodec == nil {
+	if (flowStore != nil || aggregationStore != nil) && cursorCodec == nil {
 		return nil, ErrInvalidCursor
 	}
 	limiter := NewRateLimiter(cfg.API.RateLimits)
@@ -107,7 +107,7 @@ func NewServerWithCollectors(
 		"GET /api/v1/flows/",
 		route(metrics, "GET /api/v1/flows/{id}", RequestIDMiddleware(RequireScope(auth, limiter, ScopeQuery, http.HandlerFunc(queryHandler.Lookup)))),
 	)
-	aggregationHandler := NewAggregationHandler(cfg, aggregationStore)
+	aggregationHandler := NewAggregationHandler(cfg, aggregationStore, cursorCodec)
 	mux.Handle(
 		"GET /api/v1/aggregations/top-talkers",
 		route(metrics, "GET /api/v1/aggregations/top-talkers", RequestIDMiddleware(RequireScope(auth, limiter, ScopeQuery, http.HandlerFunc(aggregationHandler.TopTalkers)))),

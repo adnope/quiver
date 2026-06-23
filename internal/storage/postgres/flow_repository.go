@@ -71,12 +71,34 @@ const (
 	AggregationDirectionDst AggregationDirection = "dst"
 )
 
+type AggregationEndpoint string
+
+const (
+	AggregationEndpointProtocols  AggregationEndpoint = "protocols"
+	AggregationEndpointTopPorts   AggregationEndpoint = "top-ports"
+	AggregationEndpointTopTalkers AggregationEndpoint = "top-talkers"
+)
+
+type AggregationCursor struct {
+	Endpoint          AggregationEndpoint
+	QueryHash         string
+	Metric            AggregationMetric
+	Direction         AggregationDirection
+	Value             uint64
+	FlowCount         uint64
+	IP                *netip.Addr
+	Port              *uint16
+	ProtocolNumber    *uint8
+	TransportProtocol *domain.TransportProtocol
+}
+
 type AggregationQuery struct {
 	From           time.Time
 	To             time.Time
 	Metric         AggregationMetric
 	Limit          int
 	Direction      AggregationDirection
+	Cursor         *AggregationCursor
 	SrcIP          *netip.Addr
 	DstIP          *netip.Addr
 	ProtocolNumber *uint8
@@ -407,11 +429,22 @@ func (r *FlowRepository) TopTalkers(ctx context.Context, query AggregationQuery)
 	if err := validateAggregationQuery(query, true); err != nil {
 		return nil, err
 	}
+	if err := validateAggregationCursor(query, AggregationEndpointTopTalkers); err != nil {
+		return nil, err
+	}
 	groupColumn := "src_ip"
 	if query.Direction == AggregationDirectionDst {
 		groupColumn = "dst_ip"
 	}
-	sqlQuery, args := buildAggregationSQL(query, groupColumn, "quiver.flow_hourly_talkers", "true")
+	sqlQuery, args, err := buildAggregationSQL(query, aggregationGrouping{
+		Select:  groupColumn + " AS ip",
+		GroupBy: groupColumn,
+		OrderBy: "ip ASC",
+		Kind:    aggregationGroupIP,
+	}, "quiver.flow_hourly_talkers", "true")
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, sqlQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query top talkers: %w", err)
@@ -443,6 +476,9 @@ func (r *FlowRepository) TopPorts(ctx context.Context, query AggregationQuery) (
 	if err := validateAggregationQuery(query, true); err != nil {
 		return nil, err
 	}
+	if err := validateAggregationCursor(query, AggregationEndpointTopPorts); err != nil {
+		return nil, err
+	}
 	groupColumn := "src_port"
 	if query.Direction == AggregationDirectionDst {
 		groupColumn = "dst_port"
@@ -451,7 +487,15 @@ func (r *FlowRepository) TopPorts(ctx context.Context, query AggregationQuery) (
 	if query.SrcIP != nil || query.DstIP != nil {
 		targetTable = "quiver.flow_records"
 	}
-	sqlQuery, args := buildAggregationSQL(query, groupColumn, targetTable, groupColumn+" IS NOT NULL")
+	sqlQuery, args, err := buildAggregationSQL(query, aggregationGrouping{
+		Select:  groupColumn + " AS port",
+		GroupBy: groupColumn,
+		OrderBy: "port ASC",
+		Kind:    aggregationGroupPort,
+	}, targetTable, groupColumn+" IS NOT NULL")
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, sqlQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query top ports: %w", err)
@@ -483,7 +527,18 @@ func (r *FlowRepository) ProtocolDistribution(ctx context.Context, query Aggrega
 	if err := validateAggregationQuery(query, false); err != nil {
 		return nil, err
 	}
-	sqlQuery, args := buildAggregationSQL(query, "protocol_number, transport_protocol", "quiver.flow_hourly_talkers", "true")
+	if err := validateAggregationCursor(query, AggregationEndpointProtocols); err != nil {
+		return nil, err
+	}
+	sqlQuery, args, err := buildAggregationSQL(query, aggregationGrouping{
+		Select:  "protocol_number, transport_protocol",
+		GroupBy: "protocol_number, transport_protocol",
+		OrderBy: "protocol_number ASC, transport_protocol ASC",
+		Kind:    aggregationGroupProtocol,
+	}, "quiver.flow_hourly_talkers", "true")
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, sqlQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query protocol distribution: %w", err)
@@ -718,7 +773,22 @@ func buildFlowWhere(query FlowSearchQuery) (string, []any) {
 	return strings.Join(clauses, " AND "), args
 }
 
-func buildAggregationSQL(query AggregationQuery, groupExpr string, targetTable string, extraPredicate string) (string, []any) {
+type aggregationGroupKind string
+
+const (
+	aggregationGroupIP       aggregationGroupKind = "ip"
+	aggregationGroupPort     aggregationGroupKind = "port"
+	aggregationGroupProtocol aggregationGroupKind = "protocol"
+)
+
+type aggregationGrouping struct {
+	Select  string
+	GroupBy string
+	OrderBy string
+	Kind    aggregationGroupKind
+}
+
+func buildAggregationSQL(query AggregationQuery, grouping aggregationGrouping, targetTable string, extraPredicate string) (string, []any, error) {
 	timeCol := "bucket"
 	valueExpr := "SUM(bytes)"
 	nullPredicate := "bytes IS NOT NULL"
@@ -762,21 +832,111 @@ func buildAggregationSQL(query AggregationQuery, groupExpr string, targetTable s
 	if query.SourceType != nil {
 		add("source_type = $%d", string(*query.SourceType))
 	}
-	args = append(args, query.Limit)
 
-	var flowsSelect string
+	flowsSelect := "SUM(flow_count) AS flow_count"
 	if targetTable == "quiver.flow_records" {
 		flowsSelect = "COUNT(*) AS flow_count"
-	} else {
-		flowsSelect = "SUM(flow_count) AS flow_count"
 	}
 
-	return `SELECT ` + groupExpr + `, ` + valueExpr + ` AS value, ` + flowsSelect + `
-FROM ` + targetTable + `
-WHERE ` + strings.Join(clauses, " AND ") + `
-GROUP BY ` + groupExpr + `
-ORDER BY value DESC, flow_count DESC
-LIMIT $` + fmt.Sprint(len(args)), args
+	cursorPredicate, err := buildAggregationCursorPredicate(&args, query.Cursor, grouping.Kind)
+	if err != nil {
+		return "", nil, err
+	}
+	args = append(args, query.Limit)
+	limitPlaceholder := fmt.Sprintf("$%d", len(args))
+
+	outerWhere := ""
+	if cursorPredicate != "" {
+		outerWhere = "\nWHERE " + cursorPredicate
+	}
+
+	return `SELECT *
+FROM (
+	SELECT ` + grouping.Select + `, ` + valueExpr + ` AS value, ` + flowsSelect + `
+	FROM ` + targetTable + `
+	WHERE ` + strings.Join(clauses, " AND ") + `
+	GROUP BY ` + grouping.GroupBy + `
+) agg` + outerWhere + `
+ORDER BY value DESC, flow_count DESC, ` + grouping.OrderBy + `
+LIMIT ` + limitPlaceholder, args, nil
+}
+
+func buildAggregationCursorPredicate(args *[]any, cursor *AggregationCursor, kind aggregationGroupKind) (string, error) {
+	if cursor == nil {
+		return "", nil
+	}
+	add := func(value any) int {
+		*args = append(*args, value)
+		return len(*args)
+	}
+	valueArg := add(cursor.Value)
+	flowCountArg := add(cursor.FlowCount)
+
+	switch kind {
+	case aggregationGroupIP:
+		if cursor.IP == nil {
+			return "", fmt.Errorf("%w: aggregation cursor missing ip", ErrInvalidFlowQuery)
+		}
+		ipArg := add(cursor.IP.String())
+		return fmt.Sprintf(
+			"(value < $%d OR (value = $%d AND flow_count < $%d) OR (value = $%d AND flow_count = $%d AND ip > $%d::inet))",
+			valueArg, valueArg, flowCountArg, valueArg, flowCountArg, ipArg,
+		), nil
+	case aggregationGroupPort:
+		if cursor.Port == nil {
+			return "", fmt.Errorf("%w: aggregation cursor missing port", ErrInvalidFlowQuery)
+		}
+		portArg := add(*cursor.Port)
+		return fmt.Sprintf(
+			"(value < $%d OR (value = $%d AND flow_count < $%d) OR (value = $%d AND flow_count = $%d AND port > $%d))",
+			valueArg, valueArg, flowCountArg, valueArg, flowCountArg, portArg,
+		), nil
+	case aggregationGroupProtocol:
+		if cursor.ProtocolNumber == nil || cursor.TransportProtocol == nil {
+			return "", fmt.Errorf("%w: aggregation cursor missing protocol key", ErrInvalidFlowQuery)
+		}
+		protocolNumberArg := add(*cursor.ProtocolNumber)
+		transportProtocolArg := add(string(*cursor.TransportProtocol))
+		return fmt.Sprintf(
+			"(value < $%d OR (value = $%d AND flow_count < $%d) OR (value = $%d AND flow_count = $%d AND (protocol_number > $%d OR (protocol_number = $%d AND transport_protocol > $%d))))",
+			valueArg, valueArg, flowCountArg, valueArg, flowCountArg, protocolNumberArg, protocolNumberArg, transportProtocolArg,
+		), nil
+	default:
+		return "", fmt.Errorf("%w: invalid aggregation group", ErrInvalidFlowQuery)
+	}
+}
+
+func validateAggregationCursor(query AggregationQuery, endpoint AggregationEndpoint) error {
+	if query.Cursor == nil {
+		return nil
+	}
+	cursor := query.Cursor
+	if cursor.Endpoint != endpoint {
+		return fmt.Errorf("%w: aggregation cursor endpoint mismatch", ErrInvalidFlowQuery)
+	}
+	if cursor.Metric != query.Metric {
+		return fmt.Errorf("%w: aggregation cursor metric mismatch", ErrInvalidFlowQuery)
+	}
+	if endpoint != AggregationEndpointProtocols && cursor.Direction != query.Direction {
+		return fmt.Errorf("%w: aggregation cursor direction mismatch", ErrInvalidFlowQuery)
+	}
+	switch endpoint {
+	case AggregationEndpointTopTalkers:
+		if cursor.IP == nil {
+			return fmt.Errorf("%w: aggregation cursor missing ip", ErrInvalidFlowQuery)
+		}
+	case AggregationEndpointTopPorts:
+		if cursor.Port == nil {
+			return fmt.Errorf("%w: aggregation cursor missing port", ErrInvalidFlowQuery)
+		}
+	case AggregationEndpointProtocols:
+		if cursor.ProtocolNumber == nil || cursor.TransportProtocol == nil {
+			return fmt.Errorf("%w: aggregation cursor missing protocol key", ErrInvalidFlowQuery)
+		}
+	default:
+		return fmt.Errorf("%w: invalid aggregation endpoint", ErrInvalidFlowQuery)
+	}
+	return nil
 }
 
 func validateSearchQuery(query FlowSearchQuery) error {

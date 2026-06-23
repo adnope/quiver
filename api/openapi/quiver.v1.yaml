@@ -219,6 +219,8 @@ definitions:
         type: array
       limit:
         type: integer
+      next_cursor:
+        type: string
       to:
         type: string
     type: object
@@ -243,6 +245,8 @@ definitions:
         type: array
       limit:
         type: integer
+      next_cursor:
+        type: string
       to:
         type: string
     type: object
@@ -267,6 +271,8 @@ definitions:
         type: array
       limit:
         type: integer
+      next_cursor:
+        type: string
       to:
         type: string
     type: object
@@ -313,6 +319,10 @@ paths:
         in: query
         name: limit
         type: integer
+      - description: Signed pagination cursor
+        in: query
+        name: cursor
+        type: string
       - description: Source type filter
         enum:
         - netflow_v5
@@ -396,6 +406,10 @@ paths:
         in: query
         name: limit
         type: integer
+      - description: Signed pagination cursor
+        in: query
+        name: cursor
+        type: string
       - description: Source type filter
         enum:
         - netflow_v5
@@ -479,6 +493,10 @@ paths:
         in: query
         name: limit
         type: integer
+      - description: Signed pagination cursor
+        in: query
+        name: cursor
+        type: string
       - description: Source type filter
         enum:
         - netflow_v5

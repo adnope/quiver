@@ -1,22 +1,21 @@
-import { useMemo, useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMemo, useRef, useState, type UIEvent } from 'react'
+import { useInfiniteQuery } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { MaterialIcon } from '@/components/shell/MaterialIcon'
 import { getProtocols, getTopPorts, getTopTalkers } from '@/lib/api-client'
 import { formatBytes, formatNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/store/app-store'
+
 import type {
 	AggregationMetric,
-	ProtocolResponse,
 	ProtocolsResponse,
-	TopPortResponse,
 	TopPortsResponse,
-	TopTalkerResponse,
 	TopTalkersResponse,
 } from '@/types/api'
 
 type AggregationTab = 'protocols' | 'top-ports' | 'top-talkers'
+type AggregationResponse = ProtocolsResponse | TopPortsResponse | TopTalkersResponse
 
 const MAX_QUERY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
 const LIMIT_OPTIONS = [10, 20, 50, 100]
@@ -67,35 +66,37 @@ export function AnalyticsView() {
 	}
 
 	// Dynamic params for query
-	const queryParams = useMemo(() => {
-		const baseParams: Record<string, string | number | undefined> = {
-			from: timeWindow.from,
-			to: timeWindow.to,
-			metric,
-			limit,
-		}
-		if (activeSubTab !== 'protocols') {
-			baseParams.direction = direction
-		}
-		return baseParams
-	}, [activeSubTab, timeWindow, metric, direction, limit])
+	const queryParams = useMemo(() => ({
+		from: timeWindow.from,
+		to: timeWindow.to,
+		metric,
+		limit,
+	}), [timeWindow, metric, limit])
 
 	// React Queries
-	const { data, isFetching, isError, refetch } = useQuery<
-		ProtocolsResponse | TopPortsResponse | TopTalkersResponse
-	>({
-		queryKey: ['analytics', activeSubTab, queryParams, apiBaseUrl, Boolean(apiKey)],
-		queryFn: async ({ signal }) => {
+	const {
+		data,
+		isFetching,
+		isFetchingNextPage,
+		isError,
+		refetch,
+		fetchNextPage,
+		hasNextPage,
+	} = useInfiniteQuery({
+		queryKey: ['analytics', activeSubTab, queryParams, activeSubTab === 'protocols' ? undefined : direction, apiBaseUrl, Boolean(apiKey)],
+		initialPageParam: undefined as string | undefined,
+		queryFn: async ({ pageParam, signal }) => {
 			const client = { baseUrl: apiBaseUrl, apiKey, signal }
+			const cursorParam = typeof pageParam === 'string' ? { cursor: pageParam } : {}
 			const startPerf = performance.now()
 			try {
-				let res: ProtocolsResponse | TopPortsResponse | TopTalkersResponse
+				let res: AggregationResponse
 				if (activeSubTab === 'protocols') {
-					res = await getProtocols(queryParams, client)
+					res = await getProtocols({ ...queryParams, ...cursorParam }, client)
 				} else if (activeSubTab === 'top-ports') {
-					res = await getTopPorts(queryParams, client)
+					res = await getTopPorts({ ...queryParams, direction, ...cursorParam }, client)
 				} else {
-					res = await getTopTalkers(queryParams, client)
+					res = await getTopTalkers({ ...queryParams, direction, ...cursorParam }, client)
 				}
 				const elapsed = Math.round(performance.now() - startPerf)
 				setLatency(elapsed)
@@ -108,21 +109,35 @@ export function AnalyticsView() {
 				throw err
 			}
 		},
+		getNextPageParam: (lastPage) => lastPage.next_cursor,
 		retry: 2,
 		staleTime: 10_000,
 	})
 
-	const items = data?.items ?? []
-
-	const protocolItems = activeSubTab === 'protocols' ? (items as ProtocolResponse[]) : []
-	const portItems = activeSubTab === 'top-ports' ? (items as TopPortResponse[]) : []
-	const talkerItems = activeSubTab === 'top-talkers' ? (items as TopTalkerResponse[]) : []
+	const protocolItems = activeSubTab === 'protocols'
+		? data?.pages.flatMap((page) => (page as ProtocolsResponse).items) ?? []
+		: []
+	const portItems = activeSubTab === 'top-ports'
+		? data?.pages.flatMap((page) => (page as TopPortsResponse).items) ?? []
+		: []
+	const talkerItems = activeSubTab === 'top-talkers'
+		? data?.pages.flatMap((page) => (page as TopTalkersResponse).items) ?? []
+		: []
+	const itemCount = protocolItems.length + portItems.length + talkerItems.length
 
 	function formatValue(val: number) {
 		if (metric === 'bytes') {
 			return formatBytes(val)
 		}
 		return formatNumber(val)
+	}
+
+	function handleResultsScroll(event: UIEvent<HTMLDivElement>) {
+		const target = event.currentTarget
+		const remaining = target.scrollHeight - target.scrollTop - target.clientHeight
+		if (remaining < 160 && hasNextPage && !isFetchingNextPage) {
+			void fetchNextPage()
+		}
 	}
 
 	return (
@@ -282,7 +297,7 @@ export function AnalyticsView() {
 			</div>
 
 			{/* Results table */}
-			<div className="min-h-0 flex-1 overflow-auto">
+			<div className="min-h-0 flex-1 overflow-auto" onScroll={handleResultsScroll}>
 				<table className="w-full border-collapse text-left text-xs whitespace-nowrap">
 					<thead className="sticky top-0 z-10 bg-[var(--table-header)] text-[var(--text-secondary)]">
 						{activeSubTab === 'protocols' ? (
@@ -313,7 +328,7 @@ export function AnalyticsView() {
 						{activeSubTab === 'protocols' &&
 							protocolItems.map((item, index) => (
 								<tr
-									key={index}
+									key={`${item.protocol_number}-${item.transport_protocol}`}
 									className="border-b border-[var(--border)] text-[var(--text-primary)] hover:bg-[var(--panel-hover)]"
 								>
 									<td className="border-r border-[var(--border)] px-3 py-2 text-right font-mono text-[11px] text-[var(--text-secondary)]">
@@ -329,7 +344,7 @@ export function AnalyticsView() {
 						{activeSubTab === 'top-ports' &&
 							portItems.map((item, index) => (
 								<tr
-									key={index}
+									key={item.port}
 									className="border-b border-[var(--border)] text-[var(--text-primary)] hover:bg-[var(--panel-hover)]"
 								>
 									<td className="border-r border-[var(--border)] px-3 py-2 text-right font-mono text-[11px] text-[var(--text-secondary)]">
@@ -344,7 +359,7 @@ export function AnalyticsView() {
 						{activeSubTab === 'top-talkers' &&
 							talkerItems.map((item, index) => (
 								<tr
-									key={index}
+									key={item.ip}
 									className="border-b border-[var(--border)] text-[var(--text-primary)] hover:bg-[var(--panel-hover)]"
 								>
 									<td className="border-r border-[var(--border)] px-3 py-2 text-right font-mono text-[11px] text-[var(--text-secondary)]">
@@ -360,13 +375,14 @@ export function AnalyticsView() {
 
 				{/* Loading and empty states */}
 				<div className="grid min-h-20 place-items-center text-sm text-[var(--text-secondary)] p-4">
-					{isFetching && items.length === 0 ? 'Loading aggregations...' : null}
+					{isFetching && itemCount === 0 ? 'Loading aggregations...' : null}
+					{isFetchingNextPage && itemCount > 0 ? 'Loading more rows...' : null}
 					{isError && !isFetching ? (
 						<Button type="button" variant="danger" onClick={() => void refetch()}>
 							Query failed. Try again.
 						</Button>
 					) : null}
-					{!isFetching && !isError && items.length === 0 ? 'No metrics found in this window.' : null}
+					{!isFetching && !isError && itemCount === 0 ? 'No metrics found in this window.' : null}
 				</div>
 			</div>
 		</section>

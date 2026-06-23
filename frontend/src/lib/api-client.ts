@@ -1,6 +1,8 @@
 import type {
+  AggregationParams,
   ApiErrorBody,
   DetailedHealthResponse,
+  DirectedAggregationParams,
   FlowResponse,
   FlowSearchParams,
   FlowSearchResponse,
@@ -292,7 +294,7 @@ export function getFlowById(
 }
 
 export function getTopTalkers(
-  params: Record<string, string | number | undefined>,
+  params: DirectedAggregationParams,
   options?: ApiClientOptions,
 ) {
   return requestJson<TopTalkersResponse>(
@@ -302,7 +304,7 @@ export function getTopTalkers(
 }
 
 export function getTopPorts(
-  params: Record<string, string | number | undefined>,
+  params: DirectedAggregationParams,
   options?: ApiClientOptions,
 ) {
   return requestJson<TopPortsResponse>(
@@ -312,7 +314,7 @@ export function getTopPorts(
 }
 
 export function getProtocols(
-  params: Record<string, string | number | undefined>,
+  params: AggregationParams,
   options?: ApiClientOptions,
 ) {
   return requestJson<ProtocolsResponse>(

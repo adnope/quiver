@@ -122,6 +122,22 @@ export interface FlowSearchParams {
 
 export type AggregationMetric = 'bytes' | 'packets' | 'flows'
 
+export interface AggregationParams {
+  from: string
+  to: string
+  metric?: AggregationMetric
+  limit?: number
+  cursor?: string
+  source_type?: SourceType
+  src_ip?: string
+  dst_ip?: string
+  protocol_number?: number
+}
+
+export interface DirectedAggregationParams extends AggregationParams {
+  direction: 'src' | 'dst'
+}
+
 export interface TopTalkerResponse {
   ip: string
   metric: AggregationMetric
@@ -134,6 +150,7 @@ export interface TopTalkersResponse {
   from: string
   to: string
   limit: number
+  next_cursor?: string
 }
 
 export interface TopPortResponse {
@@ -148,6 +165,7 @@ export interface TopPortsResponse {
   from: string
   to: string
   limit: number
+  next_cursor?: string
 }
 
 export interface ProtocolResponse {
@@ -163,6 +181,7 @@ export interface ProtocolsResponse {
   from: string
   to: string
   limit: number
+  next_cursor?: string
 }
 
 export interface ApiErrorBody {

@@ -129,5 +129,4 @@ services:
 
 volumes:
   timescaledb_data:
-  # kafka_data:
   redpanda_data:

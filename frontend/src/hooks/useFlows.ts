@@ -7,7 +7,12 @@ import {
   searchFlows,
 } from '@/lib/api-client'
 import { useAppStore } from '@/store/app-store'
-import type { FlowSearchParams } from '@/types/api'
+import type {
+  AggregationMetric,
+  AggregationParams,
+  DirectedAggregationParams,
+  FlowSearchParams,
+} from '@/types/api'
 
 export function useFlows(params: Omit<FlowSearchParams, 'cursor'>, options?: { enabled?: boolean }) {
   const apiBaseUrl = useAppStore((state) => state.apiBaseUrl)
@@ -69,7 +74,7 @@ export function useFlowById(id: string | undefined, startTime: string | undefine
 export function useAggregations(params: {
   from: string
   to: string
-  metric?: string
+  metric?: AggregationMetric
   limit?: number
   direction?: 'src' | 'dst'
 }) {
@@ -77,6 +82,15 @@ export function useAggregations(params: {
   const apiKey = useAppStore((state) => state.apiKey)
   const setLastApiLatency = useAppStore((state) => state.setLastApiLatency)
   const client = { baseUrl: apiBaseUrl, apiKey }
+  const aggregationParams: AggregationParams = {
+    from: params.from,
+    to: params.to,
+    ...(params.metric ? { metric: params.metric } : {}),
+    ...(params.limit !== undefined ? { limit: params.limit } : {}),
+  }
+  const directedAggregationParams: DirectedAggregationParams | undefined = params.direction
+    ? { ...aggregationParams, direction: params.direction }
+    : undefined
 
   const topTalkers = useQuery({
     queryKey: ['aggregations', 'top-talkers', params, apiBaseUrl, Boolean(apiKey)],
@@ -84,7 +98,10 @@ export function useAggregations(params: {
     queryFn: async ({ signal }) => {
       const startTime = performance.now()
       try {
-        const res = await getTopTalkers(params, { ...client, signal })
+        if (!directedAggregationParams) {
+          throw new Error('direction is required for top talkers aggregation.')
+        }
+        const res = await getTopTalkers(directedAggregationParams, { ...client, signal })
         setLastApiLatency(Math.round(performance.now() - startTime))
         return res
       } catch (err) {
@@ -102,7 +119,10 @@ export function useAggregations(params: {
     queryFn: async ({ signal }) => {
       const startTime = performance.now()
       try {
-        const res = await getTopPorts(params, { ...client, signal })
+        if (!directedAggregationParams) {
+          throw new Error('direction is required for top ports aggregation.')
+        }
+        const res = await getTopPorts(directedAggregationParams, { ...client, signal })
         setLastApiLatency(Math.round(performance.now() - startTime))
         return res
       } catch (err) {
@@ -119,7 +139,7 @@ export function useAggregations(params: {
     queryFn: async ({ signal }) => {
       const startTime = performance.now()
       try {
-        const res = await getProtocols(params, { ...client, signal })
+        const res = await getProtocols(aggregationParams, { ...client, signal })
         setLastApiLatency(Math.round(performance.now() - startTime))
         return res
       } catch (err) {
