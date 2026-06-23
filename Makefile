@@ -9,11 +9,23 @@ PROTOC ?= protoc
 PROTOC_GEN_GO ?= $(shell $(GO) env GOPATH)/bin/protoc-gen-go
 SWAG ?= $(GO) tool swag
 MIGRATE ?= migrate
+
+DEV_PROJECT ?= quiver-dev
+TEST_PROJECT ?= $(if $(GITHUB_RUN_ID),quiver-test-$(GITHUB_RUN_ID)-$(GITHUB_RUN_ATTEMPT),quiver-test)
+VERIFY_PROJECT ?= $(if $(GITHUB_RUN_ID),quiver-verify-$(GITHUB_RUN_ID)-$(GITHUB_RUN_ATTEMPT),quiver-verify)
+
+DEV_COMPOSE = COMPOSE_PROJECT_NAME=$(DEV_PROJECT) docker compose -p $(DEV_PROJECT) -f docker-compose.yml
+TEST_COMPOSE = COMPOSE_PROJECT_NAME=$(TEST_PROJECT) docker compose -p $(TEST_PROJECT) -f docker-compose.test.yml
+VERIFY_COMPOSE = COMPOSE_PROJECT_NAME=$(VERIFY_PROJECT) docker compose -p $(VERIFY_PROJECT) -f docker-compose.verify.yml
+
 QUIVER_DATABASE_DSN ?=
 OPENAPI_DIR ?= api/openapi
 OPENAPI_FILE ?= $(OPENAPI_DIR)/quiver.v1.yaml
 
-.PHONY: build build-quiver build-client frontend-install frontend-typecheck frontend-test frontend-build fmt lint lint-go lint-frontend test test-unit test-up test-down test-integration test-all test-race coverage proto proto-check swagger swagger-check openapi openapi-check migrate-up dev-up dev-down dev-demo load-smoke dev-load-smoke verify-demo verify-vector-shipper
+TEST_DATABASE_DSN ?= postgres://postgres:postgres@localhost:5434/quiver?sslmode=disable
+TEST_KAFKA_BROKERS ?= localhost:9096
+
+.PHONY: build build-quiver build-client frontend-install frontend-typecheck frontend-test frontend-build fmt lint lint-go lint-frontend test test-unit test-up test-down test-integration test-all test-race coverage proto proto-check swagger swagger-check openapi openapi-check migrate-up dev-up dev-down dev-demo load-smoke dev-load-smoke verify-demo verify-demo-down verify-vector-shipper
 
 build: build-quiver build-client
 
@@ -56,28 +68,28 @@ test-unit:
 	$(GO) test ./...
 
 test-up:
-	docker compose -f docker-compose.test.yml -p quiver-test up -d --build
+	$(TEST_COMPOSE) up -d --build
 	@for i in $$(seq 1 30); do \
-		if docker exec quiver-test-timescaledb pg_isready -U postgres -d quiver >/dev/null 2>&1; then \
+		if $(TEST_COMPOSE) exec -T timescaledb pg_isready -U postgres -d quiver >/dev/null 2>&1; then \
 			echo "TimescaleDB test service is healthy!"; \
 			break; \
 		fi; \
 		if [ "$$i" -eq 30 ]; then \
 			echo "TimescaleDB test service did not become healthy."; \
-			docker compose -f docker-compose.test.yml -p quiver-test logs timescaledb; \
+			$(TEST_COMPOSE) logs timescaledb; \
 			exit 1; \
 		fi; \
 		echo "Waiting for TimescaleDB test service..."; \
 		sleep 2; \
 	done
 	@for i in $$(seq 1 30); do \
-		if docker exec quiver-test-redpanda rpk cluster info --brokers=localhost:9092 >/dev/null 2>&1; then \
+		if $(TEST_COMPOSE) exec -T kafka rpk cluster info --brokers=localhost:9092 >/dev/null 2>&1; then \
 			echo "Redpanda test service is healthy!"; \
 			break; \
 		fi; \
 		if [ "$$i" -eq 30 ]; then \
 			echo "Redpanda test service did not become healthy."; \
-			docker compose -f docker-compose.test.yml -p quiver-test logs kafka; \
+			$(TEST_COMPOSE) logs kafka; \
 			exit 1; \
 		fi; \
 		echo "Waiting for Redpanda test service..."; \
@@ -85,14 +97,20 @@ test-up:
 	done
 
 test-down:
-	docker compose -f docker-compose.test.yml -p quiver-test down -v
+	$(TEST_COMPOSE) down -v
 
 test-integration:
-	QUIVER_DATABASE_DSN="postgres://postgres:postgres@localhost:5434/quiver?sslmode=disable" \
-	QUIVER_KAFKA_BROKERS="localhost:9096" \
+	QUIVER_DATABASE_DSN="$(TEST_DATABASE_DSN)" \
+	QUIVER_KAFKA_BROKERS="$(TEST_KAFKA_BROKERS)" \
 	$(GO) test -tags=integration ./...
 
-test-all: test-up test-unit test-race test-integration test-down
+test-all:
+	@set -e; \
+	trap '$(MAKE) test-down TEST_PROJECT=$(TEST_PROJECT)' EXIT; \
+	$(MAKE) test-up TEST_PROJECT=$(TEST_PROJECT); \
+	$(MAKE) test-unit; \
+	$(MAKE) test-race; \
+	$(MAKE) test-integration
 
 test-race:
 	$(GO) test -race ./internal/...
@@ -153,10 +171,10 @@ migrate-up:
 		up
 
 dev-up:
-	docker compose up -d --build --scale quiver=3
+	$(DEV_COMPOSE) up -d --build --scale quiver=3
 
 dev-down:
-	docker compose down
+	$(DEV_COMPOSE) down
 
 dev-demo:
 	$(GO) run tools/restgen/main.go -target http://localhost:$(QUIVER_HOST_PORT) -key $(REST_INGEST_DEMO_CLIENT_KEY) -count 10
@@ -164,7 +182,14 @@ dev-demo:
 	$(GO) run tools/netflowgen/main.go -target localhost:$(NETFLOW_PORT) -count 5 -seq 10
 
 verify-demo:
+	COMPOSE_PROJECT_NAME="$(VERIFY_PROJECT)" \
+	VERIFY_COMPOSE_FILE="docker-compose.verify.yml" \
+	VERIFY_HOST_PORT="8237" \
+	VERIFY_NETFLOW_PORT="2056" \
 	./scripts/verify-demo.sh
+
+verify-demo-down:
+	$(VERIFY_COMPOSE) down -v
 
 verify-vector-shipper:
 	./scripts/verify-vector-shipper.sh

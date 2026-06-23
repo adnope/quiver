@@ -9,6 +9,10 @@ jobs:
     name: Build & Test
     runs-on: ubuntu-latest
 
+    env:
+      TEST_PROJECT: quiver-test-${{ github.run_id }}-${{ github.run_attempt }}
+      VERIFY_PROJECT: quiver-verify-${{ github.run_id }}-${{ github.run_attempt }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -55,7 +59,7 @@ jobs:
       - name: Protobuf Freshness Check
         run: make proto-check
 
-      - name: API Spec (Swagger) Freshness Check
+      - name: API Spec Freshness Check
         run: make openapi-check
 
       - name: Vector Shipper Verification
@@ -64,42 +68,18 @@ jobs:
       - name: Run Unit Tests
         run: make test-unit
 
-      - name: Setup environment file
-        run: cp .env.example .env
-
-      - name: Start Services (Docker Compose)
-        run: |
-          docker compose up -d --build
-          
-          # Wait for TimescaleDB to be healthy
-          for i in {1..30}; do
-            if docker exec ${COMPOSE_PROJECT_NAME:-quiver}-timescaledb pg_isready -U postgres -d quiver; then
-              echo "TimescaleDB is healthy!"
-              break
-            fi
-            echo "Waiting for TimescaleDB..."
-            sleep 2
-          done
-          
-          # Wait for Kafka to be healthy
-          for i in {1..30}; do
-            if docker exec ${COMPOSE_PROJECT_NAME:-quiver}-kafka kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1; then
-              echo "Kafka is healthy!"
-              break
-            fi
-            echo "Waiting for Kafka..."
-            sleep 2
-          done
+      - name: Start Integration Test Stack
+        run: make test-up TEST_PROJECT="${TEST_PROJECT}"
 
       - name: Run Integration Tests
         run: make test-integration
 
-      - name: Run Demo Verification Script
-        run: make verify-demo
-
-      - name: Tear down Services
+      - name: Tear Down Integration Test Stack
         if: always()
-        run: docker compose down -v
+        run: make test-down TEST_PROJECT="${TEST_PROJECT}"
+
+      - name: Run Demo Verification Script
+        run: make verify-demo VERIFY_PROJECT="${VERIFY_PROJECT}"
 
   cd:
     name: Build & Push Docker Image
@@ -112,7 +92,7 @@ jobs:
 
       - name: Get short SHA
         id: slug
-        run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+        run: echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3

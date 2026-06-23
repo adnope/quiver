@@ -13,6 +13,10 @@ jobs:
     name: Build & Test
     runs-on: ubuntu-latest
 
+    env:
+      TEST_PROJECT: quiver-test-${{ github.run_id }}-${{ github.run_attempt }}
+      VERIFY_PROJECT: quiver-verify-${{ github.run_id }}-${{ github.run_attempt }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -59,7 +63,7 @@ jobs:
       - name: Protobuf Freshness Check
         run: make proto-check
 
-      - name: API Spec (Swagger) Freshness Check
+      - name: API Spec Freshness Check
         run: make openapi-check
 
       - name: Vector Shipper Verification
@@ -69,14 +73,14 @@ jobs:
         run: make test-unit
 
       - name: Start Integration Test Stack
-        run: make test-up
-      
+        run: make test-up TEST_PROJECT="${TEST_PROJECT}"
+
       - name: Run Integration Tests
         run: make test-integration
-      
+
       - name: Tear Down Integration Test Stack
         if: always()
-        run: make test-down
-      
+        run: make test-down TEST_PROJECT="${TEST_PROJECT}"
+
       - name: Run Demo Verification Script
-        run: make verify-demo
+        run: make verify-demo VERIFY_PROJECT="${VERIFY_PROJECT}"

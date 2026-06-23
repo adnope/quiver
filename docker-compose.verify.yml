@@ -1,0 +1,126 @@
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg17
+    environment:
+      POSTGRES_DB: quiver
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d quiver"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+    command: ["postgres", "-c", "shared_buffers=512MB", "-c", "max_wal_size=4GB", "-c", "synchronous_commit=off", "-c", "work_mem=16MB"]
+
+  kafka:
+    image: redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1G
+      - --reserve-memory=0M
+      - --overprovisioned
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:9094
+      - --advertise-kafka-addr=internal://kafka:9092,external://localhost:9095
+    ports:
+      - "9095:9094"
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster info --brokers=localhost:9092 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+
+  migration:
+    image: migrate/migrate:v4.19.1
+    volumes:
+      - ./internal/storage/postgres/migrations:/migrations
+    command: -path=/migrations -database="postgres://postgres:postgres@timescaledb:5432/quiver?sslmode=disable" up
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+
+  quiver:
+    build: .
+    command: ["-config", "/configs/quiver.demo.yaml"]
+    environment:
+      QUIVER_HTTP_ADDR: 0.0.0.0:8080
+      NETFLOW_PORT: "2055"
+      QUIVER_DATABASE_DSN: postgres://postgres:postgres@timescaledb:5432/quiver?sslmode=disable
+      QUIVER_DATABASE_DSN_HOST: postgres://postgres:postgres@timescaledb:5432/quiver?sslmode=disable
+      POSTGRES_POOL_SIZE: "20"
+      POSTGRES_MAX_IDLE_CONNS: "10"
+      KAFKA_BROKER_INTERNAL: kafka:9092
+      KAFKA_BROKER_EXTERNAL: kafka:9092
+      KAFKA_TOPIC_RAW: flow.raw
+      KAFKA_TOPIC_DLQ: flow.dead_letter
+      QUIVER_API_CURSOR_SECRET: verysecretkey_mustbe32byteslong!!!
+      QUIVER_DEMO_ADMIN_API_KEY: demoadminkey123
+      REST_INGEST_DEMO_CLIENT_KEY: democlientkey456
+      NETFLOW_GATEWAY_DEMO_KEY: netflowgatewaykey456
+      ZEEK_SHIPPER_DEMO_KEY: zeekshipperkey456
+    volumes:
+      - ./configs:/configs
+    expose:
+      - "8080"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      migration:
+        condition: service_completed_successfully
+
+  quiver-lb:
+    image: nginx:alpine
+    ports:
+      - "8237:8080"
+    command:
+      - /bin/sh
+      - -c
+      - |
+        cat > /etc/nginx/conf.d/default.conf <<EOF
+        resolver 127.0.0.11 valid=5s ipv6=off;
+
+        server {
+          listen 8080;
+
+          location / {
+            proxy_pass http://quiver:8080;
+            proxy_http_version 1.1;
+            proxy_set_header Host \$$host;
+            proxy_set_header X-Real-IP \$$remote_addr;
+            proxy_set_header X-Forwarded-For \$$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$$scheme;
+          }
+        }
+        EOF
+        nginx -g 'daemon off;'
+    depends_on:
+      quiver:
+        condition: service_started
+
+  quiver-client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    command: ["--backend-url", "http://quiver-lb:8080", "--api-key", "netflowgatewaykey456", "--listen-addr", "0.0.0.0:2055"]
+    ports:
+      - "2056:2055/udp"
+    depends_on:
+      quiver-lb:
+        condition: service_started
+
+volumes:
+  timescaledb_data:
+  redpanda_data:

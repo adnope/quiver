@@ -2,120 +2,46 @@
 
 set -euo pipefail
 
-# Ensure script is run from the project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/.."
 
-load_env_file() {
-  local env_file="$1"
-  [ -f "$env_file" ] || return 0
+PROJECT="${COMPOSE_PROJECT_NAME:-quiver-verify}"
+COMPOSE_FILE="${VERIFY_COMPOSE_FILE:-docker-compose.verify.yml}"
 
-  while IFS= read -r line || [ -n "$line" ]; do
-    line="${line#export }"
-    [[ "$line" =~ ^[[:space:]]*#.*$ ]] && continue
-    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
-    [[ "$line" != *=* ]] && continue
+QUIVER_HOST_PORT="${VERIFY_HOST_PORT:-8237}"
+NETFLOW_PORT="${VERIFY_NETFLOW_PORT:-2056}"
 
-    key="${line%%=*}"
-    val="${line#*=}"
-    key="${key//[[:space:]]/}"
-    val="${val%$'\r'}"
+QUIVER_DEMO_ADMIN_API_KEY="demoadminkey123"
+REST_INGEST_DEMO_CLIENT_KEY="democlientkey456"
+ZEEK_SHIPPER_DEMO_KEY="zeekshipperkey456"
+KAFKA_TOPIC_DLQ="flow.dead_letter"
 
-    if [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && [ -z "${!key+x}" ]; then
-      export "$key=$val"
-    fi
-  done < "$env_file"
+VERIFY_CLEANUP="${VERIFY_CLEANUP:-true}"
+
+compose() {
+  COMPOSE_PROJECT_NAME="$PROJECT" docker compose -p "$PROJECT" -f "$COMPOSE_FILE" "$@"
 }
 
-load_env_file .env.example
-load_env_file .env
-
-export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-quiver-verify}
-export QUIVER_INTERNAL_PORT=${QUIVER_INTERNAL_PORT:-8080}
-export POSTGRES_USER=${POSTGRES_USER:-postgres}
-export POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
-export POSTGRES_DB=${POSTGRES_DB:-quiver}
-export POSTGRES_SSLMODE=${POSTGRES_SSLMODE:-disable}
-export POSTGRES_POOL_SIZE=${POSTGRES_POOL_SIZE:-20}
-export POSTGRES_MAX_IDLE_CONNS=${POSTGRES_MAX_IDLE_CONNS:-10}
-export QUIVER_HTTP_ADDR=${QUIVER_HTTP_ADDR:-0.0.0.0:${QUIVER_INTERNAL_PORT}}
-export KAFKA_BROKER_INTERNAL=${KAFKA_BROKER_INTERNAL:-kafka:9092}
-export KAFKA_TOPIC_RAW=${KAFKA_TOPIC_RAW:-flow.raw}
-export QUIVER_API_CURSOR_SECRET=${QUIVER_API_CURSOR_SECRET:-verysecretkey_mustbe32byteslong!!!}
-export QUIVER_DATABASE_DSN=${QUIVER_DATABASE_DSN:-postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}?sslmode=${POSTGRES_SSLMODE}}
-
-GENERATED_ENV=false
-if [ ! -f .env ]; then
-  GENERATED_ENV=true
-  cat > .env <<EOF
-POSTGRES_USER=${POSTGRES_USER}
-POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-POSTGRES_DB=${POSTGRES_DB}
-POSTGRES_SSLMODE=${POSTGRES_SSLMODE}
-POSTGRES_POOL_SIZE=${POSTGRES_POOL_SIZE}
-POSTGRES_MAX_IDLE_CONNS=${POSTGRES_MAX_IDLE_CONNS}
-QUIVER_HTTP_ADDR=${QUIVER_HTTP_ADDR}
-KAFKA_BROKER_INTERNAL=${KAFKA_BROKER_INTERNAL}
-KAFKA_TOPIC_RAW=${KAFKA_TOPIC_RAW}
-QUIVER_DATABASE_DSN=${QUIVER_DATABASE_DSN}
-QUIVER_INTERNAL_PORT=${QUIVER_INTERNAL_PORT}
-QUIVER_HOST_PORT=${QUIVER_HOST_PORT:-8237}
-POSTGRES_HOST_PORT=${POSTGRES_HOST_PORT:-5433}
-NETFLOW_PORT=${NETFLOW_PORT:-2056}
-KAFKA_HOST_PORT=${KAFKA_HOST_PORT:-9095}
-QUIVER_CONFIG=${QUIVER_CONFIG:-/configs/quiver.demo.yaml}
-QUIVER_API_CURSOR_SECRET=${QUIVER_API_CURSOR_SECRET}
-QUIVER_DEMO_ADMIN_API_KEY=${QUIVER_DEMO_ADMIN_API_KEY:-demoadminkey123}
-REST_INGEST_DEMO_CLIENT_KEY=${REST_INGEST_DEMO_CLIENT_KEY:-democlientkey456}
-NETFLOW_GATEWAY_DEMO_KEY=${NETFLOW_GATEWAY_DEMO_KEY:-netflowgatewaykey456}
-ZEEK_SHIPPER_DEMO_KEY=${ZEEK_SHIPPER_DEMO_KEY:-zeekshipperkey456}
-KAFKA_TOPIC_DLQ=${KAFKA_TOPIC_DLQ:-flow.dead_letter}
-EOF
-fi
-cleanup_generated_env() {
-  if [ "$GENERATED_ENV" = "true" ]; then
-    rm -f .env
+cleanup() {
+  if [ "$VERIFY_CLEANUP" = "true" ]; then
+    compose down -v >/dev/null 2>&1 || true
   fi
 }
-trap cleanup_generated_env EXIT
 
-# Set isolated defaults, overriding the standard dev stack values if present
-if [ -z "${QUIVER_HOST_PORT:-}" ] || [ "${QUIVER_HOST_PORT}" = "8236" ]; then
-  export QUIVER_HOST_PORT=8237
-fi
-if [ -z "${POSTGRES_HOST_PORT:-}" ] || [ "${POSTGRES_HOST_PORT}" = "5432" ]; then
-  export POSTGRES_HOST_PORT=5433
-fi
-if [ -z "${NETFLOW_PORT:-}" ] || [ "${NETFLOW_PORT}" = "2055" ]; then
-  export NETFLOW_PORT=2056
-fi
-if [ -z "${KAFKA_HOST_PORT:-}" ] || [ "${KAFKA_HOST_PORT}" = "9094" ]; then
-  export KAFKA_HOST_PORT=9095
-fi
-if [ -z "${QUIVER_CONFIG:-}" ] || [ "${QUIVER_CONFIG}" = "/configs/quiver.dev.yaml" ]; then
-  export QUIVER_CONFIG=/configs/quiver.demo.yaml
-fi
-export QUIVER_DEMO_ADMIN_API_KEY=${QUIVER_DEMO_ADMIN_API_KEY:-demoadminkey123}
-export REST_INGEST_DEMO_CLIENT_KEY=${REST_INGEST_DEMO_CLIENT_KEY:-democlientkey456}
-export NETFLOW_GATEWAY_DEMO_KEY=${NETFLOW_GATEWAY_DEMO_KEY:-netflowgatewaykey456}
-export ZEEK_SHIPPER_DEMO_KEY=${ZEEK_SHIPPER_DEMO_KEY:-zeekshipperkey456}
-export KAFKA_TOPIC_DLQ=${KAFKA_TOPIC_DLQ:-flow.dead_letter}
+trap cleanup EXIT
 
 echo "=================================================="
-# 1. Start Docker Compose
-echo "Starting Docker Compose services for project: ${COMPOSE_PROJECT_NAME}..."
-docker compose down -v || true
+echo "Starting Docker Compose services for project: ${PROJECT}..."
+compose down -v || true
+compose up -d --build
 
-docker compose up -d --build
-
-# Wait for healthy Quiver API server
 echo "Waiting for Quiver API to be healthy..."
 HEALTH_URL="http://localhost:${QUIVER_HOST_PORT}/health"
 MAX_ATTEMPTS=20
 ATTEMPT=1
 HEALTHY=false
 
-while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
   if curl -s --fail "$HEALTH_URL" | grep -q '"status":"ok"'; then
     echo "Quiver API is healthy!"
     HEALTHY=true
@@ -128,40 +54,32 @@ done
 
 if [ "$HEALTHY" = "false" ]; then
   echo "ERROR: Quiver API failed to start or become healthy in time."
-  docker compose logs
+  compose logs
   exit 1
 fi
 
 echo "=================================================="
-# 2. Ingest REST batch flow records
 echo "Ingesting REST Batch JSON flows..."
-# Run restgen valid batch
 go run tools/restgen/main.go -target "http://localhost:${QUIVER_HOST_PORT}" -key "${REST_INGEST_DEMO_CLIENT_KEY}" -count 5
-
-# Run restgen malformed batch (triggers partial batch return)
 go run tools/restgen/main.go -target "http://localhost:${QUIVER_HOST_PORT}" -key "${REST_INGEST_DEMO_CLIENT_KEY}" -count 1 -malformed || true
 
 echo "=================================================="
-# 3. Ingest Zeek conn.log records through the authenticated shipper HTTP path
 echo "Posting Zeek conn.log records through HTTP ingest..."
 go run tools/zeekloggen/main.go -target "http://localhost:${QUIVER_HOST_PORT}" -key "${ZEEK_SHIPPER_DEMO_KEY}" -count 5
 go run tools/zeekloggen/main.go -target "http://localhost:${QUIVER_HOST_PORT}" -key "${ZEEK_SHIPPER_DEMO_KEY}" -count 1 -malformed || true
 
 echo "=================================================="
-# 4. Ingest NetFlow UDP
 echo "Sending NetFlow v5 packets..."
-# Send 1 packet with 3 valid records
 go run tools/netflowgen/main.go -target "localhost:${NETFLOW_PORT}" -count 3 -seq 1
 
-# Send 1 malformed NetFlow packet (destined for DLQ)
+# Send two malformed NetFlow packets. These are expected to reach Kafka DLQ.
 go run tools/netflowgen/main.go -target "localhost:${NETFLOW_PORT}" -count 1 -seq 4 -malformed version
+go run tools/netflowgen/main.go -target "localhost:${NETFLOW_PORT}" -count 1 -seq 5 -malformed version
 
-# Give pipelines time to process Kafka and write to TimescaleDB
 echo "Waiting 12 seconds for processing pipelines to complete..."
 sleep 12
 
 echo "=================================================="
-# 5. Query /api/v1/flows
 echo "Querying API GET /api/v1/flows..."
 FROM_TIME=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)
 TO_TIME=$(date -u -d '1 hour hence' +%Y-%m-%dT%H:%M:%SZ)
@@ -171,7 +89,6 @@ echo "URL: $URL"
 RESPONSE=$(curl -s -H "X-API-Key: ${QUIVER_DEMO_ADMIN_API_KEY}" "$URL")
 echo "Response: $RESPONSE"
 
-# Assert records are present for all three ingestion types
 echo "Validating ingestion types exist in query results..."
 if ! echo "$RESPONSE" | grep -q '"source_type":"rest_json"'; then
   echo "ERROR: Missing source_type 'rest_json' in flows query."
@@ -188,7 +105,6 @@ fi
 echo "Ingest verification PASS!"
 
 echo "=================================================="
-# 6. Verify Aggregations
 echo "Verifying GET /api/v1/aggregations/top-talkers..."
 AGG_URL="http://localhost:${QUIVER_HOST_PORT}/api/v1/aggregations/top-talkers?from=${FROM_TIME}&to=${TO_TIME}&direction=src"
 AGG_RESP=$(curl -s -H "X-API-Key: ${QUIVER_DEMO_ADMIN_API_KEY}" "$AGG_URL")
@@ -200,7 +116,6 @@ fi
 echo "Aggregations verification PASS!"
 
 echo "=================================================="
-# 7. Verify Prometheus metrics
 echo "Querying GET /metrics..."
 METRICS_RESP=$(curl -s -H "X-API-Key: ${QUIVER_DEMO_ADMIN_API_KEY}" "http://localhost:${QUIVER_HOST_PORT}/metrics")
 echo "Metrics contains http_requests_total? ..."
@@ -211,24 +126,71 @@ fi
 echo "Metrics verification PASS!"
 
 echo "=================================================="
-# 8. Verify DLQ (Redpanda Kafka-compatible dead_letter topic)
 echo "Verifying ${KAFKA_TOPIC_DLQ} topic has messages..."
-# Consume two messages from the beginning using Redpanda's rpk CLI.
-# docker-compose.yml keeps the service name as "kafka" for compatibility,
-# but the actual container name is ${COMPOSE_PROJECT_NAME}-redpanda.
-DLQ_MESSAGES=$(timeout 10s docker exec "${COMPOSE_PROJECT_NAME}-redpanda" \
-  rpk topic consume "${KAFKA_TOPIC_DLQ}" \
-  --brokers=localhost:9092 \
-  --offset=start \
-  --num=2 2>/dev/null || true)
-DLQ_COUNT=$(printf '%s\n' "$DLQ_MESSAGES" | awk '/"topic"[[:space:]]*:/ {count++} END {print count+0}')
-echo "DLQ message count: $DLQ_COUNT"
-if [ -z "$DLQ_COUNT" ] || [ "$DLQ_COUNT" -lt 2 ]; then
-  echo "ERROR: Expected at least 2 messages in ${KAFKA_TOPIC_DLQ}, got: ${DLQ_COUNT:-0}"
+
+EXPECTED_DLQ_COUNT=2
+
+get_dlq_count() {
+  local topic="$1"
+  local desc
+
+  desc=$(compose exec -T kafka \
+    rpk topic describe "$topic" \
+    --brokers=localhost:9092 \
+    --print-partitions 2>/dev/null || true)
+
+  printf '%s\n' "$desc" | awk '
+    BEGIN {
+      start_col = 0
+      high_col = 0
+      total = 0
+    }
+
+    /^PARTITION[[:space:]]/ {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "LOG-START-OFFSET") {
+          start_col = i
+        }
+        if ($i == "HIGH-WATERMARK") {
+          high_col = i
+        }
+      }
+      next
+    }
+
+    start_col > 0 && high_col > 0 && $1 ~ /^[0-9]+$/ {
+      total += ($high_col - $start_col)
+    }
+
+    END {
+      print total + 0
+    }
+  '
+}
+
+DLQ_COUNT=0
+for i in $(seq 1 30); do
+  DLQ_COUNT="$(get_dlq_count "${KAFKA_TOPIC_DLQ}")"
+  echo "DLQ message count attempt $i/30: $DLQ_COUNT"
+
+  if [ "$DLQ_COUNT" -ge "$EXPECTED_DLQ_COUNT" ]; then
+    break
+  fi
+
+  sleep 1
+done
+
+if [ "$DLQ_COUNT" -lt "$EXPECTED_DLQ_COUNT" ]; then
+  echo "ERROR: Expected at least ${EXPECTED_DLQ_COUNT} messages in ${KAFKA_TOPIC_DLQ}, got: ${DLQ_COUNT:-0}"
   echo "Redpanda topic list:"
-  docker exec "${COMPOSE_PROJECT_NAME}-redpanda" rpk topic list --brokers=localhost:9092 || true
+  compose exec -T kafka rpk topic list --brokers=localhost:9092 || true
+  echo "DLQ topic description:"
+  compose exec -T kafka rpk topic describe "${KAFKA_TOPIC_DLQ}" --brokers=localhost:9092 --print-partitions || true
+  echo "Quiver logs:"
+  compose logs quiver || true
   exit 1
 fi
+
 echo "DLQ verification PASS!"
 
 echo "=================================================="

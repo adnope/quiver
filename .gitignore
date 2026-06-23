@@ -1,6 +1,6 @@
-/bin/
+bin
 /coverage.out
-/dist/
+dist
 /internal/web/dist/*
 !/internal/web/dist/keep.txt
 /tmp/
@@ -8,3 +8,6 @@ artifacts
 *.test
 .env
 ai_context
+.agents
+.agent
+.codex

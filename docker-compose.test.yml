@@ -1,7 +1,6 @@
 services:
   timescaledb:
     image: timescale/timescaledb:latest-pg17
-    container_name: ${COMPOSE_PROJECT_NAME:-quiver-test}-timescaledb
     environment:
       POSTGRES_DB: quiver
       POSTGRES_USER: postgres
@@ -19,7 +18,6 @@ services:
 
   kafka:
     image: redpandadata/redpanda:latest
-    container_name: ${COMPOSE_PROJECT_NAME:-quiver-test}-redpanda
     command:
       - redpanda
       - start
@@ -43,7 +41,6 @@ services:
 
   migration:
     image: migrate/migrate:v4.19.1
-    container_name: ${COMPOSE_PROJECT_NAME:-quiver-test}-migration
     volumes:
       - ./internal/storage/postgres/migrations:/migrations
     command: -path=/migrations -database="postgres://postgres:postgres@timescaledb:5432/quiver?sslmode=disable" up
