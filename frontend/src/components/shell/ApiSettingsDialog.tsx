@@ -29,6 +29,7 @@ export function ApiSettingsDialog({ open, onOpenChange }: ApiSettingsDialogProps
   const [isValidating, setIsValidating] = useState(false)
   const [showApiKey, setShowApiKey] = useState(false)
 
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (open) {
       setBaseUrl(savedBaseUrl)
@@ -36,6 +37,7 @@ export function ApiSettingsDialog({ open, onOpenChange }: ApiSettingsDialogProps
       setError(undefined)
     }
   }, [open, savedBaseUrl, savedApiKey])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   async function save() {
     setIsValidating(true)

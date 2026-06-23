@@ -16,6 +16,11 @@ const ExplorerView = lazy(() =>
     default: module.ExplorerView,
   })),
 )
+const AnalyticsView = lazy(() =>
+  import('@/components/analytics/AnalyticsView').then((module) => ({
+    default: module.AnalyticsView,
+  })),
+)
 
 export function AppShell() {
   const queryClient = useQueryClient()
@@ -32,7 +37,13 @@ export function AppShell() {
   }, [theme])
 
   const mainContent = useMemo(() => {
-    return activeTab === 'dashboard' ? <DashboardView /> : <ExplorerView />
+    if (activeTab === 'dashboard') {
+      return <DashboardView />
+    }
+    if (activeTab === 'analytics') {
+      return <AnalyticsView />
+    }
+    return <ExplorerView />
   }, [activeTab])
 
   return (

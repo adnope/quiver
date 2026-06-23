@@ -18,7 +18,7 @@ database:
 
 ingestion:
   publish_queue_size: 10000
-  publisher_workers: 4
+  publisher_workers: 8
 
 storage:
   retention:
@@ -33,6 +33,7 @@ storage_writer:
   max_retries: 10
   initial_backoff: "100ms"
   max_backoff: "5s"
+  concurrency: 8
 
 api:
   max_request_body_bytes: 5242880

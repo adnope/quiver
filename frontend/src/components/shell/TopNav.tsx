@@ -12,6 +12,7 @@ interface TopNavProps {
 const tabs = [
   { id: 'dashboard', label: 'Dashboard' },
   { id: 'explorer', label: 'Flow Explorer' },
+  { id: 'analytics', label: 'Analytics' },
 ] as const
 
 export function TopNav({ health, onOpenSettings }: TopNavProps) {

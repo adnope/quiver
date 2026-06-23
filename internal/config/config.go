@@ -91,6 +91,7 @@ type StorageWriterConfig struct {
 	MaxRetries     int      `yaml:"max_retries"`
 	InitialBackoff Duration `yaml:"initial_backoff"`
 	MaxBackoff     Duration `yaml:"max_backoff"`
+	Concurrency    int      `yaml:"concurrency"`
 }
 
 type APIConfig struct {
@@ -310,6 +311,7 @@ func Default() Config {
 			MaxRetries:     10,
 			InitialBackoff: Duration(100 * time.Millisecond),
 			MaxBackoff:     Duration(5 * time.Second),
+			Concurrency:    8,
 		},
 		API: APIConfig{
 			MaxRequestBodyBytes: DefaultMaxRequestBodyBytes,
@@ -629,6 +631,9 @@ func (c Config) validateStorageWriter() error {
 	}
 	if c.StorageWriter.InitialBackoff > c.StorageWriter.MaxBackoff {
 		return fmt.Errorf("%w: storage_writer.initial_backoff cannot exceed max_backoff", ErrInvalidConfig)
+	}
+	if c.StorageWriter.Concurrency <= 0 {
+		return fmt.Errorf("%w: storage_writer.concurrency must be positive", ErrInvalidConfig)
 	}
 	return nil
 }

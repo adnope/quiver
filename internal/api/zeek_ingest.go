@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/adnope/quiver/internal/collector/zeek"
@@ -107,31 +108,82 @@ func (h *ZeekConnIngestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	response := IngestResponse{Errors: []IngestRecordError{}}
-	for index, raw := range request.Records {
-		line, recordErr := zeekRecordBytes(raw)
-		if recordErr != nil {
-			response.Rejected++
-			response.Errors = append(response.Errors, IngestRecordError{Index: index, Code: recordErr.Code, Message: recordErr.Message})
-			continue
-		}
+	type publishResult struct {
+		valErr *recordValidationError
+		pubErr error
+	}
 
-		event, recordErr := h.recordToEvent(r, principal.SourceHost, line)
-		if recordErr != nil {
-			if err := h.publishDeadLetter(r, principal.SourceHost, line, recordErr.Code, recordErr.Message); err != nil {
-				writePublisherError(w, r, err)
+	results := make([]publishResult, len(request.Records))
+	sem := make(chan struct{}, 50)
+	var wg sync.WaitGroup
+
+	for index, raw := range request.Records {
+		wg.Add(1)
+		go func(idx int, rawRecord json.RawMessage) {
+			defer wg.Done()
+
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			line, recordErr := zeekRecordBytes(rawRecord)
+			if recordErr != nil {
+				results[idx] = publishResult{valErr: recordErr}
 				return
 			}
-			response.Rejected++
-			response.Errors = append(response.Errors, IngestRecordError{Index: index, Code: recordErr.Code, Message: recordErr.Message})
-			continue
-		}
 
-		if err := h.publisher.PublishRaw(r.Context(), event); err != nil {
-			writePublisherError(w, r, err)
-			return
+			event, recordErr := h.recordToEvent(r, principal.SourceHost, line)
+			if recordErr != nil {
+				if err := h.publishDeadLetter(r, principal.SourceHost, line, recordErr.Code, recordErr.Message); err != nil {
+					results[idx] = publishResult{pubErr: err}
+					return
+				}
+				results[idx] = publishResult{valErr: recordErr}
+				return
+			}
+
+			if err := h.publisher.PublishRaw(r.Context(), event); err != nil {
+				results[idx] = publishResult{pubErr: err}
+				return
+			}
+		}(index, raw)
+	}
+
+	wg.Wait()
+
+	// Check if there was any publisher error
+	var queueFullErr error
+	var otherPubErr error
+	for _, res := range results {
+		if res.pubErr != nil {
+			if errors.Is(res.pubErr, kafka.ErrQueueFull) {
+				queueFullErr = res.pubErr
+			} else {
+				otherPubErr = res.pubErr
+			}
 		}
-		response.Accepted++
+	}
+
+	if queueFullErr != nil {
+		writePublisherError(w, r, queueFullErr)
+		return
+	}
+	if otherPubErr != nil {
+		writePublisherError(w, r, otherPubErr)
+		return
+	}
+
+	response := IngestResponse{Errors: []IngestRecordError{}}
+	for idx, res := range results {
+		if res.valErr != nil {
+			response.Rejected++
+			response.Errors = append(response.Errors, IngestRecordError{
+				Index:   idx,
+				Code:    res.valErr.Code,
+				Message: res.valErr.Message,
+			})
+		} else {
+			response.Accepted++
+		}
 	}
 	writeJSON(w, http.StatusAccepted, response)
 }

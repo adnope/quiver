@@ -153,8 +153,7 @@ func (r *FlowRepository) InsertFlowRecords(ctx context.Context, records []domain
 		return InsertResult{}, fmt.Errorf("begin flow insert transaction: %w", err)
 	}
 
-	const columnsPerRecord = 33
-	const maxRecordsPerChunk = 65535 / columnsPerRecord // 1985
+	const maxRecordsPerChunk = 2000
 
 	var totalInserted int64
 
@@ -165,9 +164,111 @@ func (r *FlowRepository) InsertFlowRecords(ctx context.Context, records []domain
 		}
 		chunk := records[startIdx:endIdx]
 
-		var builder strings.Builder
-		args := make([]any, 0, len(chunk)*columnsPerRecord)
-		builder.WriteString(`INSERT INTO quiver.flow_records (
+		n := len(chunk)
+		ids := make([]string, n)
+		schemaVersions := make([]string, n)
+		idempotencyKeys := make([]string, n)
+		rawEventIDs := make([]string, n)
+		sourceTypes := make([]string, n)
+		collectorIDs := make([]string, n)
+		sourceHosts := make([]string, n)
+		sourceIPs := make([]*string, n)
+		ingestedAts := make([]time.Time, n)
+		normalizedAts := make([]time.Time, n)
+		eventStartTimes := make([]time.Time, n)
+		eventEndTimes := make([]*time.Time, n)
+		durationMSs := make([]*int64, n)
+		srcIPs := make([]string, n)
+		dstIPs := make([]string, n)
+		srcPorts := make([]*int32, n)
+		dstPorts := make([]*int32, n)
+		ipVersions := make([]int16, n)
+		transportProtocols := make([]string, n)
+		protocolNumbers := make([]int16, n)
+		bytesSlice := make([]*int64, n)
+		packetsSlice := make([]*int64, n)
+		tcpFlagsSlice := make([]*int32, n)
+		flowStates := make([]*string, n)
+		directions := make([]string, n)
+		inputInterfaces := make([]*int32, n)
+		outputInterfaces := make([]*int32, n)
+		nextHopIPs := make([]*string, n)
+		applicationProtocols := make([]*string, n)
+		samplingRates := make([]*int32, n)
+		normalizationStatuses := make([]string, n)
+		normalizationErrors := make([]*string, n)
+		attributesSlice := make([]string, n)
+
+		for i, rec := range chunk {
+			ids[i] = rec.ID
+			schemaVersions[i] = rec.SchemaVersion
+			idempotencyKeys[i] = rec.IdempotencyKey
+			rawEventIDs[i] = rec.RawEventID
+			sourceTypes[i] = string(rec.SourceType)
+			collectorIDs[i] = rec.CollectorID
+			sourceHosts[i] = rec.SourceHost
+			if rec.SourceIP != nil {
+				ipStr := rec.SourceIP.String()
+				sourceIPs[i] = &ipStr
+			}
+			ingestedAts[i] = rec.IngestedAt
+			normalizedAts[i] = rec.NormalizedAt
+			eventStartTimes[i] = rec.EventStartTime
+			if rec.EventEndTime != nil {
+				t := *rec.EventEndTime
+				eventEndTimes[i] = &t
+			}
+			durationMSs[i] = rec.DurationMS
+			srcIPs[i] = rec.SrcIP.String()
+			dstIPs[i] = rec.DstIP.String()
+			if rec.SrcPort != nil {
+				portVal := int32(*rec.SrcPort)
+				srcPorts[i] = &portVal
+			}
+			if rec.DstPort != nil {
+				portVal := int32(*rec.DstPort)
+				dstPorts[i] = &portVal
+			}
+			ipVersions[i] = int16(rec.IPVersion) //nolint:gosec
+			transportProtocols[i] = string(rec.TransportProtocol)
+			protocolNumbers[i] = int16(rec.ProtocolNumber)
+			if rec.Bytes != nil {
+				val := int64(*rec.Bytes) //nolint:gosec
+				bytesSlice[i] = &val
+			}
+			if rec.Packets != nil {
+				val := int64(*rec.Packets) //nolint:gosec
+				packetsSlice[i] = &val
+			}
+			if rec.TCPFlags != nil {
+				val := int32(*rec.TCPFlags)
+				tcpFlagsSlice[i] = &val
+			}
+			flowStates[i] = rec.FlowState
+			directions[i] = string(rec.Direction)
+			if rec.InputInterface != nil {
+				val := int32(*rec.InputInterface) //nolint:gosec
+				inputInterfaces[i] = &val
+			}
+			if rec.OutputInterface != nil {
+				val := int32(*rec.OutputInterface) //nolint:gosec
+				outputInterfaces[i] = &val
+			}
+			if rec.NextHopIP != nil {
+				ipStr := rec.NextHopIP.String()
+				nextHopIPs[i] = &ipStr
+			}
+			applicationProtocols[i] = rec.ApplicationProtocol
+			if rec.SamplingRate != nil {
+				val := int32(*rec.SamplingRate) //nolint:gosec
+				samplingRates[i] = &val
+			}
+			normalizationStatuses[i] = string(rec.NormalizationStatus)
+			normalizationErrors[i] = rec.NormalizationError
+			attributesSlice[i] = string(jsonBytes(rec.Attributes))
+		}
+
+		query := `INSERT INTO quiver.flow_records (
 id, schema_version, idempotency_key, raw_event_id,
 source_type, collector_id, source_host, source_ip, ingested_at, normalized_at,
 event_start_time, event_end_time, duration_ms,
@@ -175,33 +276,28 @@ src_ip, dst_ip, src_port, dst_port, ip_version, transport_protocol, protocol_num
 bytes, packets, tcp_flags, flow_state,
 direction, input_interface, output_interface, next_hop_ip,
 application_protocol, sampling_rate, normalization_status, normalization_error, attributes
-) VALUES `)
-		for i, record := range chunk {
-			if i > 0 {
-				builder.WriteString(", ")
-			}
-			builder.WriteString("(")
-			for col := 0; col < columnsPerRecord; col++ {
-				if col > 0 {
-					builder.WriteString(", ")
-				}
-				fmt.Fprintf(&builder, "$%d", len(args)+col+1)
-			}
-			builder.WriteString(")")
-			args = append(args, insertArgs(record)...)
-		}
-		builder.WriteString(" ON CONFLICT (event_start_time, idempotency_key) DO NOTHING")
+) SELECT * FROM UNNEST(
+$1::text[]::uuid[], $2::text[], $3::text[], $4::text[]::uuid[],
+$5::text[], $6::text[], $7::text[], $8::text[]::inet[], $9::timestamptz[], $10::timestamptz[],
+$11::timestamptz[], $12::timestamptz[], $13::bigint[],
+$14::text[]::inet[], $15::text[]::inet[], $16::integer[], $17::integer[], $18::smallint[], $19::text[], $20::smallint[],
+$21::bigint[], $22::bigint[], $23::integer[], $24::text[],
+$25::text[], $26::integer[], $27::integer[], $28::text[]::inet[],
+$29::text[], $30::integer[], $31::text[], $32::text[], $33::text[]::jsonb[]
+) ON CONFLICT (event_start_time, idempotency_key) DO NOTHING`
 
-		result, execErr := tx.ExecContext(ctx, builder.String(), args...)
+		result, execErr := tx.ExecContext(ctx, query,
+			ids, schemaVersions, idempotencyKeys, rawEventIDs,
+			sourceTypes, collectorIDs, sourceHosts, sourceIPs, ingestedAts, normalizedAts,
+			eventStartTimes, eventEndTimes, durationMSs,
+			srcIPs, dstIPs, srcPorts, dstPorts, ipVersions, transportProtocols, protocolNumbers,
+			bytesSlice, packetsSlice, tcpFlagsSlice, flowStates,
+			directions, inputInterfaces, outputInterfaces, nextHopIPs,
+			applicationProtocols, samplingRates, normalizationStatuses, normalizationErrors, attributesSlice,
+		)
 		if execErr != nil {
-			rollbackErr := tx.Rollback()
-			if rollbackErr != nil {
-				return InsertResult{}, errors.Join(
-					fmt.Errorf("insert flow records: %w", execErr),
-					fmt.Errorf("rollback flow insert transaction: %w", rollbackErr),
-				)
-			}
-			return InsertResult{}, fmt.Errorf("insert flow records: %w", execErr)
+			_ = tx.Rollback()
+			return InsertResult{}, fmt.Errorf("insert flow records unnest: %w", execErr)
 		}
 
 		inserted, err := result.RowsAffected()
@@ -420,44 +516,6 @@ func (r *FlowRepository) ProtocolDistribution(ctx context.Context, query Aggrega
 		return nil, fmt.Errorf("iterate protocol distribution: %w", err)
 	}
 	return items, nil
-}
-
-func insertArgs(record domain.NormalizedFlowRecord) []any {
-	return []any{
-		record.ID,
-		record.SchemaVersion,
-		record.IdempotencyKey,
-		record.RawEventID,
-		string(record.SourceType),
-		record.CollectorID,
-		record.SourceHost,
-		nullableAddr(record.SourceIP),
-		record.IngestedAt,
-		record.NormalizedAt,
-		record.EventStartTime,
-		record.EventEndTime,
-		record.DurationMS,
-		record.SrcIP.String(),
-		record.DstIP.String(),
-		record.SrcPort,
-		record.DstPort,
-		record.IPVersion,
-		string(record.TransportProtocol),
-		record.ProtocolNumber,
-		record.Bytes,
-		record.Packets,
-		record.TCPFlags,
-		record.FlowState,
-		string(record.Direction),
-		record.InputInterface,
-		record.OutputInterface,
-		nullableAddr(record.NextHopIP),
-		record.ApplicationProtocol,
-		record.SamplingRate,
-		string(record.NormalizationStatus),
-		record.NormalizationError,
-		jsonBytes(record.Attributes),
-	}
 }
 
 const flowRecordColumns = `id, schema_version, idempotency_key, raw_event_id,
@@ -747,13 +805,6 @@ func validateAggregationQuery(query AggregationQuery, requireDirection bool) err
 		return fmt.Errorf("%w: invalid direction", ErrInvalidFlowQuery)
 	}
 	return nil
-}
-
-func nullableAddr(addr *netip.Addr) any {
-	if addr == nil {
-		return nil
-	}
-	return addr.String()
 }
 
 func jsonBytes(attrs map[string]json.RawMessage) []byte {

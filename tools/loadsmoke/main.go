@@ -301,18 +301,20 @@ func main() {
 	var prevPersisted uint64
 	stagnantCycles := 0
 	drainStart := time.Now()
+	lastIncreaseTime := drainStart // Fallback to drainStart if no records are written during drain phase
 
 	for time.Since(drainStart) < 120*time.Second {
 		currentPersisted, err := getDatabaseInsertCount(context.Background(), db)
 		if err == nil {
-			if currentPersisted == prevPersisted {
+			if currentPersisted != prevPersisted {
+				lastIncreaseTime = time.Now()
+				stagnantCycles = 0
+			} else {
 				stagnantCycles++
 				if stagnantCycles >= 10 {
 					finalPersisted = currentPersisted
 					break // Queue is drained
 				}
-			} else {
-				stagnantCycles = 0
 			}
 			prevPersisted = currentPersisted
 			finalPersisted = currentPersisted
@@ -330,7 +332,17 @@ func main() {
 		warnings = append(warnings, fmt.Sprintf("%d records were accepted but not persisted within drain timeout. Kafka consumer lag or drops occurred.", droppedOrLag))
 	}
 
-	durableThroughput := float64(totalPersisted) / actualDuration
+	// Calculate correct durations and throughputs
+	totalPersistenceDuration := lastIncreaseTime.Sub(startTime)
+	if totalPersistenceDuration <= 0 {
+		totalPersistenceDuration = time.Second // Avoid division by zero
+	}
+	durableThroughput := float64(totalPersisted) / totalPersistenceDuration.Seconds()
+	avgIngestionRPS := float64(atomic.LoadInt64(&accepted)) / actualDuration
+	drainDuration := lastIncreaseTime.Sub(drainStart)
+	if drainDuration < 0 {
+		drainDuration = 0
+	}
 
 	// Compute Query Latencies
 	queryMu.Lock()
@@ -365,7 +377,11 @@ func main() {
 		QueryLatencies:       lats,
 		BottleneckDetected:   bottleneckDetected,
 		Warnings:             warnings,
-		Notes:                []string{"Load smoke capacity benchmark run complete."},
+		Notes: []string{
+			fmt.Sprintf("Average Ingestion Rate: %.2f records/sec (over %.2fs active load)", avgIngestionRPS, actualDuration),
+			fmt.Sprintf("Durable Write Throughput: %.2f records/sec (over %.2fs total write time)", durableThroughput, totalPersistenceDuration.Seconds()),
+			fmt.Sprintf("Drain Phase Duration: %.2fs", drainDuration.Seconds()),
+		},
 	}
 
 	artifactPath := "artifacts/performance-smoke.json"
@@ -374,7 +390,9 @@ func main() {
 	_ = os.WriteFile(artifactPath, fileBytes, 0644)
 
 	fmt.Printf("\n=== Results ===\n")
-	fmt.Printf("Durable Throughput: %.2f records/sec\n", durableThroughput)
+	fmt.Printf("Average Ingestion Rate:   %.2f records/sec (over %.2fs active load)\n", avgIngestionRPS, actualDuration)
+	fmt.Printf("Durable Write Throughput:  %.2f records/sec (over %.2fs total write time)\n", durableThroughput, totalPersistenceDuration.Seconds())
+	fmt.Printf("Drain Phase Duration:      %.2fs\n", drainDuration.Seconds())
 	fmt.Printf("Persisted: %d | Accepted: %d | Failed: %d | Dropped/Lag: %d\n", result.RecordsPersisted, result.RecordsAccepted, result.RecordsFailed, result.RecordsDropped)
 	fmt.Printf("Query Latency (P95): %.2f ms\n", lats.P95)
 	if bottleneckDetected {

@@ -10,6 +10,7 @@ services:
       - "5434:5432"
     volumes:
       - quiver_test_db_data:/var/lib/postgresql/data
+    command: ["postgres", "-c", "shared_buffers=512MB", "-c", "max_wal_size=4GB", "-c", "synchronous_commit=off", "-c", "work_mem=16MB"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d quiver"]
       interval: 3s
