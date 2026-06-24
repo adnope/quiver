@@ -174,6 +174,58 @@ definitions:
           $ref: '#/definitions/github_com_adnope_quiver_internal_observability.MetricSnapshot'
         type: array
     type: object
+  internal_api.MetricAggregatePoint:
+    properties:
+      avg:
+        type: number
+      bucket_start:
+        type: string
+      bucket_width_seconds:
+        type: integer
+      count:
+        type: integer
+      delta:
+        type: number
+      first:
+        type: number
+      labels:
+        additionalProperties:
+          type: string
+        type: object
+      last:
+        type: number
+      max:
+        type: number
+      metric_kind:
+        type: string
+      metric_name:
+        type: string
+      min:
+        type: number
+      p90:
+        type: number
+      p95:
+        type: number
+      p99:
+        type: number
+      sample_count:
+        type: integer
+      sum:
+        type: number
+    type: object
+  internal_api.MetricAggregatesResponse:
+    properties:
+      from:
+        type: string
+      points:
+        items:
+          $ref: '#/definitions/internal_api.MetricAggregatePoint'
+        type: array
+      step_seconds:
+        type: integer
+      to:
+        type: string
+    type: object
   internal_api.MetricHistoryPoint:
     properties:
       delta:
@@ -859,6 +911,70 @@ paths:
       summary: Ingest Zeek conn.log records
       tags:
       - ingest
+  /api/v1/metrics/aggregates:
+    get:
+      description: Returns bounded system metric aggregate points for arbitrary from/to/step
+        windows. Duration percentiles are recomputed from merged histogram buckets when
+        histogram data exists.
+      parameters:
+      - description: API key with metrics scope when metrics auth is enabled
+        in: header
+        name: X-API-Key
+        required: true
+        type: string
+      - description: RFC3339 inclusive start timestamp
+        in: query
+        name: from
+        required: true
+        type: string
+      - description: RFC3339 exclusive end timestamp
+        in: query
+        name: to
+        required: true
+        type: string
+      - description: Rollup step duration, for example 5s, 20s, 1m
+        in: query
+        name: step
+        type: string
+      - collectionFormat: multi
+        description: Metric name filter; repeat metric for multiple names
+        in: query
+        items:
+          type: string
+        name: metric
+        type: array
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.MetricAggregatesResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Bucketed metric aggregates
+      tags:
+      - metrics
   /api/v1/metrics/history:
     get:
       description: Returns downsampled system metrics from TimescaleDB based on range

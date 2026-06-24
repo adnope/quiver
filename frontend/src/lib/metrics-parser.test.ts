@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildAggregateChart,
   buildHistoryChart,
   buildLiveWidgetSnapshot,
   labelForMetric,
@@ -7,7 +8,7 @@ import {
   metricWidgetForName,
   parsePrometheusMetrics,
 } from '@/lib/metrics-parser'
-import type { MetricHistoryPoint, MetricSnapshot } from '@/types/api'
+import type { MetricAggregatePoint, MetricHistoryPoint, MetricSnapshot } from '@/types/api'
 
 describe('metrics parser', () => {
   it('maps metric names to dashboard widgets', () => {
@@ -18,6 +19,7 @@ describe('metrics parser', () => {
     expect(metricWidgetForName('storage_insert_duration_milliseconds_total')).toBe(
       'dbLatency',
     )
+    expect(metricWidgetForName('storage_insert_duration_p90')).toBe('dbLatency')
     expect(metricWidgetForName('storage_insert_duration_p95')).toBe('dbLatency')
     expect(metricWidgetForName('storage_insert_duration_p99')).toBe('dbLatency')
     expect(metricWidgetForName('kafka_consumer_lag')).toBe('kafkaLag')
@@ -37,6 +39,7 @@ describe('metrics parser', () => {
     expect(labelForMetric('dbLatency', {}, 'storage_insert_duration_milliseconds')).toBe(
       'Average',
     )
+    expect(labelForMetric('dbLatency', {}, 'storage_insert_duration_p90')).toBe('p90')
     expect(labelForMetric('dbLatency', {}, 'storage_insert_duration_p95')).toBe('p95')
     expect(labelForMetric('dbLatency', {}, 'storage_insert_duration_p99')).toBe('p99')
     expect(labelForMetric('kafkaLag', { topic: 'flow.raw', partition: '2' })).toBe(
@@ -264,6 +267,42 @@ ignored_bucket{le="+Inf"} +Inf
     expect(first?.REST).toBe(60)
     expect(missing?.REST).toBe(0)
     expect(last?.REST).toBe(120)
+  })
+
+
+  it('builds aggregate charts with rollup stats for tooltips', () => {
+    const now = new Date('2026-06-24T10:00:20Z')
+    const points: MetricAggregatePoint[] = [
+      {
+        bucket_start: '2026-06-24T10:00:00Z',
+        bucket_width_seconds: 20,
+        metric_name: 'storage_insert_duration',
+        labels: null,
+        metric_kind: 'duration',
+        sample_count: 4,
+        count: 4,
+        sum: 100,
+        avg: 25,
+        min: 10,
+        max: 40,
+        p90: 40,
+        p95: 40,
+        p99: 40,
+        first: 10,
+        last: 40,
+        delta: null,
+      },
+    ]
+
+    const chart = buildAggregateChart(points, 'dbLatency', '1h', now)
+    const datum = chart.data.find(
+      (item) => item.timestamp === '2026-06-24T10:00:00.000Z',
+    )
+
+    expect(datum?.Average).toBe(25)
+    expect(datum?.p90).toBe(40)
+    expect(datum?.aggregateStats?.Average?.count).toBe(4)
+    expect(datum?.aggregateStats?.Average?.p95).toBe(40)
   })
 
   it('returns an empty zero timeline when no series are present', () => {

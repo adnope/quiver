@@ -138,12 +138,15 @@ func NewServerWithCollectors(
 
 	liveHandler := LiveMetricsHandler(metrics, db)
 	historyHandler := MetricsHistoryHandler(db)
+	aggregatesHandler := MetricsAggregatesHandler(db, cfg.Observability)
 	if cfg.API.Metrics.AuthRequired {
 		liveHandler = RequestIDMiddleware(RequireScope(auth, limiter, metrics, ScopeMetrics, liveHandler))
 		historyHandler = RequestIDMiddleware(RequireScope(auth, limiter, metrics, ScopeMetrics, historyHandler))
+		aggregatesHandler = RequestIDMiddleware(RequireScope(auth, limiter, metrics, ScopeMetrics, aggregatesHandler))
 	}
 	mux.Handle("GET /api/v1/metrics/live", route(metrics, "GET /api/v1/metrics/live", liveHandler))
 	mux.Handle("GET /api/v1/metrics/history", route(metrics, "GET /api/v1/metrics/history", historyHandler))
+	mux.Handle("GET /api/v1/metrics/aggregates", route(metrics, "GET /api/v1/metrics/aggregates", aggregatesHandler))
 	mux.Handle("GET /", route(metrics, "GET /", FrontendHandler(web.DistFS())))
 
 	return &Server{mux: mux}, nil

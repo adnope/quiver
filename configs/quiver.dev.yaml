@@ -91,6 +91,11 @@ collectors:
       packet_buffer_bytes: 65535
       auth_required: true
 
+observability:
+  metrics_save_interval: "5s"
+  metrics_aggregate_bucket_width: "5s"
+  metrics_aggregate_max_points: 1000
+
 dead_letter:
   max_raw_packet_bytes: 1500
 

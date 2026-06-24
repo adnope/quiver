@@ -1,9 +1,18 @@
 import { useQuery } from '@tanstack/react-query'
-import { getLiveMetrics, getMetricsHistory } from '@/lib/api-client'
-import { buildHistoryChart, buildLiveWidgetSnapshot } from '@/lib/metrics-parser'
+import {
+  getLiveMetrics,
+  getMetricAggregates,
+  getMetricsHistory,
+} from '@/lib/api-client'
+import {
+  buildAggregateChart,
+  buildHistoryChart,
+  buildLiveWidgetSnapshot,
+  metricAggregateParamsForRange,
+} from '@/lib/metrics-parser'
 import { useAppStore } from '@/store/app-store'
 import type { MetricRange, MetricWidget } from '@/lib/metrics-parser'
-import type { MetricSnapshot } from '@/types/api'
+import type { MetricAggregatePoint, MetricSnapshot } from '@/types/api'
 
 export function useLiveMetrics() {
   const apiBaseUrl = useAppStore((state) => state.apiBaseUrl)
@@ -35,6 +44,26 @@ export function useMetricsHistory(range: MetricRange, enabled = true) {
   })
 }
 
+export function useMetricAggregates(range: MetricRange, enabled = true) {
+  const apiBaseUrl = useAppStore((state) => state.apiBaseUrl)
+  const apiKey = useAppStore((state) => state.apiKey)
+
+  return useQuery({
+    queryKey: ['metrics', 'aggregates', range, apiBaseUrl, Boolean(apiKey)],
+    enabled,
+    queryFn: ({ signal }) =>
+      getMetricAggregates(metricAggregateParamsForRange(range), {
+        baseUrl: apiBaseUrl,
+        apiKey,
+        signal,
+      }),
+    retry: 2,
+    staleTime: 10_000,
+    refetchInterval: 10_000,
+    gcTime: 5 * 60_000,
+  })
+}
+
 export function selectHistoryWidget(
   points: ReadonlyArray<{
     timestamp: string
@@ -48,6 +77,15 @@ export function selectHistoryWidget(
   now = new Date(),
 ) {
   return buildHistoryChart(points, widget, range, now)
+}
+
+export function selectAggregateWidget(
+  points: ReadonlyArray<MetricAggregatePoint>,
+  widget: MetricWidget,
+  range: MetricRange,
+  now = new Date(),
+) {
+  return buildAggregateChart(points, widget, range, now)
 }
 
 export function selectLiveWidget(

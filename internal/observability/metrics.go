@@ -13,9 +13,11 @@ import (
 const durationReservoirSize = 1000
 
 type Registry struct {
-	mu        sync.RWMutex
-	counters  map[seriesKey]uint64
-	durations map[seriesKey][]uint64
+	mu         sync.RWMutex
+	counters   map[seriesKey]uint64
+	durations  map[seriesKey][]uint64
+	aggregates map[seriesKey]*metricAccumulator
+	histograms map[seriesKey][]uint64
 }
 
 type seriesKey struct {
@@ -25,8 +27,10 @@ type seriesKey struct {
 
 func NewRegistry() *Registry {
 	return &Registry{
-		counters:  map[seriesKey]uint64{},
-		durations: map[seriesKey][]uint64{},
+		counters:   map[seriesKey]uint64{},
+		durations:  map[seriesKey][]uint64{},
+		aggregates: map[seriesKey]*metricAccumulator{},
+		histograms: map[seriesKey][]uint64{},
 	}
 }
 
@@ -34,6 +38,25 @@ func (r *Registry) ensureCounters() {
 	if r.counters == nil {
 		r.counters = map[seriesKey]uint64{}
 	}
+}
+
+func (r *Registry) ensureAggregates() {
+	if r.aggregates == nil {
+		r.aggregates = map[seriesKey]*metricAccumulator{}
+	}
+	if r.histograms == nil {
+		r.histograms = map[seriesKey][]uint64{}
+	}
+}
+
+func (r *Registry) accumulatorFor(key seriesKey) *metricAccumulator {
+	r.ensureAggregates()
+	acc := r.aggregates[key]
+	if acc == nil {
+		acc = &metricAccumulator{}
+		r.aggregates[key] = acc
+	}
+	return acc
 }
 
 func (r *Registry) Inc(name string, labels map[string]string) {
@@ -48,7 +71,9 @@ func (r *Registry) Add(name string, labels map[string]string, value uint64) {
 	defer r.mu.Unlock()
 	r.ensureCounters()
 	key := seriesKey{name: name, labels: encodeLabels(labels)}
+	previous := r.counters[key]
 	r.counters[key] += value
+	r.accumulatorFor(key).observeCounter(previous, r.counters[key], value)
 }
 
 func (r *Registry) Set(name string, labels map[string]string, value uint64) {
@@ -60,6 +85,7 @@ func (r *Registry) Set(name string, labels map[string]string, value uint64) {
 	r.ensureCounters()
 	key := seriesKey{name: name, labels: encodeLabels(labels)}
 	r.counters[key] = value
+	r.accumulatorFor(key).observeGauge(float64(value))
 }
 
 func (r *Registry) ObserveDuration(name string, labels map[string]string, start time.Time) {
@@ -81,6 +107,11 @@ func (r *Registry) ObserveDuration(name string, labels map[string]string, start 
 		samples = samples[len(samples)-durationReservoirSize:]
 	}
 	r.durations[key] = samples
+	r.accumulatorFor(key).observeDuration(float64(millis))
+	if r.histograms[key] == nil {
+		r.histograms[key] = make([]uint64, durationHistogramBucketCount())
+	}
+	r.histograms[key][durationHistogramBucketIndex(float64(millis))]++
 }
 
 func durationMillis(elapsed time.Duration) uint64 {
@@ -219,4 +250,49 @@ func decodeLabels(s string) map[string]string {
 		}
 	}
 	return res
+}
+
+func (r *Registry) DrainBucketAggregates(
+	bucketStart time.Time,
+	bucketWidth time.Duration,
+) ([]MetricAggregate, []MetricHistogramBucket) {
+	if r == nil {
+		return nil, nil
+	}
+	if bucketWidth <= 0 {
+		return nil, nil
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	aggregates := make([]MetricAggregate, 0, len(r.aggregates))
+	for key, acc := range r.aggregates {
+		if acc == nil || acc.sampleCount == 0 {
+			continue
+		}
+		aggregates = append(aggregates, acc.toAggregate(bucketStart, bucketWidth, key, r.histograms[key]))
+	}
+
+	histogramBuckets := make([]MetricHistogramBucket, 0)
+	for key, counts := range r.histograms {
+		for index, count := range counts {
+			if count == 0 {
+				continue
+			}
+			histogramBuckets = append(histogramBuckets, MetricHistogramBucket{
+				BucketStart:        bucketStart.UTC(),
+				BucketWidthSeconds: int(bucketWidth.Seconds()),
+				MetricName:         key.name,
+				Labels:             normalizeLabels(decodeLabels(key.labels)),
+				BucketIndex:        index,
+				BucketUpperBound:   durationHistogramBucketUpperBound(index),
+				Count:              count,
+			})
+		}
+	}
+
+	r.aggregates = map[seriesKey]*metricAccumulator{}
+	r.histograms = map[seriesKey][]uint64{}
+	return aggregates, histogramBuckets
 }

@@ -60,7 +60,13 @@ func main() {
 		}
 	}()
 
-	metricsSaver := observability.NewMetricsSaver(db, metrics, logger, 10*time.Second)
+	metricsSaver := observability.NewMetricsSaverWithBucketWidth(
+		db,
+		metrics,
+		logger,
+		cfg.Observability.MetricsSaveInterval.Std(),
+		cfg.Observability.MetricsAggregateBucketWidth.Std(),
+	)
 	metricsSaver.Start(ctx)
 	defer metricsSaver.Stop()
 

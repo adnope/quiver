@@ -7,8 +7,9 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { formatMetricValue, formatTimestamp } from '@/lib/format'
+import { formatMetricValue, formatNumber, formatTimestamp } from '@/lib/format'
 import type {
+  AggregateTooltipStats,
   ChartDatum,
   ChartSeries,
   MetricRange,
@@ -121,6 +122,7 @@ export function MetricAreaChart({
 interface MetricTooltipPayload {
   dataKey?: string | number
   value?: number | string
+  payload?: ChartDatum
 }
 
 interface MetricTooltipProps {
@@ -157,6 +159,7 @@ function MetricTooltip({
         label: seriesItem?.label ?? key,
         color: seriesItem?.color ?? '#3B82F6',
         value: typeof item.value === 'number' ? item.value : 0,
+        stats: item.payload?.aggregateStats?.[key],
       }
     })
   const total = rows.reduce((sum: number, row) => sum + row.value, 0)
@@ -168,10 +171,22 @@ function MetricTooltip({
       </div>
       <div className="space-y-1.5">
         {rows.map((row) => (
-          <div key={row.key} className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2">
-            <span className="h-4 w-1.5 rounded-full" style={{ background: row.color }} />
-            <span className="truncate">{row.label}</span>
-            <span className="font-semibold">{formatMetricValue(widget, row.value)}</span>
+          <div key={row.key} className="space-y-1">
+            <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2">
+              <span className="h-4 w-1.5 rounded-full" style={{ background: row.color }} />
+              <span className="truncate">{row.label}</span>
+              <span className="font-semibold">{formatMetricValue(widget, row.value)}</span>
+            </div>
+            {row.stats ? (
+              <div className="ml-3 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] text-[var(--text-secondary)]">
+                {tooltipStatRows(row.stats, widget).map((stat) => (
+                  <div key={stat.label} className="flex justify-between gap-2">
+                    <span>{stat.label}</span>
+                    <span className="font-mono">{stat.value}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </div>
         ))}
       </div>
@@ -182,6 +197,45 @@ function MetricTooltip({
       </div>
     </div>
   )
+}
+
+
+function tooltipStatRows(stats: AggregateTooltipStats, widget: MetricWidget) {
+  const rows: Array<{ label: string; value: string }> = []
+  if (stats.count !== undefined) {
+    rows.push({ label: 'count', value: formatNumber(stats.count) })
+  }
+
+  if (widget === 'ingestion' || widget === 'deadLetter') {
+    if (stats.delta !== undefined) {
+      rows.push({ label: 'delta', value: formatNumber(stats.delta) })
+    }
+    return rows
+  }
+
+  const metricFields: Array<[string, number | undefined]> =
+    widget === 'dbLatency'
+      ? [
+          ['avg', stats.avg],
+          ['min', stats.min],
+          ['max', stats.max],
+          ['p90', stats.p90],
+          ['p95', stats.p95],
+          ['p99', stats.p99],
+        ]
+      : [
+          ['avg', stats.avg],
+          ['min', stats.min],
+          ['max', stats.max],
+          ['last', stats.last],
+        ]
+
+  for (const [label, value] of metricFields) {
+    if (value !== undefined) {
+      rows.push({ label, value: formatMetricValue(widget, value) })
+    }
+  }
+  return rows
 }
 
 function ChartSkeleton() {

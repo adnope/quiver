@@ -1,14 +1,15 @@
+import { MetricAreaChart } from '@/components/dashboard/MetricAreaChart'
 import { MaterialIcon } from '@/components/shell/MaterialIcon'
 import { Button } from '@/components/ui/button'
-import { MetricAreaChart } from '@/components/dashboard/MetricAreaChart'
+import { useLiveMetrics, useMetricAggregates } from '@/hooks/useMetrics'
 import { formatMetricValue, formatNumber } from '@/lib/format'
 import {
+  buildAggregateChart,
   buildHistoryChart,
   liveSnapshotsToHistoryPoints,
   type MetricRange,
   type MetricWidget,
 } from '@/lib/metrics-parser'
-import { useLiveMetrics, useMetricsHistory } from '@/hooks/useMetrics'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { MetricHistoryPoint, MetricSnapshot } from '@/types/api'
 
@@ -53,12 +54,14 @@ const ranges = [
   { value: '30d', label: '30 days' },
 ] satisfies Array<{ value: MetricRange; label: string }>
 
+type DashboardChart = ReturnType<typeof buildHistoryChart>
+
 export function DashboardView() {
   const [range, setRange] = useState<MetricRange>('1h')
   const [livePoints, setLivePoints] = useState<MetricHistoryPoint[]>([])
   const previousLiveMetrics = useRef<MetricSnapshot[]>([])
   const live = useLiveMetrics()
-  const history = useMetricsHistory(range, range !== '1m')
+  const aggregates = useMetricAggregates(range, range !== '1m')
 
   useEffect(() => {
     const metrics = live.data?.metrics
@@ -85,28 +88,28 @@ export function DashboardView() {
   }, [live.data])
 
   const charts = useMemo(
-    () => {
-      const chartPoints = range === '1m'
-        ? livePoints
-        : (history.data?.points ?? [])
-      return Object.fromEntries(
+    () =>
+      Object.fromEntries(
         cards.map((card) => [
           card.widget,
-          buildHistoryChart(chartPoints, card.widget, range),
+          range === '1m'
+            ? buildHistoryChart(livePoints, card.widget, range)
+            : buildAggregateChart(
+                aggregates.data?.points ?? [],
+                card.widget,
+                range,
+              ),
         ]),
-      ) as Record<MetricWidget, ReturnType<typeof buildHistoryChart>>
-    },
-    [history.data?.points, livePoints, range],
+      ) as Record<MetricWidget, DashboardChart>,
+    [aggregates.data?.points, livePoints, range],
   )
   const liveStats = useMemo(
     () => deriveLiveStats(live.data?.metrics ?? [], livePoints),
     [live.data?.metrics, livePoints],
   )
-  const chartIsLoading = range === '1m'
-    ? live.isLoading
-    : history.isLoading
-  const chartIsError = range === '1m' ? live.isError : history.isError
-  const refetchCharts = range === '1m' ? live.refetch : history.refetch
+  const chartIsLoading = range === '1m' ? live.isLoading : aggregates.isLoading
+  const chartIsError = range === '1m' ? live.isError : aggregates.isError
+  const refetchCharts = range === '1m' ? live.refetch : aggregates.refetch
 
   const liveStatus = live.isError
     ? 'Live metrics unavailable'
@@ -115,16 +118,16 @@ export function DashboardView() {
       : !live.data
         ? 'Waiting for live metrics'
         : null
-  
-    return (
+
+  return (
     <section className="space-y-4">
       <div className="flex items-center justify-between gap-3">
         {liveStatus ? (
-        <div className="text-xs text-[var(--text-secondary)]">
+          <div className="text-xs text-[var(--text-secondary)]">
             {liveStatus}
-        </div>
+          </div>
         ) : (
-        <div />
+          <div />
         )}
         <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
           <span>Range</span>
@@ -157,7 +160,10 @@ export function DashboardView() {
                     {card.title}
                   </h2>
                   <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                     {formatMetricValue(card.widget, primaryCardMetricValue(card.widget, chart))}
+                    {formatMetricValue(
+                      card.widget,
+                      primaryCardMetricValue(card.widget, chart),
+                    )}
                   </p>
                   {extraMetric ? (
                     <p className="mt-1 text-xs text-[var(--text-secondary)]">
@@ -178,7 +184,10 @@ export function DashboardView() {
                   ) : null}
                   <div
                     className="grid size-9 place-items-center rounded-md border"
-                    style={{ borderColor: `${card.accent}`, color: `${card.accent}` }}
+                    style={{
+                      borderColor: card.accent,
+                      color: card.accent,
+                    }}
                   >
                     <MaterialIcon name={card.icon} />
                   </div>
@@ -226,10 +235,7 @@ interface LiveDashboardStats {
   drainSeconds?: number
 }
 
-function primaryCardMetricValue(
-  widget: MetricWidget,
-  chart: ReturnType<typeof buildHistoryChart>,
-) {
+function primaryCardMetricValue(widget: MetricWidget, chart: DashboardChart) {
   const latest = chart.data.at(-1)
   if (!latest) {
     return 0
@@ -314,12 +320,12 @@ function latestDeltaRate(
 
 function extraCardMetric(widget: MetricWidget, stats: LiveDashboardStats) {
   if (widget === 'dbLatency' && stats.dbConnectionsOpen !== undefined) {
-      const maxOpen =
-          stats.dbConnectionsMaxOpen !== undefined && stats.dbConnectionsMaxOpen > 0
-          ? stats.dbConnectionsMaxOpen
-          : stats.dbConnectionsOpen
-      
-      return `Connections: ${formatNumber(stats.dbConnectionsOpen)}/${formatNumber(maxOpen)}`
+    const maxOpen =
+      stats.dbConnectionsMaxOpen !== undefined && stats.dbConnectionsMaxOpen > 0
+        ? stats.dbConnectionsMaxOpen
+        : stats.dbConnectionsOpen
+
+    return `Connections: ${formatNumber(stats.dbConnectionsOpen)}/${formatNumber(maxOpen)}`
   }
   if (
     widget === 'kafkaLag' &&

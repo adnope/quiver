@@ -1,13 +1,33 @@
-import type { MetricHistoryPoint, MetricSnapshot } from '@/types/api'
+import type {
+  MetricAggregatePoint,
+  MetricAggregatesParams,
+  MetricHistoryPoint,
+  MetricSnapshot,
+} from '@/types/api'
 
 export type MetricWidget = 'ingestion' | 'deadLetter' | 'dbLatency' | 'kafkaLag'
 
 export type MetricRange = '1m' | '1h' | '12h' | '24h' | '1w' | '30d'
 
-export type ChartDatum = { timestamp: string; total: number } & Record<
-  string,
-  number | string
->
+export interface AggregateTooltipStats {
+  count?: number
+  sum?: number
+  avg?: number
+  min?: number
+  max?: number
+  p90?: number
+  p95?: number
+  p99?: number
+  first?: number
+  last?: number
+  delta?: number
+}
+
+export type ChartDatum = {
+  timestamp: string
+  total: number
+  aggregateStats?: Record<string, AggregateTooltipStats>
+} & Record<string, number | string | Record<string, AggregateTooltipStats> | undefined>
 
 export interface ChartSeries {
   key: string
@@ -31,20 +51,21 @@ interface SeriesPoint {
   timestamp: string
   seriesKey: string
   value: number
+  stats?: AggregateTooltipStats
 }
 
 const RANGE_CONFIG: Record<MetricRange, RangeConfig> = {
-  '1m': { windowMs: 60_000, bucketMs: 1_000, bucketSeconds: 1 },
-  '1h': { windowMs: 60 * 60_000, bucketMs: 60_000, bucketSeconds: 60 },
+  '1m': { windowMs: 60_000, bucketMs: 5_000, bucketSeconds: 5 },
+  '1h': { windowMs: 60 * 60_000, bucketMs: 20_000, bucketSeconds: 20 },
   '12h': {
     windowMs: 12 * 60 * 60_000,
-    bucketMs: 10 * 60_000,
-    bucketSeconds: 600,
+    bucketMs: 5 * 60_000,
+    bucketSeconds: 300,
   },
   '24h': {
     windowMs: 24 * 60 * 60_000,
-    bucketMs: 20 * 60_000,
-    bucketSeconds: 1_200,
+    bucketMs: 10 * 60_000,
+    bucketSeconds: 600,
   },
   '1w': {
     windowMs: 7 * 24 * 60 * 60_000,
@@ -87,6 +108,27 @@ export function rangeConfig(range: MetricRange): RangeConfig {
   return RANGE_CONFIG[range]
 }
 
+export function metricAggregateParamsForRange(
+  range: MetricRange,
+  now = new Date(),
+): MetricAggregatesParams {
+  const config = RANGE_CONFIG[range]
+  const to = now
+  const from = new Date(to.getTime() - config.windowMs)
+  return {
+    from: from.toISOString(),
+    to: to.toISOString(),
+    step: `${config.bucketSeconds}s`,
+    metric: [
+      'flow_records_stored_total',
+      'flow_records_failed_total',
+      'rate_limit_rejections_total',
+      'storage_insert_duration',
+      'kafka_consumer_lag',
+    ],
+  }
+}
+
 export function metricWidgetForName(name: string): MetricWidget | undefined {
   switch (name) {
     case 'flow_records_normalized_total':
@@ -95,9 +137,11 @@ export function metricWidgetForName(name: string): MetricWidget | undefined {
     case 'flow_records_failed_total':
     case 'rate_limit_rejections_total':
       return 'deadLetter'
+    case 'storage_insert_duration':
     case 'storage_insert_duration_milliseconds':
     case 'storage_insert_duration_milliseconds_total':
     case 'storage_insert_duration_count':
+    case 'storage_insert_duration_p90':
     case 'storage_insert_duration_p95':
     case 'storage_insert_duration_p99':
       return 'dbLatency'
@@ -227,10 +271,10 @@ export function labelForMetric(
 ) {
   switch (widget) {
     case 'ingestion':
-    if (name === 'flow_records_stored_total') {
+      if (name === 'flow_records_stored_total') {
         return 'Durable Persisted'
-    }
-    return labels?.source_type
+      }
+      return labels?.source_type
         ? sourceTypeLabel(labels.source_type)
         : 'unknown_source'
     case 'deadLetter':
@@ -239,6 +283,9 @@ export function labelForMetric(
       }
       return labels?.reason ?? 'unknown_reason'
     case 'dbLatency':
+      if (name === 'storage_insert_duration_p90') {
+        return 'p90'
+      }
       if (name === 'storage_insert_duration_p95') {
         return 'p95'
       }
@@ -246,6 +293,7 @@ export function labelForMetric(
         return 'p99'
       }
       if (
+        name === 'storage_insert_duration' ||
         name === 'storage_insert_duration_milliseconds' ||
         name === 'storage_insert_duration_milliseconds_total' ||
         name === 'storage_insert_duration_count'
@@ -282,6 +330,22 @@ export function buildHistoryChart(
           config.bucketSeconds,
           config.bucketMs,
         )
+
+  return pivotSeriesPoints(
+    fillMissingBuckets(seriesPoints, range, now),
+    widget,
+    expectedBuckets(range, now),
+  )
+}
+
+export function buildAggregateChart(
+  points: ReadonlyArray<MetricAggregatePoint>,
+  widget: MetricWidget,
+  range: MetricRange,
+  now = new Date(),
+): WidgetChartData {
+  const config = RANGE_CONFIG[range]
+  const seriesPoints = buildAggregateWidgetPoints(points, widget, config.bucketMs)
 
   return pivotSeriesPoints(
     fillMissingBuckets(seriesPoints, range, now),
@@ -334,6 +398,113 @@ export function liveSnapshotsToHistoryPoints(
       ),
     }
   })
+}
+
+function buildAggregateWidgetPoints(
+  points: ReadonlyArray<MetricAggregatePoint>,
+  widget: MetricWidget,
+  bucketMs: number,
+): SeriesPoint[] {
+  return points.flatMap((point) => {
+    if (metricWidgetForName(point.metric_name) !== widget) {
+      return []
+    }
+    const timestamp = alignISO(point.bucket_start, bucketMs)
+    if (widget === 'dbLatency' && point.metric_name === 'storage_insert_duration') {
+      return aggregateLatencyPoints(point, timestamp)
+    }
+    const value = COUNTER_WIDGETS.has(widget)
+      ? safeRate(point.delta ?? 0, point.bucket_width_seconds)
+      : safeNumber(point.avg ?? point.last ?? point.max ?? 0)
+    return [
+      {
+        timestamp,
+        seriesKey: labelForMetric(widget, point.labels, point.metric_name),
+        value,
+        stats: aggregateTooltipStats(point),
+      },
+    ]
+  })
+}
+
+function aggregateLatencyPoints(
+  point: MetricAggregatePoint,
+  timestamp: string,
+): SeriesPoint[] {
+  const labels = point.labels ?? null
+  const stats = aggregateTooltipStats(point)
+  const points: SeriesPoint[] = []
+  if (point.avg != null) {
+    points.push({
+      timestamp,
+      seriesKey: labelForMetric('dbLatency', labels, 'storage_insert_duration'),
+      value: safeNumber(point.avg),
+      stats,
+    })
+  }
+  if (point.p90 != null) {
+    points.push({
+      timestamp,
+      seriesKey: labelForMetric('dbLatency', labels, 'storage_insert_duration_p90'),
+      value: safeNumber(point.p90),
+      stats,
+    })
+  }
+  if (point.p95 != null) {
+    points.push({
+      timestamp,
+      seriesKey: labelForMetric('dbLatency', labels, 'storage_insert_duration_p95'),
+      value: safeNumber(point.p95),
+      stats,
+    })
+  }
+  if (point.p99 != null) {
+    points.push({
+      timestamp,
+      seriesKey: labelForMetric('dbLatency', labels, 'storage_insert_duration_p99'),
+      value: safeNumber(point.p99),
+      stats,
+    })
+  }
+  return points
+}
+
+function aggregateTooltipStats(point: MetricAggregatePoint): AggregateTooltipStats {
+  const stats: AggregateTooltipStats = {}
+  if (point.count > 0) {
+    stats.count = point.count
+  }
+  if (point.sum != null) {
+    stats.sum = point.sum
+  }
+  if (point.avg != null) {
+    stats.avg = point.avg
+  }
+  if (point.min != null) {
+    stats.min = point.min
+  }
+  if (point.max != null) {
+    stats.max = point.max
+  }
+  if (point.p90 != null) {
+    stats.p90 = point.p90
+  }
+  if (point.p95 != null) {
+    stats.p95 = point.p95
+  }
+  if (point.p99 != null) {
+    stats.p99 = point.p99
+  }
+  if (point.first != null) {
+    stats.first = point.first
+  }
+  if (point.last != null) {
+    stats.last = point.last
+  }
+  if (point.delta != null) {
+    stats.delta = point.delta
+  }
+  return stats
 }
 
 function buildHistoricalWidgetPoints(
@@ -551,6 +722,12 @@ function pivotSeriesPoints(
   for (const point of points) {
     const datum = bucketMap.get(point.timestamp) ?? emptyDatum(point.timestamp, seriesKeys)
     datum[point.seriesKey] = roundMetric(point.value)
+    if (point.stats) {
+      datum.aggregateStats = {
+        ...(datum.aggregateStats ?? {}),
+        [point.seriesKey]: point.stats,
+      }
+    }
     bucketMap.set(point.timestamp, datum)
   }
 
@@ -607,7 +784,6 @@ function snapshotsByMetric(
   return mapped
 }
 
-
 function labelsKey(labels: Record<string, string> | null | undefined) {
   const safeLabels = labels ?? {}
   return Object.keys(safeLabels)
@@ -660,7 +836,7 @@ function safeNumber(value: number) {
   return Number.isFinite(value) ? Math.max(0, value) : 0
 }
 
-function numericValue(value: string | number | undefined) {
+function numericValue(value: ChartDatum[string] | undefined) {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 

@@ -59,6 +59,8 @@ SELECT EXISTS (
 )`)
 	requireExists(ctx, t, db, "flow_records table", `SELECT to_regclass('quiver.flow_records') IS NOT NULL`)
 	requireExists(ctx, t, db, "collector_states table", `SELECT to_regclass('quiver.collector_states') IS NOT NULL`)
+	requireExists(ctx, t, db, "system_metric_aggregates table", `SELECT to_regclass('quiver.system_metric_aggregates') IS NOT NULL`)
+	requireExists(ctx, t, db, "system_metric_histogram_buckets table", `SELECT to_regclass('quiver.system_metric_histogram_buckets') IS NOT NULL`)
 	requireExists(ctx, t, db, "flow_records hypertable", `
 SELECT EXISTS (
     SELECT 1
@@ -66,6 +68,15 @@ SELECT EXISTS (
     WHERE hypertable_schema = 'quiver'
       AND hypertable_name = 'flow_records'
 )`)
+	for _, hypertableName := range []string{"system_metric_aggregates", "system_metric_histogram_buckets"} {
+		requireExists(ctx, t, db, hypertableName+" hypertable", `
+SELECT EXISTS (
+    SELECT 1
+    FROM timescaledb_information.hypertables
+    WHERE hypertable_schema = 'quiver'
+      AND hypertable_name = $1
+)`, hypertableName)
+	}
 	for _, indexName := range []string{
 		"idx_flow_records_time_id_desc",
 		"idx_flow_records_id",
@@ -82,6 +93,10 @@ SELECT EXISTS (
 		"idx_flow_records_app_proto_time",
 		"idx_flow_records_direction_time",
 		"idx_collector_states_collector",
+		"idx_system_metric_aggregates_metric_time",
+		"idx_system_metric_aggregates_time",
+		"idx_system_metric_histogram_buckets_metric_time",
+		"idx_system_metric_histogram_buckets_time",
 	} {
 		requireExists(ctx, t, db, indexName, `
 SELECT EXISTS (
