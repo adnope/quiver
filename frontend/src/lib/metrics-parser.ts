@@ -698,6 +698,7 @@ function buildHistoricalLatencyPoints(
     const key = `${timestamp}|${labelsKey(point.labels)}`
     if (
       point.name === 'storage_insert_duration_milliseconds' ||
+      point.name === 'storage_insert_duration_p90' ||
       point.name === 'storage_insert_duration_p95' ||
       point.name === 'storage_insert_duration_p99'
     ) {
@@ -778,6 +779,7 @@ function buildLiveLatencyPoints(
   for (const snapshot of currentByKey.values()) {
     if (
       snapshot.name !== 'storage_insert_duration_milliseconds' &&
+      snapshot.name !== 'storage_insert_duration_p90' &&
       snapshot.name !== 'storage_insert_duration_p95' &&
       snapshot.name !== 'storage_insert_duration_p99'
     ) {

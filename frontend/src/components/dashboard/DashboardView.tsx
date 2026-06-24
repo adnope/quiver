@@ -2,18 +2,33 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { MetricAreaChart } from '@/components/dashboard/MetricAreaChart'
 import { MaterialIcon } from '@/components/shell/MaterialIcon'
 import { Button } from '@/components/ui/button'
-import { useLiveMetrics } from '@/hooks/useMetrics'
+import { useLiveMetrics, useMetricAggregateWindow } from '@/hooks/useMetrics'
 import { formatMetricValue, formatNumber } from '@/lib/format'
 import {
   buildHistoryChart,
   liveSnapshotsToHistoryPoints,
+  rangeConfig,
   type MetricRange,
   type MetricWidget,
 } from '@/lib/metrics-parser'
-import type { MetricHistoryPoint, MetricSnapshot } from '@/types/api'
+import type {
+  MetricAggregatePoint,
+  MetricHistoryPoint,
+  MetricSnapshot,
+} from '@/types/api'
 
 const LIVE_RANGE: MetricRange = '10m'
 const LIVE_WINDOW_MS = 10 * 60_000
+const LIVE_BUCKET_SECONDS = rangeConfig(LIVE_RANGE).bucketSeconds
+
+const DASHBOARD_HISTORY_METRICS = [
+  'flow_records_normalized_total',
+  'flow_records_stored_total',
+  'flow_records_failed_total',
+  'rate_limit_rejections_total',
+  'storage_insert_duration',
+  'kafka_consumer_lag',
+]
 
 const cards = [
   {
@@ -52,7 +67,32 @@ type DashboardChart = ReturnType<typeof buildHistoryChart>
 export function DashboardView() {
   const [livePoints, setLivePoints] = useState<MetricHistoryPoint[]>([])
   const previousLiveMetrics = useRef<MetricSnapshot[]>([])
+  const hydratedFromHistory = useRef(false)
+  const [initialHistoryWindow] = useState(createInitialHistoryWindow)
+  const historyParams = useMemo(
+    () => ({
+      from: initialHistoryWindow.from,
+      to: initialHistoryWindow.to,
+      metric: DASHBOARD_HISTORY_METRICS,
+    }),
+    [initialHistoryWindow],
+  )
   const live = useLiveMetrics()
+  const history = useMetricAggregateWindow(historyParams, true)
+
+  useEffect(() => {
+    if (hydratedFromHistory.current || !history.data) {
+      return
+    }
+
+    hydratedFromHistory.current = true
+    const historyCutoff = Date.parse(history.data.to)
+    const historicalPoints = aggregatePointsToHistoryPoints(history.data.points)
+    setLivePoints((current) => [
+      ...historicalPoints,
+      ...current.filter((point) => Date.parse(point.timestamp) > historyCutoff),
+    ])
+  }, [history.data])
 
   useEffect(() => {
     const metrics = live.data?.metrics
@@ -148,10 +188,12 @@ export function DashboardView() {
                 range={LIVE_RANGE}
                 data={chart.data}
                 series={chart.series}
-                isLoading={live.isLoading}
+                isLoading={
+                  (live.isLoading || history.isLoading) && livePoints.length === 0
+                }
                 onRetry={() => void live.refetch()}
                 scrollable
-                {...(live.isError
+                {...(live.isError && livePoints.length === 0
                   ? { error: 'Metrics unavailable. Try again.' }
                   : {})}
               />
@@ -174,6 +216,98 @@ export function DashboardView() {
         })}
       </div>
     </section>
+  )
+}
+
+function createInitialHistoryWindow() {
+  const to = new Date()
+  const from = new Date(to.getTime() - LIVE_WINDOW_MS)
+  return {
+    from: from.toISOString(),
+    to: to.toISOString(),
+  }
+}
+
+function aggregatePointsToHistoryPoints(
+  points: ReadonlyArray<MetricAggregatePoint>,
+): MetricHistoryPoint[] {
+  return points.flatMap((point) => {
+    if (point.metric_name === 'storage_insert_duration') {
+      return aggregateLatencyHistoryPoints(point)
+    }
+
+    const bucketSeconds = Math.max(1, point.bucket_width_seconds)
+    const delta = isDashboardCounter(point.metric_name)
+      ? ((point.delta ?? 0) / bucketSeconds) * LIVE_BUCKET_SECONDS
+      : (point.delta ?? 0)
+
+    return [
+      {
+        timestamp: point.bucket_start,
+        name: point.metric_name,
+        labels: point.labels ?? null,
+        value: metricAggregateValue(point),
+        delta,
+      },
+    ]
+  })
+}
+
+function aggregateLatencyHistoryPoints(
+  point: MetricAggregatePoint,
+): MetricHistoryPoint[] {
+  const points: MetricHistoryPoint[] = []
+  if (point.avg != null) {
+    points.push(
+      metricAggregateHistoryPoint(
+        point,
+        'storage_insert_duration_milliseconds',
+        point.avg,
+      ),
+    )
+  }
+  if (point.p90 != null) {
+    points.push(
+      metricAggregateHistoryPoint(point, 'storage_insert_duration_p90', point.p90),
+    )
+  }
+  if (point.p95 != null) {
+    points.push(
+      metricAggregateHistoryPoint(point, 'storage_insert_duration_p95', point.p95),
+    )
+  }
+  if (point.p99 != null) {
+    points.push(
+      metricAggregateHistoryPoint(point, 'storage_insert_duration_p99', point.p99),
+    )
+  }
+  return points
+}
+
+function metricAggregateHistoryPoint(
+  source: MetricAggregatePoint,
+  name: string,
+  value: number,
+): MetricHistoryPoint {
+  return {
+    timestamp: source.bucket_start,
+    name,
+    labels: source.labels ?? null,
+    value,
+    delta: 0,
+  }
+}
+
+function metricAggregateValue(point: MetricAggregatePoint) {
+  return point.avg ?? point.last ?? point.max ?? point.first ?? 0
+}
+
+function isDashboardCounter(metricName: string) {
+  return (
+    metricName === 'flow_records_normalized_total' ||
+    metricName === 'flow_records_stored_total' ||
+    metricName === 'flow_records_failed_total' ||
+    metricName === 'rate_limit_rejections_total'
   )
 }
 
