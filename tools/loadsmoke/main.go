@@ -621,7 +621,11 @@ func getStoredMetric(ctx context.Context, client *http.Client, targetREST, admin
 	if err != nil {
 		return 0, err
 	}
-	defer closeAndLog("metrics response body", resp.Body)
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Printf("Failed to close metrics response body: %v\n", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("metrics returned status %d", resp.StatusCode)
@@ -739,39 +743,47 @@ func runRESTWorker(ctx context.Context, cfg Config, workerID int, targetRPS *ato
 				continue
 			}
 
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(reqBody))
-			if err != nil {
-				recordFailure(&restCounters, int64(batchSize))
-				continue
-			}
-			req.Header.Set("X-API-Key", cfg.ClientKey)
-			req.Header.Set("Content-Type", "application/json")
-
-			resp, err := client.Do(req)
-			if err != nil {
-				recordFailure(&restCounters, int64(batchSize))
-				continue
-			}
-
-			if resp.StatusCode == http.StatusAccepted {
-				var ingestResp struct {
-					Accepted int `json:"accepted"`
-					Rejected int `json:"rejected"`
-				}
-				if err := json.NewDecoder(resp.Body).Decode(&ingestResp); err == nil {
-					recordAccepted(&restCounters, int64(ingestResp.Accepted))
-					recordFailure(&restCounters, int64(ingestResp.Rejected))
-				} else {
-					recordFailure(&restCounters, int64(batchSize))
-				}
-			} else {
-				recordFailure(&restCounters, int64(batchSize))
-			}
-			if err := resp.Body.Close(); err != nil {
-				fmt.Printf("Failed to close REST ingest response body: %v\n", err)
-			}
+			sendRESTIngestBatch(ctx, client, targetURL, cfg.ClientKey, reqBody, batchSize)
 		}
 	}
+}
+
+func sendRESTIngestBatch(ctx context.Context, client *http.Client, targetURL string, clientKey string, reqBody []byte, batchSize int) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(reqBody))
+	if err != nil {
+		recordFailure(&restCounters, int64(batchSize))
+		return
+	}
+	req.Header.Set("X-API-Key", clientKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		recordFailure(&restCounters, int64(batchSize))
+		return
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Printf("Failed to close REST ingest response body: %v\n", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusAccepted {
+		recordFailure(&restCounters, int64(batchSize))
+		return
+	}
+
+	var ingestResp struct {
+		Accepted int `json:"accepted"`
+		Rejected int `json:"rejected"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&ingestResp); err != nil {
+		recordFailure(&restCounters, int64(batchSize))
+		return
+	}
+
+	recordAccepted(&restCounters, int64(ingestResp.Accepted))
+	recordFailure(&restCounters, int64(ingestResp.Rejected))
 }
 
 func runUDPWorker(ctx context.Context, cfg Config, workerID int, targetRPS *atomic.Int64) {

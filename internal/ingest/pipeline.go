@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"sync"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/adnope/quiver/internal/observability"
 	"github.com/adnope/quiver/internal/storage/postgres"
 	"github.com/adnope/quiver/internal/validation"
+	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -96,6 +98,8 @@ func (p *Pipeline) Start(ctx context.Context) {
 	p.ctx, p.cancel = context.WithCancel(ctx)
 	p.wg.Add(1)
 	go p.run()
+	p.wg.Add(1)
+	go p.pollKafkaLag(p.ctx)
 }
 
 func (p *Pipeline) Stop() {
@@ -104,6 +108,72 @@ func (p *Pipeline) Stop() {
 	}
 	p.wg.Wait()
 	p.client.Close()
+}
+
+func (p *Pipeline) pollKafkaLag(ctx context.Context) {
+	defer p.wg.Done()
+	if p.metrics == nil {
+		return
+	}
+	client, ok := p.client.(*kgo.Client)
+	if !ok || client == nil {
+		return
+	}
+
+	admin := kadm.NewClient(client)
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			p.collectKafkaLag(ctx, admin)
+		}
+	}
+}
+
+func (p *Pipeline) collectKafkaLag(ctx context.Context, admin *kadm.Client) {
+	if p.metrics == nil || admin == nil {
+		return
+	}
+
+	pollCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	lags, err := admin.Lag(pollCtx, "flow-storage-writer")
+	if err != nil {
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			p.logger.Error("failed to poll kafka consumer lag", slog.Any("error", err))
+		}
+		return
+	}
+
+	for _, groupLag := range lags.Sorted() {
+		if err := groupLag.Error(); err != nil {
+			p.logger.Error("failed to describe kafka consumer lag", slog.String("group", groupLag.Group), slog.Any("error", err))
+			continue
+		}
+		for _, partitionLag := range groupLag.Lag.Sorted() {
+			if partitionLag.Err != nil {
+				p.logger.Error(
+					"failed to calculate kafka partition lag",
+					slog.String("topic", partitionLag.Topic),
+					slog.Int("partition", int(partitionLag.Partition)),
+					slog.Any("error", partitionLag.Err),
+				)
+				continue
+			}
+			if partitionLag.Lag < 0 {
+				continue
+			}
+			p.metrics.Set("kafka_consumer_lag", map[string]string{
+				"topic":     partitionLag.Topic,
+				"partition": strconv.Itoa(int(partitionLag.Partition)),
+			}, uint64(partitionLag.Lag)) //nolint:gosec
+		}
+	}
 }
 
 func (p *Pipeline) run() {

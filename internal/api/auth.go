@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/adnope/quiver/internal/config"
+	"github.com/adnope/quiver/internal/observability"
 )
 
 const APIKeyHeader = "X-API-Key" // #nosec G101 -- header name, not a credential.
@@ -125,7 +126,7 @@ func (a *Authenticator) Authenticate(value string) (Principal, error) {
 	return Principal{}, ErrInvalidAPIKey
 }
 
-func RequireScope(auth *Authenticator, limiter *RateLimiter, scope Scope, next http.Handler) http.Handler {
+func RequireScope(auth *Authenticator, limiter *RateLimiter, metrics *observability.Registry, scope Scope, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		principal, err := auth.Authenticate(r.Header.Get(APIKeyHeader))
 		if err != nil {
@@ -141,6 +142,12 @@ func RequireScope(auth *Authenticator, limiter *RateLimiter, scope Scope, next h
 			return
 		}
 		if limiter != nil && !limiter.Allow(principal.Name, scope) {
+			if metrics != nil {
+				metrics.Inc("rate_limit_rejections_total", map[string]string{
+					"key":   principal.Name,
+					"scope": string(scope),
+				})
+			}
 			writeError(w, r, http.StatusTooManyRequests, CodeRateLimitExceeded, "rate limit exceeded", nil)
 			return
 		}

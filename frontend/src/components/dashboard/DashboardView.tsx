@@ -1,7 +1,7 @@
 import { MaterialIcon } from '@/components/shell/MaterialIcon'
 import { Button } from '@/components/ui/button'
 import { MetricAreaChart } from '@/components/dashboard/MetricAreaChart'
-import { formatMetricValue } from '@/lib/format'
+import { formatMetricValue, formatNumber } from '@/lib/format'
 import {
   buildHistoryChart,
   liveSnapshotsToHistoryPoints,
@@ -98,24 +98,34 @@ export function DashboardView() {
     },
     [history.data?.points, livePoints, range],
   )
+  const liveStats = useMemo(
+    () => deriveLiveStats(live.data?.metrics ?? [], livePoints),
+    [live.data?.metrics, livePoints],
+  )
   const chartIsLoading = range === '1m'
-    ? live.isLoading || livePoints.length === 0
+    ? live.isLoading
     : history.isLoading
   const chartIsError = range === '1m' ? live.isError : history.isError
   const refetchCharts = range === '1m' ? live.refetch : history.refetch
 
-  return (
+  const liveStatus = live.isError
+    ? 'Live metrics unavailable'
+    : live.isLoading
+      ? 'Loading live metrics'
+      : !live.data
+        ? 'Waiting for live metrics'
+        : null
+  
+    return (
     <section className="space-y-4">
       <div className="flex items-center justify-between gap-3">
+        {liveStatus ? (
         <div className="text-xs text-[var(--text-secondary)]">
-          {live.isError
-            ? 'Live metrics unavailable'
-            : live.isLoading
-              ? 'Loading live metrics'
-              : live.data
-                ? 'Live metrics ready'
-                : 'Waiting for live metrics'}
+            {liveStatus}
         </div>
+        ) : (
+        <div />
+        )}
         <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
           <span>Range</span>
           <select
@@ -135,6 +145,7 @@ export function DashboardView() {
       <div className="grid gap-4 lg:grid-cols-2">
         {cards.map((card) => {
           const chart = charts[card.widget]
+          const extraMetric = extraCardMetric(card.widget, liveStats)
           return (
             <article
               key={card.title}
@@ -146,8 +157,13 @@ export function DashboardView() {
                     {card.title}
                   </h2>
                   <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                    {formatMetricValue(card.widget, chart.data.at(-1)?.total ?? 0)}
+                     {formatMetricValue(card.widget, primaryCardMetricValue(card.widget, chart))}
                   </p>
+                  {extraMetric ? (
+                    <p className="mt-1 text-xs text-[var(--text-secondary)]">
+                      {extraMetric}
+                    </p>
+                  ) : null}
                 </div>
                 <div className="flex items-center gap-2">
                   {chartIsError ? (
@@ -199,4 +215,132 @@ export function DashboardView() {
       </div>
     </section>
   )
+}
+
+interface LiveDashboardStats {
+  dbConnectionsInUse?: number
+  dbConnectionsOpen?: number
+  dbConnectionsMaxOpen?: number
+  kafkaLag: number
+  durablePersistRate: number
+  drainSeconds?: number
+}
+
+function primaryCardMetricValue(
+  widget: MetricWidget,
+  chart: ReturnType<typeof buildHistoryChart>,
+) {
+  const latest = chart.data.at(-1)
+  if (!latest) {
+    return 0
+  }
+
+  if (widget !== 'ingestion') {
+    return latest.total
+  }
+
+  return chart.series
+    .filter((series) => series.label !== 'Durable Persisted')
+    .reduce((sum, series) => {
+      const value = latest[series.key]
+      return sum + (typeof value === 'number' && Number.isFinite(value) ? value : 0)
+    }, 0)
+}
+
+function deriveLiveStats(
+  metrics: ReadonlyArray<MetricSnapshot>,
+  livePoints: ReadonlyArray<MetricHistoryPoint>,
+): LiveDashboardStats {
+  const dbConnectionsMaxOpen = metricValue(metrics, 'db_connections_max_open')
+  const dbConnectionsInUse = metricValue(metrics, 'db_connections_in_use')
+  const dbConnectionsOpen = metricValue(metrics, 'db_connections_open')
+  const kafkaLag = metrics
+    .filter((metric) => metric.name === 'kafka_consumer_lag')
+    .reduce((sum, metric) => sum + metric.value, 0)
+  const durablePersistRate = latestDeltaRate(
+    livePoints,
+    'flow_records_stored_total',
+  )
+  const drainSeconds =
+    kafkaLag > 0 && durablePersistRate > 0
+      ? kafkaLag / durablePersistRate
+      : undefined
+
+  const stats: LiveDashboardStats = {
+    kafkaLag,
+    durablePersistRate,
+  }
+  if (dbConnectionsInUse !== undefined) {
+    stats.dbConnectionsInUse = dbConnectionsInUse
+  }
+  if (dbConnectionsOpen !== undefined) {
+    stats.dbConnectionsOpen = dbConnectionsOpen
+  }
+  if (dbConnectionsMaxOpen !== undefined) {
+    stats.dbConnectionsMaxOpen = dbConnectionsMaxOpen
+  }
+  if (drainSeconds !== undefined) {
+    stats.drainSeconds = drainSeconds
+  }
+  return stats
+}
+
+function metricValue(
+  metrics: ReadonlyArray<MetricSnapshot>,
+  name: string,
+): number | undefined {
+  return metrics.find((metric) => metric.name === name)?.value
+}
+
+function latestDeltaRate(
+  points: ReadonlyArray<MetricHistoryPoint>,
+  name: string,
+) {
+  const latestTimestamp = points
+    .filter((point) => point.name === name)
+    .map((point) => Date.parse(point.timestamp))
+    .filter(Number.isFinite)
+    .sort((a, b) => b - a)[0]
+  if (latestTimestamp === undefined) {
+    return 0
+  }
+  return points
+    .filter(
+      (point) =>
+        point.name === name && Date.parse(point.timestamp) === latestTimestamp,
+    )
+    .reduce((sum, point) => sum + Math.max(0, point.delta), 0)
+}
+
+function extraCardMetric(widget: MetricWidget, stats: LiveDashboardStats) {
+  if (widget === 'dbLatency' && stats.dbConnectionsOpen !== undefined) {
+      const maxOpen =
+          stats.dbConnectionsMaxOpen !== undefined && stats.dbConnectionsMaxOpen > 0
+          ? stats.dbConnectionsMaxOpen
+          : stats.dbConnectionsOpen
+      
+      return `Connections: ${formatNumber(stats.dbConnectionsOpen)}/${formatNumber(maxOpen)}`
+  }
+  if (
+    widget === 'kafkaLag' &&
+    stats.kafkaLag > 0 &&
+    stats.drainSeconds !== undefined
+  ) {
+    return `Estimated Drain Time: ${formatDrainSeconds(stats.drainSeconds)}`
+  }
+  return undefined
+}
+
+function formatDrainSeconds(seconds: number) {
+  if (!Number.isFinite(seconds)) {
+    return '-'
+  }
+  if (seconds < 60) {
+    return `${formatNumber(seconds)}s`
+  }
+  const minutes = seconds / 60
+  if (minutes < 60) {
+    return `${formatNumber(minutes)}m`
+  }
+  return `${formatNumber(minutes / 60)}h`
 }

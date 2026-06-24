@@ -48,7 +48,6 @@ export function MetricAreaChart({
     )
   }
 
-  const hasData = data.some((datum) => datum.total > 0)
   const visibleData = data.length > 0 ? data : [{ timestamp: new Date().toISOString(), total: 0 }]
 
   return (
@@ -57,7 +56,7 @@ export function MetricAreaChart({
         <AreaChart data={visibleData} margin={{ top: 10, right: 8, left: -18, bottom: 0 }}>
           <defs>
             {series.map((item) => (
-              <linearGradient key={item.key} id={`fill-${widget}-${item.key}`} x1="0" y1="0" x2="0" y2="1">
+              <linearGradient key={item.key} id={gradientId(widget, item.key)} x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor={item.color} stopOpacity={0.15} />
                 <stop offset="95%" stopColor={item.color} stopOpacity={0} />
               </linearGradient>
@@ -93,10 +92,9 @@ export function MetricAreaChart({
                 key={item.key}
                 type="monotone"
                 dataKey={item.key}
-                stackId="1"
                 stroke={item.color}
                 strokeWidth={1.5}
-                fill={`url(#fill-${widget}-${item.key})`}
+                fill={`url(#${gradientId(widget, item.key)})`}
                 isAnimationActive
                 animationDuration={300}
                 dot={false}
@@ -116,13 +114,6 @@ export function MetricAreaChart({
           )}
         </AreaChart>
       </ResponsiveContainer>
-      {!hasData ? (
-        <div className="absolute inset-0 grid place-items-center">
-          <div className="rounded-md border border-[var(--border)] bg-[var(--empty-overlay)] px-3 py-2 text-xs text-[var(--text-secondary)] backdrop-blur-sm">
-            No active flows detected. Waiting for ingestion...
-          </div>
-        </div>
-      ) : null}
     </div>
   )
 }
@@ -211,4 +202,7 @@ function formatShortAxis(value: number) {
     return `${Math.round(value / 1_000)}k`
   }
   return String(Math.round(value))
+}
+function gradientId(widget: MetricWidget, key: string) {
+  return `fill-${widget}-${key.replace(/[^a-zA-Z0-9_-]/g, '_')}`
 }

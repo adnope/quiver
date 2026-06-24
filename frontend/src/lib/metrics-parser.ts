@@ -58,6 +58,20 @@ const RANGE_CONFIG: Record<MetricRange, RangeConfig> = {
   },
 }
 
+const SOURCE_TYPE_LABELS: Record<string, string> = {
+  SOURCE_TYPE_NETFLOW_V5: 'NetFlow v5',
+  source_type_netflow_v5: 'NetFlow v5',
+  netflow_v5: 'NetFlow v5',
+
+  SOURCE_TYPE_REST_JSON: 'REST',
+  source_type_rest_json: 'REST',
+  rest_json: 'REST',
+
+  SOURCE_TYPE_ZEEK_CONN_JSON: 'Zeek',
+  source_type_zeek_conn_json: 'Zeek',
+  zeek_conn_json: 'Zeek',
+}
+
 const WIDGET_COLORS: Record<MetricWidget, string[]> = {
   ingestion: ['#06B6D4', '#3B82F6', '#0EA5E9', '#22D3EE'],
   deadLetter: ['#EF4444', '#F43F5E', '#DC2626', '#FB7185'],
@@ -76,12 +90,16 @@ export function rangeConfig(range: MetricRange): RangeConfig {
 export function metricWidgetForName(name: string): MetricWidget | undefined {
   switch (name) {
     case 'flow_records_normalized_total':
+    case 'flow_records_stored_total':
       return 'ingestion'
     case 'flow_records_failed_total':
+    case 'rate_limit_rejections_total':
       return 'deadLetter'
     case 'storage_insert_duration_milliseconds':
     case 'storage_insert_duration_milliseconds_total':
     case 'storage_insert_duration_count':
+    case 'storage_insert_duration_p95':
+    case 'storage_insert_duration_p99':
       return 'dbLatency'
     case 'kafka_consumer_lag':
       return 'kafkaLag'
@@ -205,13 +223,35 @@ function parsePrometheusNumber(value: string) {
 export function labelForMetric(
   widget: MetricWidget,
   labels: Record<string, string> | null | undefined,
+  name?: string,
 ) {
   switch (widget) {
     case 'ingestion':
-      return labels?.source_type ?? 'unknown_source'
+    if (name === 'flow_records_stored_total') {
+        return 'Durable Persisted'
+    }
+    return labels?.source_type
+        ? sourceTypeLabel(labels.source_type)
+        : 'unknown_source'
     case 'deadLetter':
+      if (name === 'rate_limit_rejections_total') {
+        return 'Rate Limited'
+      }
       return labels?.reason ?? 'unknown_reason'
     case 'dbLatency':
+      if (name === 'storage_insert_duration_p95') {
+        return 'p95'
+      }
+      if (name === 'storage_insert_duration_p99') {
+        return 'p99'
+      }
+      if (
+        name === 'storage_insert_duration_milliseconds' ||
+        name === 'storage_insert_duration_milliseconds_total' ||
+        name === 'storage_insert_duration_count'
+      ) {
+        return 'Average'
+      }
       return labels?.status ?? 'storage'
     case 'kafkaLag': {
       const topic = labels?.topic ?? 'topic'
@@ -219,6 +259,11 @@ export function labelForMetric(
       return partition ? `${topic}:${partition}` : topic
     }
   }
+}
+
+function sourceTypeLabel(value: string) {
+  const key = value.trim()
+  return SOURCE_TYPE_LABELS[key] ?? SOURCE_TYPE_LABELS[key.toLowerCase()] ?? key
 }
 
 export function buildHistoryChart(
@@ -307,7 +352,7 @@ function buildHistoricalWidgetPoints(
     return [
       {
         timestamp: alignISO(point.timestamp, bucketMs),
-        seriesKey: labelForMetric(widget, point.labels),
+        seriesKey: labelForMetric(widget, point.labels, point.name),
         value,
       },
     ]
@@ -326,12 +371,16 @@ function buildHistoricalLatencyPoints(
     if (metricWidgetForName(point.name) !== 'dbLatency') {
       continue
     }
-    const seriesKey = labelForMetric('dbLatency', point.labels)
-    const key = `${alignISO(point.timestamp, bucketMs)}|${seriesKey}`
-    if (point.name === 'storage_insert_duration_milliseconds') {
+    const timestamp = alignISO(point.timestamp, bucketMs)
+    const key = `${timestamp}|${labelsKey(point.labels)}`
+    if (
+      point.name === 'storage_insert_duration_milliseconds' ||
+      point.name === 'storage_insert_duration_p95' ||
+      point.name === 'storage_insert_duration_p99'
+    ) {
       direct.push({
-        timestamp: alignISO(point.timestamp, bucketMs),
-        seriesKey,
+        timestamp,
+        seriesKey: labelForMetric('dbLatency', point.labels, point.name),
         value: safeNumber(point.value),
       })
     } else if (point.name === 'storage_insert_duration_milliseconds_total') {
@@ -341,17 +390,13 @@ function buildHistoricalLatencyPoints(
     }
   }
 
-  if (direct.length > 0) {
-    return direct
-  }
-
   const derived: SeriesPoint[] = []
   for (const [key, total] of totals) {
     const count = counts.get(key)
     if (!count) {
       continue
     }
-    const [timestamp, seriesKey] = splitPointKey(key)
+    const [timestamp] = splitPointKey(key)
     const countDelta = Math.max(0, count.delta)
     const totalDelta = Math.max(0, total.delta)
     const fallbackCount = Math.max(0, count.value)
@@ -362,9 +407,17 @@ function buildHistoricalLatencyPoints(
         : fallbackCount > 0
           ? fallbackTotal / fallbackCount
           : 0
-    derived.push({ timestamp, seriesKey, value })
+    derived.push({
+      timestamp,
+      seriesKey: labelForMetric(
+        'dbLatency',
+        total.labels,
+        'storage_insert_duration_milliseconds',
+      ),
+      value,
+    })
   }
-  return derived
+  return [...derived, ...direct]
 }
 
 function buildLiveWidgetPoints(
@@ -385,7 +438,7 @@ function buildLiveWidgetPoints(
       : safeNumber(current.value)
     points.push({
       timestamp: alignTimestamp(timestamp.getTime(), RANGE_CONFIG['1m'].bucketMs),
-      seriesKey: labelForMetric(widget, current.labels),
+      seriesKey: labelForMetric(widget, current.labels, current.name),
       value,
     })
   }
@@ -398,19 +451,20 @@ function buildLiveLatencyPoints(
   timestamp: Date,
 ): SeriesPoint[] {
   const direct: SeriesPoint[] = []
+  const pointTimestamp = alignTimestamp(timestamp.getTime(), RANGE_CONFIG['1m'].bucketMs)
   for (const snapshot of currentByKey.values()) {
-    if (snapshot.name !== 'storage_insert_duration_milliseconds') {
+    if (
+      snapshot.name !== 'storage_insert_duration_milliseconds' &&
+      snapshot.name !== 'storage_insert_duration_p95' &&
+      snapshot.name !== 'storage_insert_duration_p99'
+    ) {
       continue
     }
     direct.push({
-      timestamp: alignTimestamp(timestamp.getTime(), RANGE_CONFIG['1m'].bucketMs),
-      seriesKey: labelForMetric('dbLatency', snapshot.labels),
+      timestamp: pointTimestamp,
+      seriesKey: labelForMetric('dbLatency', snapshot.labels, snapshot.name),
       value: safeNumber(snapshot.value),
     })
-  }
-
-  if (direct.length > 0) {
-    return direct
   }
 
   const totals = snapshotsByMetric(currentByKey, 'storage_insert_duration_milliseconds_total')
@@ -422,26 +476,30 @@ function buildLiveLatencyPoints(
   const previousCounts = snapshotsByMetric(previousByKey, 'storage_insert_duration_count')
 
   const points: SeriesPoint[] = []
-  for (const [label, total] of totals) {
-    const count = counts.get(label)
+  for (const [labelKey, total] of totals) {
+    const count = counts.get(labelKey)
     if (!count) {
       continue
     }
     const totalDelta = Math.max(
       0,
-      total.value - (previousTotals.get(label)?.value ?? total.value),
+      total.value - (previousTotals.get(labelKey)?.value ?? total.value),
     )
     const countDelta = Math.max(
       0,
-      count.value - (previousCounts.get(label)?.value ?? count.value),
+      count.value - (previousCounts.get(labelKey)?.value ?? count.value),
     )
     points.push({
-      timestamp: alignTimestamp(timestamp.getTime(), RANGE_CONFIG['1m'].bucketMs),
-      seriesKey: label,
+      timestamp: pointTimestamp,
+      seriesKey: labelForMetric(
+        'dbLatency',
+        total.labels,
+        'storage_insert_duration_milliseconds',
+      ),
       value: countDelta > 0 ? totalDelta / countDelta : 0,
     })
   }
-  return points
+  return [...points, ...direct]
 }
 
 function fillMissingBuckets(
@@ -543,10 +601,19 @@ function snapshotsByMetric(
   const mapped = new Map<string, MetricSnapshot>()
   for (const snapshot of snapshots.values()) {
     if (snapshot.name === metricName) {
-      mapped.set(labelForMetric('dbLatency', snapshot.labels), snapshot)
+      mapped.set(labelsKey(snapshot.labels), snapshot)
     }
   }
   return mapped
+}
+
+
+function labelsKey(labels: Record<string, string> | null | undefined) {
+  const safeLabels = labels ?? {}
+  return Object.keys(safeLabels)
+    .sort()
+    .map((key) => `${key}=${safeLabels[key] ?? ''}`)
+    .join(',')
 }
 
 function snapshotKey(snapshot: MetricSnapshot) {

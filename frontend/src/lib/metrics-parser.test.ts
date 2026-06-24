@@ -12,20 +12,44 @@ import type { MetricHistoryPoint, MetricSnapshot } from '@/types/api'
 describe('metrics parser', () => {
   it('maps metric names to dashboard widgets', () => {
     expect(metricWidgetForName('flow_records_normalized_total')).toBe('ingestion')
+    expect(metricWidgetForName('flow_records_stored_total')).toBe('ingestion')
     expect(metricWidgetForName('flow_records_failed_total')).toBe('deadLetter')
+    expect(metricWidgetForName('rate_limit_rejections_total')).toBe('deadLetter')
     expect(metricWidgetForName('storage_insert_duration_milliseconds_total')).toBe(
       'dbLatency',
     )
+    expect(metricWidgetForName('storage_insert_duration_p95')).toBe('dbLatency')
+    expect(metricWidgetForName('storage_insert_duration_p99')).toBe('dbLatency')
     expect(metricWidgetForName('kafka_consumer_lag')).toBe('kafkaLag')
     expect(metricWidgetForName('unknown_metric')).toBeUndefined()
   })
 
   it('uses stable fallback labels when expected labels are missing', () => {
     expect(labelForMetric('ingestion', null)).toBe('unknown_source')
+    expect(labelForMetric('ingestion', null, 'flow_records_stored_total')).toBe(
+      'Durable Persisted',
+    )
     expect(labelForMetric('deadLetter', {})).toBe('unknown_reason')
+    expect(labelForMetric('deadLetter', {}, 'rate_limit_rejections_total')).toBe(
+      'Rate Limited',
+    )
     expect(labelForMetric('dbLatency', {})).toBe('storage')
+    expect(labelForMetric('dbLatency', {}, 'storage_insert_duration_milliseconds')).toBe(
+      'Average',
+    )
+    expect(labelForMetric('dbLatency', {}, 'storage_insert_duration_p95')).toBe('p95')
+    expect(labelForMetric('dbLatency', {}, 'storage_insert_duration_p99')).toBe('p99')
     expect(labelForMetric('kafkaLag', { topic: 'flow.raw', partition: '2' })).toBe(
       'flow.raw:2',
+    )
+    expect(labelForMetric('ingestion', { source_type: 'SOURCE_TYPE_NETFLOW_V5' })).toBe(
+      'NetFlow v5',
+    )
+    expect(labelForMetric('ingestion', { source_type: 'SOURCE_TYPE_REST_JSON' })).toBe(
+      'REST',
+    )
+    expect(labelForMetric('ingestion', { source_type: 'SOURCE_TYPE_ZEEK_CONN_JSON' })).toBe(
+      'Zeek',
     )
   })
 
@@ -92,8 +116,8 @@ ignored_bucket{le="+Inf"} +Inf
     )
 
     expect(chart.data).toHaveLength(1)
-    expect(chart.data[0]?.rest_json).toBe(25)
-    expect(chart.data[0]?.zeek_conn_json).toBe(0)
+    expect(chart.data[0]?.REST).toBe(25)
+    expect(chart.data[0]?.Zeek).toBe(0)
     expect(chart.data[0]?.total).toBe(25)
   })
 
@@ -167,7 +191,43 @@ ignored_bucket{le="+Inf"} +Inf
       new Date('2026-06-20T15:00:00Z'),
     )
 
-    expect(chart.data[0]?.ok).toBe(30)
+    expect(chart.data[0]?.Average).toBe(30)
+  })
+
+  it('overlays durable persisted, rate-limited, and DB percentile series', () => {
+    const now = new Date('2026-06-20T15:00:01Z')
+    const previous: MetricSnapshot[] = [
+      { name: 'flow_records_stored_total', labels: null, value: 100 },
+      {
+        name: 'rate_limit_rejections_total',
+        labels: { key: 'demo-client', scope: 'ingest' },
+        value: 2,
+      },
+      { name: 'storage_insert_duration_milliseconds_total', labels: null, value: 1000 },
+      { name: 'storage_insert_duration_count', labels: null, value: 20 },
+    ]
+    const current: MetricSnapshot[] = [
+      { name: 'flow_records_stored_total', labels: null, value: 115 },
+      {
+        name: 'rate_limit_rejections_total',
+        labels: { key: 'demo-client', scope: 'ingest' },
+        value: 5,
+      },
+      { name: 'storage_insert_duration_milliseconds_total', labels: null, value: 1600 },
+      { name: 'storage_insert_duration_count', labels: null, value: 40 },
+      { name: 'storage_insert_duration_p95', labels: null, value: 55 },
+      { name: 'storage_insert_duration_p99', labels: null, value: 90 },
+    ]
+
+    const ingestion = buildLiveWidgetSnapshot(current, previous, 'ingestion', 1, now)
+    const deadLetter = buildLiveWidgetSnapshot(current, previous, 'deadLetter', 1, now)
+    const dbLatency = buildLiveWidgetSnapshot(current, previous, 'dbLatency', 1, now)
+
+    expect(ingestion.data[0]?.['Durable Persisted']).toBe(15)
+    expect(deadLetter.data[0]?.['Rate Limited']).toBe(3)
+    expect(dbLatency.data[0]?.Average).toBe(30)
+    expect(dbLatency.data[0]?.p95).toBe(55)
+    expect(dbLatency.data[0]?.p99).toBe(90)
   })
 
   it('pivots history points and fills missing buckets with zeroes', () => {
@@ -201,9 +261,9 @@ ignored_bucket{le="+Inf"} +Inf
       (datum) => datum.timestamp === '2026-06-20T15:02:00.000Z',
     )
 
-    expect(first?.rest_json).toBe(60)
-    expect(missing?.rest_json).toBe(0)
-    expect(last?.rest_json).toBe(120)
+    expect(first?.REST).toBe(60)
+    expect(missing?.REST).toBe(0)
+    expect(last?.REST).toBe(120)
   })
 
   it('returns an empty zero timeline when no series are present', () => {

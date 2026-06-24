@@ -73,6 +73,11 @@ func (s *MetricsSaver) saveSnapshot(ctx context.Context) {
 		return
 	}
 
+	stats := s.db.Stats()
+	s.registry.Set("db_connections_open", nil, uint64(stats.OpenConnections))        //nolint:gosec
+	s.registry.Set("db_connections_in_use", nil, uint64(stats.InUse))                //nolint:gosec
+	s.registry.Set("db_connections_max_open", nil, uint64(stats.MaxOpenConnections)) //nolint:gosec
+
 	snapshots := s.registry.Snapshot()
 	if len(snapshots) == 0 {
 		return
