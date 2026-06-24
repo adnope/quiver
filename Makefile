@@ -171,7 +171,7 @@ migrate-up:
 		up
 
 dev-up:
-	$(DEV_COMPOSE) up -d --build --scale quiver=3
+	$(DEV_COMPOSE) up -d --build
 
 dev-down:
 	$(DEV_COMPOSE) down

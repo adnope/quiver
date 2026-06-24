@@ -255,7 +255,7 @@ func (p *Pipeline) processBatchConcurrent(ctx context.Context, records []*kgo.Re
 	chunks := splitRecords(records, concurrency)
 	var wg sync.WaitGroup
 	errs := make([]error, len(chunks))
-	writeResults := make([]postgres.StorageWriteResult, len(chunks))
+	batchItemChunks := make([][]postgres.StorageBatchItem, len(chunks))
 
 	for i, chunk := range chunks {
 		wg.Add(1)
@@ -325,54 +325,75 @@ func (p *Pipeline) processBatchConcurrent(ctx context.Context, records []*kgo.Re
 				})
 			}
 
-			if len(batchItems) > 0 {
-				writeResult, err := p.storageWriter.WriteBatch(ctx, batchItems, nil)
-				if err != nil {
-					errs[workerIdx] = fmt.Errorf("write storage batch in worker %d: %w", workerIdx, err)
-					return
-				}
-				writeResults[workerIdx] = writeResult
-			}
+			batchItemChunks[workerIdx] = batchItems
 		}(i, chunk)
 	}
 
 	wg.Wait()
 
-	// Check if any worker failed
 	for _, err := range errs {
 		if err != nil {
 			return err
 		}
 	}
 
-	// Commit offsets since all workers succeeded
-	committer := &franzCommitter{client: p.client, records: records}
-	if err := committer.Commit(ctx); err != nil {
-		return fmt.Errorf("commit storage offsets: %w", err)
+	totalBatchItems := 0
+	for _, chunkItems := range batchItemChunks {
+		totalBatchItems += len(chunkItems)
 	}
 
-	// Aggregate metrics and log results
-	var totalAttempted, totalInserted, totalDeduplicated, totalDeadLettered int
-	for _, res := range writeResults {
-		totalAttempted += res.Attempted
-		totalInserted += res.Inserted
-		totalDeduplicated += res.Deduplicated
-		totalDeadLettered += res.DeadLettered
+	allBatchItems := make([]postgres.StorageBatchItem, 0, totalBatchItems)
+	for _, chunkItems := range batchItemChunks {
+		allBatchItems = append(allBatchItems, chunkItems...)
+	}
+
+	committer := &franzCommitter{client: p.client, records: records}
+
+	if len(allBatchItems) == 0 {
+		if err := committer.Commit(ctx); err != nil {
+			return fmt.Errorf("commit storage offsets after empty batch: %w", err)
+		}
+		p.logger.Debug("batch processed successfully",
+			slog.Int("attempted", 0),
+			slog.Int("inserted", 0),
+			slog.Int("deduplicated", 0),
+			slog.Int("dead_lettered", 0),
+		)
+		return nil
+	}
+
+	writeResult, err := p.writeMergedStorageBatch(ctx, allBatchItems, committer)
+	if err != nil {
+		return fmt.Errorf("write merged storage batch: %w", err)
 	}
 
 	p.logger.Debug("batch processed successfully",
-		slog.Int("attempted", totalAttempted),
-		slog.Int("inserted", totalInserted),
-		slog.Int("deduplicated", totalDeduplicated),
-		slog.Int("dead_lettered", totalDeadLettered),
+		slog.Int("attempted", writeResult.Attempted),
+		slog.Int("inserted", writeResult.Inserted),
+		slog.Int("deduplicated", writeResult.Deduplicated),
+		slog.Int("dead_lettered", writeResult.DeadLettered),
 	)
 
 	if p.metrics != nil {
-		p.metrics.Add("flow_records_stored_total", nil, uint64(totalInserted))                                               //nolint:gosec
-		p.metrics.Add("flow_records_failed_total", map[string]string{"reason": "storage_failed"}, uint64(totalDeadLettered)) //nolint:gosec
+		p.metrics.Add("flow_records_stored_total", nil, uint64(writeResult.Inserted))                                               //nolint:gosec
+		p.metrics.Add("flow_records_failed_total", map[string]string{"reason": "storage_failed"}, uint64(writeResult.DeadLettered)) //nolint:gosec
 	}
 
 	return nil
+}
+
+func (p *Pipeline) writeMergedStorageBatch(
+	ctx context.Context,
+	items []postgres.StorageBatchItem,
+	committer postgres.OffsetCommitter,
+) (result postgres.StorageWriteResult, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("storage write panicked: %v", r)
+		}
+	}()
+
+	return p.storageWriter.WriteBatch(ctx, items, committer)
 }
 
 func splitRecords(records []*kgo.Record, concurrency int) [][]*kgo.Record {
