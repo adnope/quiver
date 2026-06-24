@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import {
   Area,
   AreaChart,
@@ -7,22 +8,28 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { formatMetricValue, formatTimestamp } from '@/lib/format'
+import { formatMetricValue, formatNumber, formatTimestamp } from '@/lib/format'
 import type {
+  AggregateTooltipStats,
   ChartDatum,
   ChartSeries,
-  MetricRange,
+  MetricChartRange,
   MetricWidget,
 } from '@/lib/metrics-parser'
 
+const EMPTY_CHART_DATA: ChartDatum[] = [
+  { timestamp: new Date().toISOString(), total: 0 },
+]
+
 interface MetricAreaChartProps {
   widget: MetricWidget
-  range: MetricRange
+  range: MetricChartRange
   data: ChartDatum[]
   series: ChartSeries[]
   isLoading: boolean
   error?: string
   onRetry: () => void
+  scrollable?: boolean
 }
 
 export function MetricAreaChart({
@@ -33,7 +40,20 @@ export function MetricAreaChart({
   isLoading,
   error,
   onRetry,
+  scrollable = false,
 }: MetricAreaChartProps) {
+  const visibleData = data.length > 0 ? data : EMPTY_CHART_DATA
+  const chartWidth = scrollable ? Math.max(1_800, visibleData.length * 4) : undefined
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!scrollable || !scrollRef.current) {
+      return
+    }
+    const container = scrollRef.current
+    container.scrollLeft = container.scrollWidth
+  }, [scrollable, data.length])
+
   if (isLoading) {
     return <ChartSkeleton />
   }
@@ -48,16 +68,21 @@ export function MetricAreaChart({
     )
   }
 
-  const hasData = data.some((datum) => datum.total > 0)
-  const visibleData = data.length > 0 ? data : [{ timestamp: new Date().toISOString(), total: 0 }]
-
   return (
-    <div className="relative h-44">
+    <div
+      ref={scrollRef}
+      className={
+        scrollable
+          ? 'relative h-44 overflow-x-auto overflow-y-hidden pb-2'
+          : 'relative h-44'
+      }
+    >
+      <div className="h-full" style={chartWidth ? { width: chartWidth } : undefined}>
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart data={visibleData} margin={{ top: 10, right: 8, left: -18, bottom: 0 }}>
           <defs>
             {series.map((item) => (
-              <linearGradient key={item.key} id={`fill-${widget}-${item.key}`} x1="0" y1="0" x2="0" y2="1">
+              <linearGradient key={item.key} id={gradientId(widget, item.key)} x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor={item.color} stopOpacity={0.15} />
                 <stop offset="95%" stopColor={item.color} stopOpacity={0} />
               </linearGradient>
@@ -93,10 +118,9 @@ export function MetricAreaChart({
                 key={item.key}
                 type="monotone"
                 dataKey={item.key}
-                stackId="1"
                 stroke={item.color}
                 strokeWidth={1.5}
-                fill={`url(#fill-${widget}-${item.key})`}
+                fill={`url(#${gradientId(widget, item.key)})`}
                 isAnimationActive
                 animationDuration={300}
                 dot={false}
@@ -116,13 +140,7 @@ export function MetricAreaChart({
           )}
         </AreaChart>
       </ResponsiveContainer>
-      {!hasData ? (
-        <div className="absolute inset-0 grid place-items-center">
-          <div className="rounded-md border border-[var(--border)] bg-[var(--empty-overlay)] px-3 py-2 text-xs text-[var(--text-secondary)] backdrop-blur-sm">
-            No active flows detected. Waiting for ingestion...
-          </div>
-        </div>
-      ) : null}
+      </div>
     </div>
   )
 }
@@ -130,6 +148,7 @@ export function MetricAreaChart({
 interface MetricTooltipPayload {
   dataKey?: string | number
   value?: number | string
+  payload?: ChartDatum
 }
 
 interface MetricTooltipProps {
@@ -137,7 +156,7 @@ interface MetricTooltipProps {
   payload?: MetricTooltipPayload[]
   label?: string | number
   widget: MetricWidget
-  range: MetricRange
+  range: MetricChartRange
   series: ChartSeries[]
 }
 
@@ -166,31 +185,121 @@ function MetricTooltip({
         label: seriesItem?.label ?? key,
         color: seriesItem?.color ?? '#3B82F6',
         value: typeof item.value === 'number' ? item.value : 0,
+        stats: item.payload?.aggregateStats?.[key],
       }
     })
-  const total = rows.reduce((sum: number, row) => sum + row.value, 0)
+  const latencyStats = widget === 'dbLatency' ? firstStats(rows) : undefined
+  const total = rows
+    .filter((row) => widget !== 'ingestion' || row.label !== 'Persisted')
+    .reduce((sum: number, row) => sum + row.value, 0)
 
   return (
     <div className="min-w-48 rounded-lg border border-[var(--tooltip-border)] bg-[var(--tooltip-bg)] p-3 text-xs text-[var(--text-primary)] shadow-md backdrop-blur">
       <div className="mb-2 font-mono text-[11px] text-[var(--text-secondary)]">
         {formatTimestamp(String(label), range)}
       </div>
-      <div className="space-y-1.5">
-        {rows.map((row) => (
-          <div key={row.key} className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2">
-            <span className="h-4 w-1.5 rounded-full" style={{ background: row.color }} />
-            <span className="truncate">{row.label}</span>
-            <span className="font-semibold">{formatMetricValue(widget, row.value)}</span>
+      {latencyStats ? (
+        <div className="grid min-w-52 grid-cols-2 gap-x-4 gap-y-1">
+          {dbLatencyStatRows(latencyStats).map((stat) => (
+            <div key={stat.label} className="flex justify-between gap-3">
+              <span className="text-[var(--text-secondary)]">{stat.label}</span>
+              <span className="font-mono font-semibold">{stat.value}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <>
+          <div className="space-y-1.5">
+            {rows.map((row) => (
+              <div key={row.key} className="space-y-1">
+                <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2">
+                  <span className="h-4 w-1.5 rounded-full" style={{ background: row.color }} />
+                  <span className="truncate">{row.label}</span>
+                  <span className="font-semibold">{formatMetricValue(widget, row.value)}</span>
+                </div>
+                {row.stats ? (
+                  <div className="ml-3 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] text-[var(--text-secondary)]">
+                    {tooltipStatRows(row.stats, widget).map((stat) => (
+                      <div key={stat.label} className="flex justify-between gap-2">
+                        <span>{stat.label}</span>
+                        <span className="font-mono">{stat.value}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
-      <hr className="my-2 border-t border-[var(--tooltip-border)]" />
-      <div className="flex items-center justify-between gap-4 font-semibold">
-        <span>Total</span>
-        <span>{formatMetricValue(widget, total)}</span>
-      </div>
+          {widget !== 'dbLatency' ? (
+            <>
+              <hr className="my-2 border-t border-[var(--tooltip-border)]" />
+              <div className="flex items-center justify-between gap-4 font-semibold">
+                <span>{widget === 'ingestion' ? 'Ingest rate' : 'Total'}</span>
+                <span>{formatMetricValue(widget, total)}</span>
+              </div>
+            </>
+          ) : null}
+        </>
+      )}
     </div>
   )
+}
+
+
+function firstStats(
+  rows: ReadonlyArray<{ stats: AggregateTooltipStats | undefined }>,
+): AggregateTooltipStats | undefined {
+  return rows.find((row) => row.stats)?.stats
+}
+
+function dbLatencyStatRows(stats: AggregateTooltipStats) {
+  const rows: Array<{ label: string; value: string }> = []
+  rows.push({ label: 'Count', value: formatNumber(stats.count ?? 0) })
+  rows.push({ label: 'min', value: formatMetricValue('dbLatency', stats.min ?? 0) })
+  rows.push({ label: 'max', value: formatMetricValue('dbLatency', stats.max ?? 0) })
+  rows.push({ label: 'Average', value: formatMetricValue('dbLatency', stats.avg ?? 0) })
+  rows.push({ label: 'p90', value: formatMetricValue('dbLatency', stats.p90 ?? 0) })
+  rows.push({ label: 'p95', value: formatMetricValue('dbLatency', stats.p95 ?? 0) })
+  rows.push({ label: 'p99', value: formatMetricValue('dbLatency', stats.p99 ?? 0) })
+  return rows
+}
+
+function tooltipStatRows(stats: AggregateTooltipStats, widget: MetricWidget) {
+  const rows: Array<{ label: string; value: string }> = []
+  if (stats.count !== undefined) {
+    rows.push({ label: 'count', value: formatNumber(stats.count) })
+  }
+
+  if (widget === 'ingestion' || widget === 'deadLetter') {
+    if (stats.delta !== undefined) {
+      rows.push({ label: 'delta', value: formatNumber(stats.delta) })
+    }
+    return rows
+  }
+
+  const metricFields: Array<[string, number | undefined]> =
+    widget === 'dbLatency'
+      ? [
+          ['avg', stats.avg],
+          ['min', stats.min],
+          ['max', stats.max],
+          ['p90', stats.p90],
+          ['p95', stats.p95],
+          ['p99', stats.p99],
+        ]
+      : [
+          ['avg', stats.avg],
+          ['min', stats.min],
+          ['max', stats.max],
+          ['last', stats.last],
+        ]
+
+  for (const [label, value] of metricFields) {
+    if (value !== undefined) {
+      rows.push({ label, value: formatMetricValue(widget, value) })
+    }
+  }
+  return rows
 }
 
 function ChartSkeleton() {
@@ -211,4 +320,7 @@ function formatShortAxis(value: number) {
     return `${Math.round(value / 1_000)}k`
   }
   return String(Math.round(value))
+}
+function gradientId(widget: MetricWidget, key: string) {
+  return `fill-${widget}-${key.replace(/[^a-zA-Z0-9_-]/g, '_')}`
 }

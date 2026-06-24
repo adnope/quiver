@@ -2,20 +2,24 @@ name: CI Pipeline
 
 on:
   push:
-    branches:
-      - '**'
-      - '!main'
+    branches-ignore:
+      - main
   pull_request:
-    branches: [ main ]
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  ci:
-    name: Build & Test
+  frontend:
+    name: Frontend Checks
     runs-on: ubuntu-latest
-
-    env:
-      TEST_PROJECT: quiver-test-${{ github.run_id }}-${{ github.run_attempt }}
-      VERIFY_PROJECT: quiver-verify-${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
       - name: Checkout repository
@@ -37,6 +41,20 @@ jobs:
       - name: Run frontend tests
         run: npm --prefix frontend run test
 
+      - name: Run frontend lint
+        run: npm --prefix frontend run lint
+      
+      - name: Run frontend typecheck
+        run: npm --prefix frontend run typecheck
+
+  go-lint:
+    name: Go Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -46,11 +64,53 @@ jobs:
       - name: Install golangci-lint
         run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
 
-      - name: Run lint
-        run: make lint
+      - name: Run Go lint
+        run: make lint-go
+
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+
+  govulncheck:
+    name: Go Vulnerability Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
 
       - name: Run govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  generated-contracts:
+    name: Generated Contracts
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
 
       - name: Install Protobuf Compiler
         uses: arduino/setup-protoc@v3
@@ -69,8 +129,84 @@ jobs:
       - name: Vector Shipper Verification
         run: make verify-vector-shipper
 
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
       - name: Run Unit Tests
         run: make test-unit
+
+      - name: Generate Go Coverage
+        run: make coverage
+
+      - name: Upload Go Coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: coverage.out
+          if-no-files-found: warn
+
+  build:
+    name: Production Build
+    runs-on: ubuntu-latest
+    needs:
+      - frontend
+      - go-lint
+      - govulncheck
+      - generated-contracts
+      - unit-tests
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm --prefix frontend ci
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Build binaries and embedded frontend
+        run: make build
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs:
+      - build
+
+    env:
+      TEST_PROJECT: quiver-test-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
 
       - name: Start Integration Test Stack
         run: make test-up TEST_PROJECT="${TEST_PROJECT}"
@@ -78,9 +214,68 @@ jobs:
       - name: Run Integration Tests
         run: make test-integration
 
+      - name: Collect Integration Test Stack Logs
+        if: failure()
+        run: |
+          mkdir -p artifacts/integration-test-logs
+          docker ps -a > artifacts/integration-test-logs/docker-ps.txt || true
+          docker ps -a \
+            --filter "label=com.docker.compose.project=${TEST_PROJECT}" \
+            --format '{{.Names}}' \
+            > artifacts/integration-test-logs/containers.txt || true
+
+          while read -r container; do
+            [ -n "${container}" ] || continue
+            docker logs "${container}" > "artifacts/integration-test-logs/${container}.log" 2>&1 || true
+          done < artifacts/integration-test-logs/containers.txt
+
       - name: Tear Down Integration Test Stack
         if: always()
         run: make test-down TEST_PROJECT="${TEST_PROJECT}"
 
+      - name: Upload Integration Test Logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-logs
+          path: artifacts/integration-test-logs
+          if-no-files-found: warn
+
+  demo-verification:
+    name: Demo Verification
+    runs-on: ubuntu-latest
+    needs:
+      - integration-tests
+
+    env:
+      VERIFY_PROJECT: quiver-verify-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Run Demo Verification Script
         run: make verify-demo VERIFY_PROJECT="${VERIFY_PROJECT}"
+
+      - name: Collect Demo Verification Logs
+        if: failure()
+        run: |
+          mkdir -p artifacts/demo-verification-logs
+          docker ps -a > artifacts/demo-verification-logs/docker-ps.txt || true
+          docker ps -a \
+            --filter "label=com.docker.compose.project=${VERIFY_PROJECT}" \
+            --format '{{.Names}}' \
+            > artifacts/demo-verification-logs/containers.txt || true
+
+          while read -r container; do
+            [ -n "${container}" ] || continue
+            docker logs "${container}" > "artifacts/demo-verification-logs/${container}.log" 2>&1 || true
+          done < artifacts/demo-verification-logs/containers.txt
+
+      - name: Upload Demo Verification Logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-verification-logs
+          path: artifacts/demo-verification-logs
+          if-no-files-found: warn

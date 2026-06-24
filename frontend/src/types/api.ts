@@ -1,4 +1,4 @@
-export type ActiveTab = 'dashboard' | 'explorer' | 'analytics'
+export type ActiveTab = 'dashboard' | 'history' | 'explorer' | 'analytics'
 
 export type ThemePreference = 'dark' | 'light' | 'system'
 
@@ -34,6 +34,40 @@ export interface MetricHistoryPoint {
 
 export interface MetricHistoryResponse {
   points: MetricHistoryPoint[]
+}
+
+export interface MetricAggregatePoint {
+  bucket_start: string
+  bucket_width_seconds: number
+  metric_name: string
+  labels?: Record<string, string> | null
+  metric_kind: 'counter' | 'gauge' | 'duration' | string
+  sample_count: number
+  count: number
+  sum: number | null
+  avg: number | null
+  min: number | null
+  max: number | null
+  p90: number | null
+  p95: number | null
+  p99: number | null
+  first: number | null
+  last: number | null
+  delta: number | null
+}
+
+export interface MetricAggregatesResponse {
+  from: string
+  to: string
+  step_seconds: number
+  points: MetricAggregatePoint[]
+}
+
+export interface MetricAggregatesParams {
+  from: string
+  to: string
+  step?: string
+  metric?: string[]
 }
 
 export type SourceType =

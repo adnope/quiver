@@ -248,11 +248,24 @@ type LiveMetricsResponse struct {
 // @Failure 401 {object} ErrorResponse
 // @Failure 403 {object} ErrorResponse
 // @Router /api/v1/metrics/live [get]
-func LiveMetricsHandler(registry *observability.Registry) http.Handler {
+func LiveMetricsHandler(registry *observability.Registry, db *sql.DB) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		recordDBConnectionStats(registry, db)
+
 		snapshots := registry.Snapshot()
 		writeJSON(w, http.StatusOK, LiveMetricsResponse{Metrics: snapshots})
 	})
+}
+
+func recordDBConnectionStats(registry *observability.Registry, db *sql.DB) {
+	if registry == nil || db == nil {
+		return
+	}
+
+	stats := db.Stats()
+	registry.Set("db_connections_open", nil, uint64(stats.OpenConnections))        //nolint:gosec
+	registry.Set("db_connections_in_use", nil, uint64(stats.InUse))                //nolint:gosec
+	registry.Set("db_connections_max_open", nil, uint64(stats.MaxOpenConnections)) //nolint:gosec
 }
 
 type MetricHistoryPoint struct {

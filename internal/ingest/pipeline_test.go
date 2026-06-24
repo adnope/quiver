@@ -110,12 +110,11 @@ func TestProcessBatchConcurrentSuccess(t *testing.T) {
 		t.Fatalf("processBatch failed: %v", err)
 	}
 
-	// Concurrency of 4 means we split 250 records into 4 chunks (63, 63, 62, 62).
-	// Each chunk is processed concurrently and written using storageWriter.WriteBatch.
-	// Since WriteBatch calls the inserter once (batchSize 1000 > chunk size),
-	// we expect exactly 4 calls to the inserter.
-	if inserter.calls != 4 {
-		t.Errorf("expected 4 inserter calls, got %d", inserter.calls)
+	// Concurrency of 4 still splits normalization work into 4 chunks, but the
+	// normalized records are merged before storage. Since WriteBatch receives one
+	// merged batch and batchSize 1000 > 250 records, we expect exactly 1 inserter call.
+	if inserter.calls != 1 {
+		t.Errorf("expected 1 inserter call, got %d", inserter.calls)
 	}
 	if mockKafka.commitCalls != 1 {
 		t.Errorf("expected 1 overall commit call, got %d", mockKafka.commitCalls)
@@ -140,7 +139,7 @@ func TestProcessBatchConcurrentFailure(t *testing.T) {
 		failPublish: true,
 	}
 	sw, err := postgres.NewStorageWriter(config.StorageWriterConfig{
-		BatchSize:      1000,
+		BatchSize:      100,
 		MaxRetries:     0,
 		InitialBackoff: config.Duration(time.Millisecond),
 		MaxBackoff:     config.Duration(time.Millisecond),
@@ -189,7 +188,7 @@ func TestProcessBatchConcurrentPanic(t *testing.T) {
 	}
 	dlq := &fakeDeadLetterPublisher{}
 	sw, err := postgres.NewStorageWriter(config.StorageWriterConfig{
-		BatchSize:      1000,
+		BatchSize:      100,
 		MaxRetries:     0,
 		InitialBackoff: config.Duration(time.Millisecond),
 		MaxBackoff:     config.Duration(time.Millisecond),

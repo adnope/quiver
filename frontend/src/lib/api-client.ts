@@ -8,6 +8,8 @@ import type {
   FlowSearchResponse,
   HealthResponse,
   LiveMetricsResponse,
+  MetricAggregatesParams,
+  MetricAggregatesResponse,
   MetricHistoryResponse,
   ProtocolsResponse,
   TopPortsResponse,
@@ -91,6 +93,14 @@ function shouldUseViteProxy(baseUrl: string) {
 export function toQueryString(params: object) {
   const search = new URLSearchParams()
   for (const [key, value] of Object.entries(params) as Array<[string, unknown]>) {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (typeof item === 'string' && item !== '') {
+          search.append(key, item)
+        }
+      }
+      continue
+    }
     if (
       (typeof value === 'string' && value !== '') ||
       typeof value === 'number'
@@ -232,6 +242,17 @@ function normalizeValidationError(error: unknown, fallback: string) {
     )
   }
   return error instanceof Error ? error : new Error(fallback)
+}
+
+
+export function getMetricAggregates(
+  params: MetricAggregatesParams,
+  options?: ApiClientOptions,
+) {
+  return requestJson<MetricAggregatesResponse>(
+    `/api/v1/metrics/aggregates${toQueryString(params)}`,
+    options,
+  )
 }
 
 export function getMetricsHistory(

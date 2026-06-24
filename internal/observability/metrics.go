@@ -3,15 +3,21 @@ package observability
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
+const durationReservoirSize = 1000
+
 type Registry struct {
-	mu       sync.RWMutex
-	counters map[seriesKey]uint64
+	mu         sync.RWMutex
+	counters   map[seriesKey]uint64
+	durations  map[seriesKey][]uint64
+	aggregates map[seriesKey]*metricAccumulator
+	histograms map[seriesKey][]uint64
 }
 
 type seriesKey struct {
@@ -20,7 +26,37 @@ type seriesKey struct {
 }
 
 func NewRegistry() *Registry {
-	return &Registry{counters: map[seriesKey]uint64{}}
+	return &Registry{
+		counters:   map[seriesKey]uint64{},
+		durations:  map[seriesKey][]uint64{},
+		aggregates: map[seriesKey]*metricAccumulator{},
+		histograms: map[seriesKey][]uint64{},
+	}
+}
+
+func (r *Registry) ensureCounters() {
+	if r.counters == nil {
+		r.counters = map[seriesKey]uint64{}
+	}
+}
+
+func (r *Registry) ensureAggregates() {
+	if r.aggregates == nil {
+		r.aggregates = map[seriesKey]*metricAccumulator{}
+	}
+	if r.histograms == nil {
+		r.histograms = map[seriesKey][]uint64{}
+	}
+}
+
+func (r *Registry) accumulatorFor(key seriesKey) *metricAccumulator {
+	r.ensureAggregates()
+	acc := r.aggregates[key]
+	if acc == nil {
+		acc = &metricAccumulator{}
+		r.aggregates[key] = acc
+	}
+	return acc
 }
 
 func (r *Registry) Inc(name string, labels map[string]string) {
@@ -33,17 +69,49 @@ func (r *Registry) Add(name string, labels map[string]string, value uint64) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.ensureCounters()
 	key := seriesKey{name: name, labels: encodeLabels(labels)}
+	previous := r.counters[key]
 	r.counters[key] += value
+	r.accumulatorFor(key).observeCounter(previous, r.counters[key], value)
+}
+
+func (r *Registry) Set(name string, labels map[string]string, value uint64) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ensureCounters()
+	key := seriesKey{name: name, labels: encodeLabels(labels)}
+	r.counters[key] = value
+	r.accumulatorFor(key).observeGauge(float64(value))
 }
 
 func (r *Registry) ObserveDuration(name string, labels map[string]string, start time.Time) {
-	if start.IsZero() {
+	if r == nil || start.IsZero() {
 		return
 	}
 	millis := durationMillis(time.Since(start))
 	r.Add(name+"_milliseconds_total", labels, millis)
 	r.Inc(name+"_count", labels)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.durations == nil {
+		r.durations = map[seriesKey][]uint64{}
+	}
+	key := seriesKey{name: name, labels: encodeLabels(labels)}
+	samples := append(r.durations[key], millis)
+	if len(samples) > durationReservoirSize {
+		samples = samples[len(samples)-durationReservoirSize:]
+	}
+	r.durations[key] = samples
+	r.accumulatorFor(key).observeDuration(float64(millis))
+	if r.histograms[key] == nil {
+		r.histograms[key] = make([]uint64, durationHistogramBucketCount())
+	}
+	r.histograms[key][durationHistogramBucketIndex(float64(millis))]++
 }
 
 func durationMillis(elapsed time.Duration) uint64 {
@@ -62,27 +130,23 @@ func (r *Registry) WritePrometheus() []byte {
 	if r == nil {
 		r = NewRegistry()
 	}
-	r.mu.RLock()
-	keys := make([]seriesKey, 0, len(r.counters))
-	for key := range r.counters {
-		keys = append(keys, key)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		if keys[i].name == keys[j].name {
-			return keys[i].labels < keys[j].labels
+	snapshots := r.Snapshot()
+	sort.Slice(snapshots, func(i, j int) bool {
+		if snapshots[i].Name == snapshots[j].Name {
+			return encodeLabels(snapshots[i].Labels) < encodeLabels(snapshots[j].Labels)
 		}
-		return keys[i].name < keys[j].name
+		return snapshots[i].Name < snapshots[j].Name
 	})
+
 	var out bytes.Buffer
-	for _, key := range keys {
-		value := r.counters[key]
-		if key.labels == "" {
-			fmt.Fprintf(&out, "%s %d\n", key.name, value)
+	for _, snap := range snapshots {
+		labels := encodeLabels(snap.Labels)
+		if labels == "" {
+			fmt.Fprintf(&out, "%s %d\n", snap.Name, snap.Value)
 			continue
 		}
-		fmt.Fprintf(&out, "%s{%s} %d\n", key.name, key.labels, value)
+		fmt.Fprintf(&out, "%s{%s} %d\n", snap.Name, labels, snap.Value)
 	}
-	r.mu.RUnlock()
 	return out.Bytes()
 }
 
@@ -121,7 +185,7 @@ func (r *Registry) Snapshot() []MetricSnapshot {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	snapshots := make([]MetricSnapshot, 0, len(r.counters))
+	snapshots := make([]MetricSnapshot, 0, len(r.counters)+(len(r.durations)*2))
 	for key, val := range r.counters {
 		snapshots = append(snapshots, MetricSnapshot{
 			Name:   key.name,
@@ -129,7 +193,43 @@ func (r *Registry) Snapshot() []MetricSnapshot {
 			Value:  val,
 		})
 	}
+	for key, samples := range r.durations {
+		if len(samples) == 0 {
+			continue
+		}
+		snapshots = append(snapshots,
+			MetricSnapshot{
+				Name:   key.name + "_p95",
+				Labels: decodeLabels(key.labels),
+				Value:  percentile(samples, 0.95),
+			},
+			MetricSnapshot{
+				Name:   key.name + "_p99",
+				Labels: decodeLabels(key.labels),
+				Value:  percentile(samples, 0.99),
+			},
+		)
+	}
 	return snapshots
+}
+
+func percentile(samples []uint64, quantile float64) uint64 {
+	if len(samples) == 0 {
+		return 0
+	}
+	if len(samples) == 1 {
+		return samples[0]
+	}
+	ordered := append([]uint64(nil), samples...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i] < ordered[j] })
+	index := int(math.Ceil(quantile*float64(len(ordered)))) - 1
+	if index < 0 {
+		index = 0
+	}
+	if index >= len(ordered) {
+		index = len(ordered) - 1
+	}
+	return ordered[index]
 }
 
 func decodeLabels(s string) map[string]string {
@@ -150,4 +250,49 @@ func decodeLabels(s string) map[string]string {
 		}
 	}
 	return res
+}
+
+func (r *Registry) DrainBucketAggregates(
+	bucketStart time.Time,
+	bucketWidth time.Duration,
+) ([]MetricAggregate, []MetricHistogramBucket) {
+	if r == nil {
+		return nil, nil
+	}
+	if bucketWidth <= 0 {
+		return nil, nil
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	aggregates := make([]MetricAggregate, 0, len(r.aggregates))
+	for key, acc := range r.aggregates {
+		if acc == nil || acc.sampleCount == 0 {
+			continue
+		}
+		aggregates = append(aggregates, acc.toAggregate(bucketStart, bucketWidth, key, r.histograms[key]))
+	}
+
+	histogramBuckets := make([]MetricHistogramBucket, 0)
+	for key, counts := range r.histograms {
+		for index, count := range counts {
+			if count == 0 {
+				continue
+			}
+			histogramBuckets = append(histogramBuckets, MetricHistogramBucket{
+				BucketStart:        bucketStart.UTC(),
+				BucketWidthSeconds: int(bucketWidth.Seconds()),
+				MetricName:         key.name,
+				Labels:             normalizeLabels(decodeLabels(key.labels)),
+				BucketIndex:        index,
+				BucketUpperBound:   durationHistogramBucketUpperBound(index),
+				Count:              count,
+			})
+		}
+	}
+
+	r.aggregates = map[seriesKey]*metricAccumulator{}
+	r.histograms = map[seriesKey][]uint64{}
+	return aggregates, histogramBuckets
 }

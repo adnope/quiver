@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"sync"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/adnope/quiver/internal/observability"
 	"github.com/adnope/quiver/internal/storage/postgres"
 	"github.com/adnope/quiver/internal/validation"
+	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -96,6 +98,8 @@ func (p *Pipeline) Start(ctx context.Context) {
 	p.ctx, p.cancel = context.WithCancel(ctx)
 	p.wg.Add(1)
 	go p.run()
+	p.wg.Add(1)
+	go p.pollKafkaLag(p.ctx)
 }
 
 func (p *Pipeline) Stop() {
@@ -104,6 +108,72 @@ func (p *Pipeline) Stop() {
 	}
 	p.wg.Wait()
 	p.client.Close()
+}
+
+func (p *Pipeline) pollKafkaLag(ctx context.Context) {
+	defer p.wg.Done()
+	if p.metrics == nil {
+		return
+	}
+	client, ok := p.client.(*kgo.Client)
+	if !ok || client == nil {
+		return
+	}
+
+	admin := kadm.NewClient(client)
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			p.collectKafkaLag(ctx, admin)
+		}
+	}
+}
+
+func (p *Pipeline) collectKafkaLag(ctx context.Context, admin *kadm.Client) {
+	if p.metrics == nil || admin == nil {
+		return
+	}
+
+	pollCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	lags, err := admin.Lag(pollCtx, "flow-storage-writer")
+	if err != nil {
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			p.logger.Error("failed to poll kafka consumer lag", slog.Any("error", err))
+		}
+		return
+	}
+
+	for _, groupLag := range lags.Sorted() {
+		if err := groupLag.Error(); err != nil {
+			p.logger.Error("failed to describe kafka consumer lag", slog.String("group", groupLag.Group), slog.Any("error", err))
+			continue
+		}
+		for _, partitionLag := range groupLag.Lag.Sorted() {
+			if partitionLag.Err != nil {
+				p.logger.Error(
+					"failed to calculate kafka partition lag",
+					slog.String("topic", partitionLag.Topic),
+					slog.Int("partition", int(partitionLag.Partition)),
+					slog.Any("error", partitionLag.Err),
+				)
+				continue
+			}
+			if partitionLag.Lag < 0 {
+				continue
+			}
+			p.metrics.Set("kafka_consumer_lag", map[string]string{
+				"topic":     partitionLag.Topic,
+				"partition": strconv.Itoa(int(partitionLag.Partition)),
+			}, uint64(partitionLag.Lag)) //nolint:gosec
+		}
+	}
 }
 
 func (p *Pipeline) run() {
@@ -255,7 +325,7 @@ func (p *Pipeline) processBatchConcurrent(ctx context.Context, records []*kgo.Re
 	chunks := splitRecords(records, concurrency)
 	var wg sync.WaitGroup
 	errs := make([]error, len(chunks))
-	writeResults := make([]postgres.StorageWriteResult, len(chunks))
+	batchItemChunks := make([][]postgres.StorageBatchItem, len(chunks))
 
 	for i, chunk := range chunks {
 		wg.Add(1)
@@ -325,54 +395,75 @@ func (p *Pipeline) processBatchConcurrent(ctx context.Context, records []*kgo.Re
 				})
 			}
 
-			if len(batchItems) > 0 {
-				writeResult, err := p.storageWriter.WriteBatch(ctx, batchItems, nil)
-				if err != nil {
-					errs[workerIdx] = fmt.Errorf("write storage batch in worker %d: %w", workerIdx, err)
-					return
-				}
-				writeResults[workerIdx] = writeResult
-			}
+			batchItemChunks[workerIdx] = batchItems
 		}(i, chunk)
 	}
 
 	wg.Wait()
 
-	// Check if any worker failed
 	for _, err := range errs {
 		if err != nil {
 			return err
 		}
 	}
 
-	// Commit offsets since all workers succeeded
-	committer := &franzCommitter{client: p.client, records: records}
-	if err := committer.Commit(ctx); err != nil {
-		return fmt.Errorf("commit storage offsets: %w", err)
+	totalBatchItems := 0
+	for _, chunkItems := range batchItemChunks {
+		totalBatchItems += len(chunkItems)
 	}
 
-	// Aggregate metrics and log results
-	var totalAttempted, totalInserted, totalDeduplicated, totalDeadLettered int
-	for _, res := range writeResults {
-		totalAttempted += res.Attempted
-		totalInserted += res.Inserted
-		totalDeduplicated += res.Deduplicated
-		totalDeadLettered += res.DeadLettered
+	allBatchItems := make([]postgres.StorageBatchItem, 0, totalBatchItems)
+	for _, chunkItems := range batchItemChunks {
+		allBatchItems = append(allBatchItems, chunkItems...)
+	}
+
+	committer := &franzCommitter{client: p.client, records: records}
+
+	if len(allBatchItems) == 0 {
+		if err := committer.Commit(ctx); err != nil {
+			return fmt.Errorf("commit storage offsets after empty batch: %w", err)
+		}
+		p.logger.Debug("batch processed successfully",
+			slog.Int("attempted", 0),
+			slog.Int("inserted", 0),
+			slog.Int("deduplicated", 0),
+			slog.Int("dead_lettered", 0),
+		)
+		return nil
+	}
+
+	writeResult, err := p.writeMergedStorageBatch(ctx, allBatchItems, committer)
+	if err != nil {
+		return fmt.Errorf("write merged storage batch: %w", err)
 	}
 
 	p.logger.Debug("batch processed successfully",
-		slog.Int("attempted", totalAttempted),
-		slog.Int("inserted", totalInserted),
-		slog.Int("deduplicated", totalDeduplicated),
-		slog.Int("dead_lettered", totalDeadLettered),
+		slog.Int("attempted", writeResult.Attempted),
+		slog.Int("inserted", writeResult.Inserted),
+		slog.Int("deduplicated", writeResult.Deduplicated),
+		slog.Int("dead_lettered", writeResult.DeadLettered),
 	)
 
 	if p.metrics != nil {
-		p.metrics.Add("flow_records_stored_total", nil, uint64(totalInserted))                                               //nolint:gosec
-		p.metrics.Add("flow_records_failed_total", map[string]string{"reason": "storage_failed"}, uint64(totalDeadLettered)) //nolint:gosec
+		p.metrics.Add("flow_records_stored_total", nil, uint64(writeResult.Inserted))                                               //nolint:gosec
+		p.metrics.Add("flow_records_failed_total", map[string]string{"reason": "storage_failed"}, uint64(writeResult.DeadLettered)) //nolint:gosec
 	}
 
 	return nil
+}
+
+func (p *Pipeline) writeMergedStorageBatch(
+	ctx context.Context,
+	items []postgres.StorageBatchItem,
+	committer postgres.OffsetCommitter,
+) (result postgres.StorageWriteResult, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("storage write panicked: %v", r)
+		}
+	}()
+
+	return p.storageWriter.WriteBatch(ctx, items, committer)
 }
 
 func splitRecords(records []*kgo.Record, concurrency int) [][]*kgo.Record {

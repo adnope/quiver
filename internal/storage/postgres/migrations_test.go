@@ -27,6 +27,8 @@ func TestMigrationFilesExist(t *testing.T) {
 		"000006_add_retention_policy.down.sql",
 		"000007_add_columnstore_policy.up.sql",
 		"000007_add_columnstore_policy.down.sql",
+		"000010_create_system_metric_aggregates.up.sql",
+		"000010_create_system_metric_aggregates.down.sql",
 	}
 	for _, name := range expected {
 		name := name
@@ -97,6 +99,17 @@ func TestMigrationsMatchPhaseFiveStorageDecisions(t *testing.T) {
 	requireMigrationContains(t, columnstore, "'quiver.flow_records'")
 	requireMigrationContains(t, columnstore, "after => INTERVAL '1 day'")
 	requireMigrationContains(t, columnstore, "if_not_exists => TRUE")
+
+	metricAggregates := readMigration(t, "000010_create_system_metric_aggregates.up.sql")
+	requireMigrationContains(t, metricAggregates, "CREATE TABLE IF NOT EXISTS quiver.system_metric_aggregates")
+	requireMigrationContains(t, metricAggregates, "CREATE TABLE IF NOT EXISTS quiver.system_metric_histogram_buckets")
+	requireMigrationContains(t, metricAggregates, "SELECT create_hypertable(")
+	requireMigrationContains(t, metricAggregates, "'quiver.system_metric_aggregates'")
+	requireMigrationContains(t, metricAggregates, "'quiver.system_metric_histogram_buckets'")
+	requireMigrationContains(t, metricAggregates, "uq_system_metric_aggregates_identity")
+	requireMigrationContains(t, metricAggregates, "uq_system_metric_histogram_buckets_identity")
+	requireMigrationContains(t, metricAggregates, "idx_system_metric_aggregates_metric_time")
+	requireMigrationContains(t, metricAggregates, "idx_system_metric_histogram_buckets_metric_time")
 }
 
 func readMigration(t *testing.T, name string) string {

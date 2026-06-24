@@ -1,6 +1,7 @@
 import type { UseQueryResult } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { MaterialIcon } from '@/components/shell/MaterialIcon'
+import { routeForTab } from '@/lib/routes'
 import { useAppStore } from '@/store/app-store'
 import type { DetailedHealthResponse, HealthResponse } from '@/types/api'
 
@@ -11,6 +12,7 @@ interface TopNavProps {
 
 const tabs = [
   { id: 'dashboard', label: 'Dashboard' },
+  { id: 'history', label: 'History' },
   { id: 'explorer', label: 'Flow Explorer' },
   { id: 'analytics', label: 'Analytics' },
 ] as const
@@ -20,6 +22,14 @@ export function TopNav({ health, onOpenSettings }: TopNavProps) {
   const setActiveTab = useAppStore((state) => state.setActiveTab)
   const theme = useAppStore((state) => state.theme)
   const setTheme = useAppStore((state) => state.setTheme)
+
+  function navigate(tab: (typeof tabs)[number]['id']) {
+    const nextRoute = routeForTab(tab)
+    if (window.location.pathname !== nextRoute) {
+      window.history.pushState(null, '', nextRoute)
+    }
+    setActiveTab(tab)
+  }
 
   const healthStatus = health.data?.status ?? (health.isError ? 'fail' : 'degraded')
   const statusLabel =
@@ -47,7 +57,7 @@ export function TopNav({ health, onOpenSettings }: TopNavProps) {
                 type="button"
                 size="sm"
                 variant={activeTab === tab.id ? 'primary' : 'ghost'}
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => navigate(tab.id)}
               >
                 {tab.label}
               </Button>

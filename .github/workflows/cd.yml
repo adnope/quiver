@@ -2,11 +2,20 @@ name: CD Pipeline
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: cd-main
+  cancel-in-progress: false
 
 jobs:
-  ci:
-    name: Build & Test
+  validate:
+    name: Validate Release Candidate
     runs-on: ubuntu-latest
 
     env:
@@ -68,22 +77,74 @@ jobs:
       - name: Run Unit Tests
         run: make test-unit
 
+      - name: Generate Go Coverage
+        run: make coverage
+
+      - name: Build binaries and embedded frontend
+        run: make build
+
       - name: Start Integration Test Stack
         run: make test-up TEST_PROJECT="${TEST_PROJECT}"
 
       - name: Run Integration Tests
         run: make test-integration
 
+      - name: Collect Integration Test Stack Logs
+        if: failure()
+        run: |
+          mkdir -p artifacts/integration-test-logs
+          docker ps -a > artifacts/integration-test-logs/docker-ps.txt || true
+          docker ps -a \
+            --filter "label=com.docker.compose.project=${TEST_PROJECT}" \
+            --format '{{.Names}}' \
+            > artifacts/integration-test-logs/containers.txt || true
+
+          while read -r container; do
+            [ -n "${container}" ] || continue
+            docker logs "${container}" > "artifacts/integration-test-logs/${container}.log" 2>&1 || true
+          done < artifacts/integration-test-logs/containers.txt
+
       - name: Tear Down Integration Test Stack
         if: always()
         run: make test-down TEST_PROJECT="${TEST_PROJECT}"
 
+      - name: Upload Integration Test Logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cd-integration-test-logs
+          path: artifacts/integration-test-logs
+          if-no-files-found: warn
+
       - name: Run Demo Verification Script
         run: make verify-demo VERIFY_PROJECT="${VERIFY_PROJECT}"
 
-  cd:
-    name: Build & Push Docker Image
-    needs: ci
+      - name: Collect Demo Verification Logs
+        if: failure()
+        run: |
+          mkdir -p artifacts/demo-verification-logs
+          docker ps -a > artifacts/demo-verification-logs/docker-ps.txt || true
+          docker ps -a \
+            --filter "label=com.docker.compose.project=${VERIFY_PROJECT}" \
+            --format '{{.Names}}' \
+            > artifacts/demo-verification-logs/containers.txt || true
+
+          while read -r container; do
+            [ -n "${container}" ] || continue
+            docker logs "${container}" > "artifacts/demo-verification-logs/${container}.log" 2>&1 || true
+          done < artifacts/demo-verification-logs/containers.txt
+
+      - name: Upload Demo Verification Logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cd-demo-verification-logs
+          path: artifacts/demo-verification-logs
+          if-no-files-found: warn
+
+  docker:
+    name: Build, Scan & Push Docker Images
+    needs: validate
     runs-on: ubuntu-latest
 
     steps:
@@ -94,20 +155,61 @@ jobs:
         id: slug
         run: echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Quiver image for scan
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          load: true
+          push: false
+          tags: adnope/quiver:scan-${{ steps.slug.outputs.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan Quiver image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: adnope/quiver:scan-${{ steps.slug.outputs.sha }}
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+
+      - name: Build Client image for scan
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.client
+          load: true
+          push: false
+          tags: adnope/quiver-client:scan-${{ steps.slug.outputs.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan Client image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: adnope/quiver-client:scan-${{ steps.slug.outputs.sha }}
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and Push Docker image
+      - name: Build and Push Quiver Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
+          sbom: true
+          provenance: true
           tags: |
             adnope/quiver:latest
             adnope/quiver:sha-${{ steps.slug.outputs.sha }}
@@ -120,6 +222,8 @@ jobs:
           context: .
           file: Dockerfile.client
           push: true
+          sbom: true
+          provenance: true
           tags: |
             adnope/quiver-client:latest
             adnope/quiver-client:sha-${{ steps.slug.outputs.sha }}

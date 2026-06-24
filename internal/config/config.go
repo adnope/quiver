@@ -15,14 +15,17 @@ import (
 )
 
 const (
-	DefaultMaxRequestBodyBytes       = 5 * 1024 * 1024
-	DefaultMaxBatchSize              = 1000
-	DefaultMaxStorageWriterBatchSize = 5000
-	DefaultMaxQueryWindow            = Duration(7 * dayDuration)
-	DefaultQueryLimit                = 100
-	DefaultMaxQueryLimit             = 1000
-	DefaultAggregationLimit          = 20
-	DefaultShutdownTimeout           = Duration(10 * time.Second)
+	DefaultMaxRequestBodyBytes         = 5 * 1024 * 1024
+	DefaultMaxBatchSize                = 1000
+	DefaultMaxStorageWriterBatchSize   = 5000
+	DefaultMaxQueryWindow              = Duration(7 * dayDuration)
+	DefaultQueryLimit                  = 100
+	DefaultMaxQueryLimit               = 1000
+	DefaultAggregationLimit            = 20
+	DefaultShutdownTimeout             = Duration(10 * time.Second)
+	DefaultMetricsSaveInterval         = Duration(5 * time.Second)
+	DefaultMetricsAggregateBucketWidth = Duration(5 * time.Second)
+	DefaultMetricsAggregateMaxPoints   = 1000
 )
 
 const dayDuration = 24 * time.Hour
@@ -40,6 +43,7 @@ type Config struct {
 	QuiverClientGateways []QuiverClientGatewayConfig `yaml:"quiver_client_gateways"`
 	Collectors           CollectorsConfig            `yaml:"collectors"`
 	DeadLetter           DeadLetterConfig            `yaml:"dead_letter"`
+	Observability        ObservabilityConfig         `yaml:"observability"`
 	Shutdown             ShutdownConfig              `yaml:"shutdown"`
 }
 
@@ -189,6 +193,12 @@ type DeadLetterConfig struct {
 	MaxRawPacketBytes int `yaml:"max_raw_packet_bytes"`
 }
 
+type ObservabilityConfig struct {
+	MetricsSaveInterval         Duration `yaml:"metrics_save_interval"`
+	MetricsAggregateBucketWidth Duration `yaml:"metrics_aggregate_bucket_width"`
+	MetricsAggregateMaxPoints   int      `yaml:"metrics_aggregate_max_points"`
+}
+
 type ShutdownConfig struct {
 	Timeout Duration `yaml:"timeout"`
 }
@@ -331,7 +341,12 @@ func Default() Config {
 		RestIngest: RESTIngestConfig{MaxBatchSize: DefaultMaxBatchSize},
 		ZeekIngest: ZeekIngestConfig{MaxBatchSize: DefaultMaxBatchSize},
 		DeadLetter: DeadLetterConfig{MaxRawPacketBytes: 1500},
-		Shutdown:   ShutdownConfig{Timeout: DefaultShutdownTimeout},
+		Observability: ObservabilityConfig{
+			MetricsSaveInterval:         DefaultMetricsSaveInterval,
+			MetricsAggregateBucketWidth: DefaultMetricsAggregateBucketWidth,
+			MetricsAggregateMaxPoints:   DefaultMetricsAggregateMaxPoints,
+		},
+		Shutdown: ShutdownConfig{Timeout: DefaultShutdownTimeout},
 	}
 }
 
@@ -370,6 +385,9 @@ func (c Config) Validate(lookupEnv func(string) string) error {
 		return err
 	}
 	if err := c.validateStorageWriter(); err != nil {
+		return err
+	}
+	if err := c.validateObservability(); err != nil {
 		return err
 	}
 	if c.Shutdown.Timeout <= 0 {
@@ -612,6 +630,25 @@ func (c Config) validateStorage() error {
 	}
 	if c.Storage.Columnstore.Enabled && c.Storage.Columnstore.After <= 0 {
 		return fmt.Errorf("%w: storage.columnstore.after must be positive when enabled", ErrInvalidConfig)
+	}
+	return nil
+}
+
+func (c Config) validateObservability() error {
+	if c.Observability.MetricsSaveInterval <= 0 {
+		return fmt.Errorf("%w: observability.metrics_save_interval must be positive", ErrInvalidConfig)
+	}
+	if c.Observability.MetricsSaveInterval.Std()%time.Second != 0 {
+		return fmt.Errorf("%w: observability.metrics_save_interval must use whole seconds", ErrInvalidConfig)
+	}
+	if c.Observability.MetricsAggregateBucketWidth <= 0 {
+		return fmt.Errorf("%w: observability.metrics_aggregate_bucket_width must be positive", ErrInvalidConfig)
+	}
+	if c.Observability.MetricsAggregateBucketWidth.Std()%time.Second != 0 {
+		return fmt.Errorf("%w: observability.metrics_aggregate_bucket_width must use whole seconds", ErrInvalidConfig)
+	}
+	if c.Observability.MetricsAggregateMaxPoints <= 0 || c.Observability.MetricsAggregateMaxPoints > 10000 {
+		return fmt.Errorf("%w: observability.metrics_aggregate_max_points must be within 1..10000", ErrInvalidConfig)
 	}
 	return nil
 }

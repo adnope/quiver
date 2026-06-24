@@ -84,50 +84,50 @@ func NewServerWithCollectors(
 	ingestHandler := NewIngestHandler(cfg, publisher)
 	mux.Handle(
 		"POST /api/v1/ingest/flows",
-		route(metrics, "POST /api/v1/ingest/flows", RequestIDMiddleware(RequireScope(auth, limiter, ScopeIngest, ingestHandler))),
+		route(metrics, "POST /api/v1/ingest/flows", RequestIDMiddleware(RequireScope(auth, limiter, metrics, ScopeIngest, ingestHandler))),
 	)
 	if cfg.ZeekIngest.Enabled {
 		zeekIngestHandler := NewZeekConnIngestHandler(cfg, publisher)
 		mux.Handle(
 			"POST /api/v1/ingest/zeek/conn",
-			route(metrics, "POST /api/v1/ingest/zeek/conn", RequestIDMiddleware(RequireScope(auth, limiter, ScopeIngest, zeekIngestHandler))),
+			route(metrics, "POST /api/v1/ingest/zeek/conn", RequestIDMiddleware(RequireScope(auth, limiter, metrics, ScopeIngest, zeekIngestHandler))),
 		)
 	}
 	proxyHandler := NewProxyHandler(cfg, netflowCollectors)
 	mux.Handle(
 		"POST /api/v1/ingest/proxy-netflow",
-		route(metrics, "POST /api/v1/ingest/proxy-netflow", RequestIDMiddleware(RequireScope(auth, limiter, ScopeIngest, proxyHandler))),
+		route(metrics, "POST /api/v1/ingest/proxy-netflow", RequestIDMiddleware(RequireScope(auth, limiter, metrics, ScopeIngest, proxyHandler))),
 	)
 	queryHandler := NewQueryHandler(cfg, flowStore, cursorCodec)
 	mux.Handle(
 		"GET /api/v1/flows",
-		route(metrics, "GET /api/v1/flows", RequestIDMiddleware(RequireScope(auth, limiter, ScopeQuery, http.HandlerFunc(queryHandler.Search)))),
+		route(metrics, "GET /api/v1/flows", RequestIDMiddleware(RequireScope(auth, limiter, metrics, ScopeQuery, http.HandlerFunc(queryHandler.Search)))),
 	)
 	mux.Handle(
 		"GET /api/v1/flows/",
-		route(metrics, "GET /api/v1/flows/{id}", RequestIDMiddleware(RequireScope(auth, limiter, ScopeQuery, http.HandlerFunc(queryHandler.Lookup)))),
+		route(metrics, "GET /api/v1/flows/{id}", RequestIDMiddleware(RequireScope(auth, limiter, metrics, ScopeQuery, http.HandlerFunc(queryHandler.Lookup)))),
 	)
 	aggregationHandler := NewAggregationHandler(cfg, aggregationStore, cursorCodec)
 	mux.Handle(
 		"GET /api/v1/aggregations/top-talkers",
-		route(metrics, "GET /api/v1/aggregations/top-talkers", RequestIDMiddleware(RequireScope(auth, limiter, ScopeQuery, http.HandlerFunc(aggregationHandler.TopTalkers)))),
+		route(metrics, "GET /api/v1/aggregations/top-talkers", RequestIDMiddleware(RequireScope(auth, limiter, metrics, ScopeQuery, http.HandlerFunc(aggregationHandler.TopTalkers)))),
 	)
 	mux.Handle(
 		"GET /api/v1/aggregations/top-ports",
-		route(metrics, "GET /api/v1/aggregations/top-ports", RequestIDMiddleware(RequireScope(auth, limiter, ScopeQuery, http.HandlerFunc(aggregationHandler.TopPorts)))),
+		route(metrics, "GET /api/v1/aggregations/top-ports", RequestIDMiddleware(RequireScope(auth, limiter, metrics, ScopeQuery, http.HandlerFunc(aggregationHandler.TopPorts)))),
 	)
 	mux.Handle(
 		"GET /api/v1/aggregations/protocols",
-		route(metrics, "GET /api/v1/aggregations/protocols", RequestIDMiddleware(RequireScope(auth, limiter, ScopeQuery, http.HandlerFunc(aggregationHandler.Protocols)))),
+		route(metrics, "GET /api/v1/aggregations/protocols", RequestIDMiddleware(RequireScope(auth, limiter, metrics, ScopeQuery, http.HandlerFunc(aggregationHandler.Protocols)))),
 	)
 	healthHandler := HealthHandler(health, auth)
 	if cfg.API.Health.AuthRequired {
-		healthHandler = RequestIDMiddleware(RequireScope(auth, limiter, ScopeMetrics, healthHandler))
+		healthHandler = RequestIDMiddleware(RequireScope(auth, limiter, metrics, ScopeMetrics, healthHandler))
 	}
 	mux.Handle("GET /health", route(metrics, "GET /health", healthHandler))
 	metricsHandler := MetricsHandler(metrics)
 	if cfg.API.Metrics.AuthRequired {
-		metricsHandler = RequestIDMiddleware(RequireScope(auth, limiter, ScopeMetrics, metricsHandler))
+		metricsHandler = RequestIDMiddleware(RequireScope(auth, limiter, metrics, ScopeMetrics, metricsHandler))
 	}
 	mux.Handle("GET /metrics", route(metrics, "GET /metrics", metricsHandler))
 
@@ -136,14 +136,17 @@ func NewServerWithCollectors(
 		db = provider.DB()
 	}
 
-	liveHandler := LiveMetricsHandler(metrics)
+	liveHandler := LiveMetricsHandler(metrics, db)
 	historyHandler := MetricsHistoryHandler(db)
+	aggregatesHandler := MetricsAggregatesHandler(db, cfg.Observability)
 	if cfg.API.Metrics.AuthRequired {
-		liveHandler = RequestIDMiddleware(RequireScope(auth, limiter, ScopeMetrics, liveHandler))
-		historyHandler = RequestIDMiddleware(RequireScope(auth, limiter, ScopeMetrics, historyHandler))
+		liveHandler = RequestIDMiddleware(RequireScope(auth, limiter, metrics, ScopeMetrics, liveHandler))
+		historyHandler = RequestIDMiddleware(RequireScope(auth, limiter, metrics, ScopeMetrics, historyHandler))
+		aggregatesHandler = RequestIDMiddleware(RequireScope(auth, limiter, metrics, ScopeMetrics, aggregatesHandler))
 	}
 	mux.Handle("GET /api/v1/metrics/live", route(metrics, "GET /api/v1/metrics/live", liveHandler))
 	mux.Handle("GET /api/v1/metrics/history", route(metrics, "GET /api/v1/metrics/history", historyHandler))
+	mux.Handle("GET /api/v1/metrics/aggregates", route(metrics, "GET /api/v1/metrics/aggregates", aggregatesHandler))
 	mux.Handle("GET /", route(metrics, "GET /", FrontendHandler(web.DistFS())))
 
 	return &Server{mux: mux}, nil

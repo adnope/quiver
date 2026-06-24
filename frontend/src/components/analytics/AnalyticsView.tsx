@@ -24,7 +24,7 @@ export function AnalyticsView() {
 	const [activeSubTab, setActiveSubTab] = useState<AggregationTab>('protocols')
 	const [metric, setMetric] = useState<AggregationMetric>('bytes')
 	const [direction, setDirection] = useState<'src' | 'dst'>('src')
-	const [limit, setLimit] = useState<number>(20)
+	const [limit, setLimit] = useState<number>(100)
 
 	// Time range state
 	const [timeWindow, setTimeWindow] = useState(createInitialTimeWindow().query)

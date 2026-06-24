@@ -69,6 +69,35 @@ func TestConfigValidateFailures(t *testing.T) {
 			},
 			expected: "max_query_window",
 		},
+		{
+			name: "invalid metrics save interval",
+			mutate: func(c *Config) {
+				c.Observability.MetricsSaveInterval = 0
+			},
+			expected: "observability.metrics_save_interval",
+		},
+		{
+			name: "invalid metrics aggregate bucket width",
+			mutate: func(c *Config) {
+				c.Observability.MetricsAggregateBucketWidth = 0
+			},
+			expected: "observability.metrics_aggregate_bucket_width",
+		},
+
+		{
+			name: "subsecond metrics aggregate bucket width",
+			mutate: func(c *Config) {
+				c.Observability.MetricsAggregateBucketWidth = Duration(500 * time.Millisecond)
+			},
+			expected: "observability.metrics_aggregate_bucket_width",
+		},
+		{
+			name: "invalid metrics aggregate max points",
+			mutate: func(c *Config) {
+				c.Observability.MetricsAggregateMaxPoints = 0
+			},
+			expected: "observability.metrics_aggregate_max_points",
+		},
 
 		{
 			name: "invalid zeek ingest batch size",
@@ -143,6 +172,15 @@ func TestLoadBytes(t *testing.T) {
 	}
 	if !cfg.Storage.Columnstore.Enabled {
 		t.Fatal("columnstore should default to enabled")
+	}
+	if cfg.Observability.MetricsSaveInterval != Duration(5*time.Second) {
+		t.Fatalf("metrics save interval = %s", cfg.Observability.MetricsSaveInterval.Std())
+	}
+	if cfg.Observability.MetricsAggregateBucketWidth != Duration(5*time.Second) {
+		t.Fatalf("metrics aggregate bucket width = %s", cfg.Observability.MetricsAggregateBucketWidth.Std())
+	}
+	if cfg.Observability.MetricsAggregateMaxPoints != 1000 {
+		t.Fatalf("metrics aggregate max points = %d", cfg.Observability.MetricsAggregateMaxPoints)
 	}
 }
 
