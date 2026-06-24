@@ -15,6 +15,22 @@ linters:
     - revive
     - staticcheck
     - unused
+    - sqlclosecheck
+    - rowserrcheck
+    - noctx
+    - contextcheck
+    - errorlint
+    - nilnil
+    - nilnesserr
+    - exhaustive
+    - nolintlint
+    - loggercheck
+    - sloglint
+    - misspell
+    - makezero
+    - unconvert
+    - wastedassign
+    - modernize
   settings:
     revive:
       rules:
@@ -26,8 +42,15 @@ linters:
 
 formatters:
   enable:
-    - gofmt
+    - gofumpt
     - goimports
+    - gci
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/adnope/quiver)
 
 issues:
   max-issues-per-linter: 0

@@ -22,7 +22,7 @@ func TestHealthRoute(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
 	server.Handler().ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusOK {
@@ -43,7 +43,7 @@ func TestHealthRouteFailureStatus(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/health", nil))
+	server.Handler().ServeHTTP(recorder, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil))
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", recorder.Code)
 	}
@@ -61,13 +61,13 @@ func TestMetricsRouteRequiresMetricsScope(t *testing.T) {
 	}
 
 	missing := httptest.NewRecorder()
-	server.Handler().ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	server.Handler().ServeHTTP(missing, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/metrics", nil))
 	if missing.Code != http.StatusUnauthorized {
 		t.Fatalf("missing key status = %d, want 401", missing.Code)
 	}
 
 	wrongScope := httptest.NewRecorder()
-	wrongRequest := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	wrongRequest := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/metrics", nil)
 	wrongRequest.Header.Set(APIKeyHeader, "query-key")
 	server.Handler().ServeHTTP(wrongScope, wrongRequest)
 	if wrongScope.Code != http.StatusForbidden {
@@ -75,7 +75,7 @@ func TestMetricsRouteRequiresMetricsScope(t *testing.T) {
 	}
 
 	ok := httptest.NewRecorder()
-	okRequest := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	okRequest := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/metrics", nil)
 	okRequest.Header.Set(APIKeyHeader, "metrics-key")
 	server.Handler().ServeHTTP(ok, okRequest)
 	if ok.Code != http.StatusOK {
@@ -97,12 +97,15 @@ type mockPublisher struct {
 func (m *mockPublisher) PublishRaw(ctx context.Context, event *flowv1.RawFlowEventEnvelope) error {
 	return nil
 }
+
 func (m *mockPublisher) PublishDeadLetter(ctx context.Context, event *flowv1.DeadLetterEvent) error {
 	return nil
 }
+
 func (m *mockPublisher) Flush(ctx context.Context) error {
 	return nil
 }
+
 func (m *mockPublisher) Healthy() bool {
 	return m.healthy
 }
@@ -204,7 +207,7 @@ func TestDetailedHealthRoute(t *testing.T) {
 
 	// 1. Unauthenticated request should return generic response only
 	recorderUnauth := httptest.NewRecorder()
-	reqUnauth := httptest.NewRequest(http.MethodGet, "/health", nil)
+	reqUnauth := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
 	server.Handler().ServeHTTP(recorderUnauth, reqUnauth)
 
 	if recorderUnauth.Code != http.StatusOK {
@@ -216,7 +219,7 @@ func TestDetailedHealthRoute(t *testing.T) {
 
 	// 2. Authenticated request with metrics scope should return detailed response
 	recorderAuth := httptest.NewRecorder()
-	reqAuth := httptest.NewRequest(http.MethodGet, "/health", nil)
+	reqAuth := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
 	reqAuth.Header.Set(APIKeyHeader, "metrics-key")
 	server.Handler().ServeHTTP(recorderAuth, reqAuth)
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -98,7 +99,7 @@ func main() {
 		}
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewReader(requestBody))
+	req, err := http.NewRequestWithContext(context.Background(), "POST", url, bytes.NewReader(requestBody))
 	if err != nil {
 		fmt.Printf("Failed to create request: %v\n", err)
 		os.Exit(1)

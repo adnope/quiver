@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -24,7 +25,7 @@ func TestRequireScopeMetersRateLimitRejections(t *testing.T) {
 	}))
 
 	first := httptest.NewRecorder()
-	firstReq := httptest.NewRequest(http.MethodPost, "/api/v1/ingest/flows", nil)
+	firstReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/ingest/flows", nil)
 	firstReq.Header.Set(APIKeyHeader, "ingest-key")
 	handler.ServeHTTP(first, firstReq)
 	if first.Code != http.StatusNoContent {
@@ -32,7 +33,7 @@ func TestRequireScopeMetersRateLimitRejections(t *testing.T) {
 	}
 
 	second := httptest.NewRecorder()
-	secondReq := httptest.NewRequest(http.MethodPost, "/api/v1/ingest/flows", nil)
+	secondReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/ingest/flows", nil)
 	secondReq.Header.Set(APIKeyHeader, "ingest-key")
 	handler.ServeHTTP(second, secondReq)
 	if second.Code != http.StatusTooManyRequests {

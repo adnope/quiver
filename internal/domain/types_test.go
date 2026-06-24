@@ -276,4 +276,4 @@ func assertJSON(t *testing.T, raw json.RawMessage, expected string) {
 	}
 }
 
-type object interface{}
+type object any

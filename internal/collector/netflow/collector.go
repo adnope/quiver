@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/netip"
 	"time"
+
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/adnope/quiver/internal/config"
 	"github.com/adnope/quiver/internal/domain"
@@ -17,7 +20,6 @@ import (
 	"github.com/adnope/quiver/internal/kafka"
 	"github.com/adnope/quiver/internal/observability"
 	"github.com/adnope/quiver/internal/validation"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var ErrCollector = errors.New("netflow: collector failed")
@@ -66,9 +68,10 @@ func (c *Collector) Run(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("run netflow collector: %w", err)
 	}
-	packetConn, err := net.ListenPacket("udp", c.cfg.ListenAddr)
+	listenConfig := net.ListenConfig{}
+	packetConn, err := listenConfig.ListenPacket(ctx, "udp", c.cfg.ListenAddr)
 	if err != nil {
-		return fmt.Errorf("%w: listen udp: %v", ErrCollector, err)
+		return fmt.Errorf("%w: listen udp: %w", ErrCollector, err)
 	}
 	defer func() {
 		_ = packetConn.Close()
@@ -92,14 +95,15 @@ func (c *Collector) Run(ctx context.Context) error {
 		}
 		deadline := time.Now().Add(time.Second)
 		if err := packetConn.SetReadDeadline(deadline); err != nil {
-			return fmt.Errorf("%w: set read deadline: %v", ErrCollector, err)
+			return fmt.Errorf("%w: set read deadline: %w", ErrCollector, err)
 		}
 		n, addr, err := packetConn.ReadFrom(buffer)
 		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			var netErr net.Error
+			if errors.As(err, &netErr) {
 				continue
 			}
-			return fmt.Errorf("%w: read packet: %v", ErrCollector, err)
+			return fmt.Errorf("%w: read packet: %w", ErrCollector, err)
 		}
 		source, ok := sourceAddr(addr)
 		if !ok {
@@ -150,7 +154,7 @@ func (c *Collector) HandlePacket(ctx context.Context, sourceIP netip.Addr, sourc
 				c.metric("collector_dropped_events_total", map[string]string{"reason": "queue_full", "source_host": sourceHost})
 				return nil
 			}
-			return fmt.Errorf("%w: publish raw: %v", ErrCollector, err)
+			return fmt.Errorf("%w: publish raw: %w", ErrCollector, err)
 		}
 		c.metric("collector_events_published_total", map[string]string{"source_host": sourceHost})
 	}
@@ -180,13 +184,13 @@ func boundedRecordCount(recordCount int) uint32 {
 		return 30
 	}
 	// NetFlow v5 packets are validated to contain at most 30 records.
-	return uint32(recordCount) //nolint:gosec
+	return uint32(recordCount)
 }
 
 func (c *Collector) rawEvent(sourceIP netip.Addr, sourceHost string, flow *flowv1.NetFlowV5Flow) (*flowv1.RawFlowEventEnvelope, error) {
 	eventID, err := domain.NewUUIDv7(c.now())
 	if err != nil {
-		return nil, fmt.Errorf("%w: generate event id: %v", ErrCollector, err)
+		return nil, fmt.Errorf("%w: generate event id: %w", ErrCollector, err)
 	}
 	sourceIPText := sourceIP.String()
 	source := &flowv1.SourceIdentity{
@@ -206,7 +210,7 @@ func (c *Collector) rawEvent(sourceIP netip.Addr, sourceHost string, flow *flowv
 		},
 	}
 	if err := validation.ValidateRawEventEnvelope(event); err != nil {
-		return nil, fmt.Errorf("%w: validate raw event: %v", ErrCollector, err)
+		return nil, fmt.Errorf("%w: validate raw event: %w", ErrCollector, err)
 	}
 	return event, nil
 }
@@ -221,7 +225,7 @@ func (c *Collector) publishPacketDLQ(
 ) error {
 	deadLetterID, err := domain.NewUUIDv7(c.now())
 	if err != nil {
-		return fmt.Errorf("%w: generate dead-letter id: %v", ErrCollector, err)
+		return fmt.Errorf("%w: generate dead-letter id: %w", ErrCollector, err)
 	}
 	sourceIPText := sourceIP.String()
 	source := &flowv1.SourceIdentity{
@@ -252,10 +256,10 @@ func (c *Collector) publishPacketDLQ(
 		},
 	}
 	if err := validation.ValidateDeadLetterEvent(event); err != nil {
-		return fmt.Errorf("%w: validate dead-letter: %v", ErrCollector, err)
+		return fmt.Errorf("%w: validate dead-letter: %w", ErrCollector, err)
 	}
 	if err := c.publisher.PublishDeadLetter(ctx, event); err != nil {
-		return fmt.Errorf("%w: publish dead-letter: %v", ErrCollector, err)
+		return fmt.Errorf("%w: publish dead-letter: %w", ErrCollector, err)
 	}
 	return nil
 }
@@ -268,9 +272,7 @@ func (c *Collector) metric(name string, labels map[string]string) {
 		"collector_id": c.cfg.CollectorID,
 		"source_type":  string(domain.SourceTypeNetFlowV5),
 	}
-	for key, value := range labels {
-		base[key] = value
-	}
+	maps.Copy(base, labels)
 	c.metrics.Inc(name, base)
 }
 

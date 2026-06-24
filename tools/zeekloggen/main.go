@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	cryptorand "crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -49,7 +50,7 @@ func main() {
 	}
 
 	dir := filepath.Dir(*filePath)
-	if err := os.MkdirAll(dir, 0750); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		fmt.Printf("Failed to create directory %s: %v\n", dir, err)
 		os.Exit(1)
 	}
@@ -63,7 +64,7 @@ func main() {
 		fmt.Printf("Rotated log file to %s\n", rotatedPath)
 	}
 
-	file, err := os.OpenFile(*filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	file, err := os.OpenFile(*filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		fmt.Printf("Failed to open file %s: %v\n", *filePath, err)
 		os.Exit(1)
@@ -125,7 +126,7 @@ func postRecords(target string, apiKey string, count int, malformed bool) error 
 	}
 
 	endpoint := strings.TrimRight(target, "/") + "/api/v1/ingest/zeek/conn"
-	request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
@@ -163,7 +164,7 @@ func buildRecords(count int, malformed bool) ([]json.RawMessage, error) {
 		return nil, fmt.Errorf("count must be positive")
 	}
 	records := make([]json.RawMessage, 0, count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		record := newRecord(i)
 		data, err := json.Marshal(record)
 		if err != nil {

@@ -7,9 +7,10 @@ import (
 	"fmt"
 	"strings"
 
+	"google.golang.org/protobuf/types/known/structpb"
+
 	"github.com/adnope/quiver/internal/domain"
 	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 var ErrInvalidLine = errors.New("zeek: invalid conn json line")
@@ -19,7 +20,7 @@ func ParseConnLine(line []byte) (*flowv1.ZeekConnFlow, error) {
 	decoder.UseNumber()
 	fields := map[string]any{}
 	if err := decoder.Decode(&fields); err != nil {
-		return nil, fmt.Errorf("%w: decode json: %v", ErrInvalidLine, err)
+		return nil, fmt.Errorf("%w: decode json: %w", ErrInvalidLine, err)
 	}
 	flow := &flowv1.ZeekConnFlow{}
 	extra := map[string]any{}
@@ -104,7 +105,7 @@ func ParseConnLine(line []byte) (*flowv1.ZeekConnFlow, error) {
 	if len(extra) > 0 {
 		value, err := structpb.NewStruct(extra)
 		if err != nil {
-			return nil, fmt.Errorf("%w: extra fields: %v", ErrInvalidLine, err)
+			return nil, fmt.Errorf("%w: extra fields: %w", ErrInvalidLine, err)
 		}
 		flow.Extra = value
 	}

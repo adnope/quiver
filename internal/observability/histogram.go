@@ -40,7 +40,7 @@ func durationHistogramBucketUpperBound(index int) *float64 {
 	if math.IsInf(upperBound, 1) {
 		return nil
 	}
-	return floatPtr(upperBound)
+	return new(upperBound)
 }
 
 func PercentileFromHistogramBuckets(counts []uint64, quantile float64) float64 {

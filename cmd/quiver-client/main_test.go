@@ -88,9 +88,9 @@ func TestSendBatchWithRetrySuccess(t *testing.T) {
 func TestSendBatchWithRetryRetriesAndFails(t *testing.T) {
 	t.Parallel()
 
-	var requestCount int32
+	var requestCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&requestCount, 1)
+		requestCount.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte("Internal Server Error"))
 	}))
@@ -124,7 +124,7 @@ func TestSendBatchWithRetryRetriesAndFails(t *testing.T) {
 	sendBatchWithRetry(ctx, server.Client(), cfg, items)
 	duration := time.Since(start)
 
-	count := atomic.LoadInt32(&requestCount)
+	count := requestCount.Load()
 	if count < 2 {
 		t.Errorf("expected at least 2 retries, got %d in %v", count, duration)
 	}

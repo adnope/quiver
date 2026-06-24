@@ -31,7 +31,6 @@ func TestMigrationFilesExist(t *testing.T) {
 		"000010_create_system_metric_aggregates.down.sql",
 	}
 	for _, name := range expected {
-		name := name
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 

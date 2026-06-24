@@ -72,7 +72,7 @@ func TestMetricsAggregatesHandlerValidation(t *testing.T) {
 			t.Parallel()
 
 			recorder := httptest.NewRecorder()
-			request := httptest.NewRequest(http.MethodGet, "/api/v1/metrics/aggregates?"+tt.query, nil)
+			request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/metrics/aggregates?"+tt.query, nil)
 			handler.ServeHTTP(recorder, request)
 			if recorder.Code != tt.wantCode {
 				t.Fatalf("status = %d, want %d body=%s", recorder.Code, tt.wantCode, recorder.Body.String())
@@ -96,13 +96,13 @@ func TestMetricsAggregatesRouteRequiresMetricsScope(t *testing.T) {
 
 	requestURL := "/api/v1/metrics/aggregates?from=2026-06-24T09:00:00Z&to=2026-06-24T10:00:00Z&step=5s"
 	missing := httptest.NewRecorder()
-	server.Handler().ServeHTTP(missing, httptest.NewRequest(http.MethodGet, requestURL, nil))
+	server.Handler().ServeHTTP(missing, httptest.NewRequestWithContext(context.Background(), http.MethodGet, requestURL, nil))
 	if missing.Code != http.StatusUnauthorized {
 		t.Fatalf("missing key status = %d, want 401", missing.Code)
 	}
 
 	wrongScope := httptest.NewRecorder()
-	wrongRequest := httptest.NewRequest(http.MethodGet, requestURL, nil)
+	wrongRequest := httptest.NewRequestWithContext(context.Background(), http.MethodGet, requestURL, nil)
 	wrongRequest.Header.Set(APIKeyHeader, "query-key")
 	server.Handler().ServeHTTP(wrongScope, wrongRequest)
 	if wrongScope.Code != http.StatusForbidden {
@@ -123,9 +123,9 @@ func TestMetricAggregateRollupUsesHistogramPercentiles(t *testing.T) {
 		Labels:      labels,
 		MetricKind:  "duration",
 		Count:       4,
-		Sum:         floatPtr(18),
-		Min:         floatPtr(1),
-		Max:         floatPtr(10),
+		Sum:         new(float64(18)),
+		Min:         new(float64(1)),
+		Max:         new(float64(10)),
 	}, query.Step)
 	rollup.addRow(MetricAggregatePoint{
 		BucketStart: from,
@@ -133,9 +133,9 @@ func TestMetricAggregateRollupUsesHistogramPercentiles(t *testing.T) {
 		Labels:      labels,
 		MetricKind:  "duration",
 		Count:       4,
-		Sum:         floatPtr(18),
-		Min:         floatPtr(1),
-		Max:         floatPtr(10),
+		Sum:         new(float64(18)),
+		Min:         new(float64(1)),
+		Max:         new(float64(10)),
 	})
 	rollup.histogramByBucket = map[int]uint64{0: 1, 1: 1, 2: 1, 3: 1}
 	rollup.hasHistogramCounts = true

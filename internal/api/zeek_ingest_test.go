@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -181,7 +182,7 @@ func TestZeekConnIngestAuthValidationAndPublisherFailures(t *testing.T) {
 func newZeekIngestRequest(t *testing.T, body string, apiKey string) *http.Request {
 	t.Helper()
 
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/ingest/zeek/conn", strings.NewReader(body))
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/ingest/zeek/conn", strings.NewReader(body))
 	request.RemoteAddr = "203.0.113.20:54321"
 	request.Header.Set("Content-Type", "application/json")
 	if apiKey != "" {

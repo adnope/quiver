@@ -3,6 +3,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -15,8 +16,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/adnope/quiver/internal/domain"
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/adnope/quiver/internal/domain"
 )
 
 var (
@@ -62,19 +64,21 @@ var templates = []flowTemplate{
 	{"icmp", 1, 0, "ping", 4, 64, "internal"},
 }
 
-var sqlCache = make(map[int]string)
-var sqlCacheMu sync.RWMutex
+var (
+	sqlCache   = make(map[int]string)
+	sqlCacheMu sync.RWMutex
+)
 
 func buildBatchInsert(batchSize int) string {
 	var buf bytes.Buffer
 	buf.WriteString("INSERT INTO quiver.flow_records (id, schema_version, idempotency_key, raw_event_id, source_type, collector_id, source_host, source_ip, ingested_at, normalized_at, event_start_time, event_end_time, duration_ms, src_ip, dst_ip, src_port, dst_port, ip_version, transport_protocol, protocol_number, bytes, packets, tcp_flags, flow_state, direction, input_interface, output_interface, next_hop_ip, application_protocol, sampling_rate, normalization_status, normalization_error, attributes) VALUES ")
 	paramIdx := 1
-	for i := 0; i < batchSize; i++ {
+	for i := range batchSize {
 		if i > 0 {
 			buf.WriteString(",")
 		}
 		buf.WriteString("(")
-		for j := 0; j < 33; j++ {
+		for j := range 33 {
 			if j > 0 {
 				buf.WriteString(",")
 			}
@@ -163,7 +167,8 @@ func main() {
 	}()
 	db.SetMaxOpenConns(*concurrency + 2)
 
-	if err := db.Ping(); err != nil {
+	ctx := context.Background()
+	if err := db.PingContext(ctx); err != nil {
 		fmt.Printf("Database ping failed: %v\n", err)
 		os.Exit(1)
 	}
@@ -187,9 +192,7 @@ func main() {
 
 		// Start workers
 		for w := 0; w < *concurrency; w++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				var localBatch [][]any
 				batchLimit := 1000
 
@@ -204,7 +207,7 @@ func main() {
 					}
 
 					for attempt := 1; attempt <= 3; attempt++ {
-						_, err := db.Exec(sqlStr, flatArgs...)
+						_, err := db.ExecContext(ctx, sqlStr, flatArgs...)
 						if err == nil {
 							atomic.AddInt64(&insertedCount, int64(len(localBatch)))
 							break
@@ -225,12 +228,12 @@ func main() {
 					}
 				}
 				flushBatch()
-			}()
+			})
 		}
 
 		// Generate rows for the day
 		r := rand.New(rand.NewSource(int64(day)))
-		for i := 0; i < recordsToInsert; i++ {
+		for range recordsToInsert {
 			// Random time within this specific day
 			offsetSeconds := r.Intn(24 * 3600)
 			eventStart := dayStart.Add(time.Duration(offsetSeconds) * time.Second)
@@ -274,7 +277,7 @@ func main() {
 			if packetsVal == 0 {
 				packetsVal = 1
 			}
-			bytesVal := uint64(packetsVal * uint64(tpl.avgBytes+r.Int63n(100)))
+			bytesVal := packetsVal * uint64(tpl.avgBytes+r.Int63n(100))
 
 			// Sources mapping
 			sourceIndex := r.Intn(3)
@@ -380,17 +383,11 @@ func distributeNormal(r *rand.Rand, total, days int) []int {
 	counts := make([]int, days)
 	var sum int
 	for i := 0; i < days-1; i++ {
-		v := int(r.NormFloat64()*stddev + mean)
-		if v < 1 {
-			v = 1
-		}
+		v := max(int(r.NormFloat64()*stddev+mean), 1)
 		counts[i] = v
 		sum += v
 	}
 	// Last day absorbs the remainder to guarantee exact total
-	counts[days-1] = total - sum
-	if counts[days-1] < 1 {
-		counts[days-1] = 1
-	}
+	counts[days-1] = max(total-sum, 1)
 	return counts
 }

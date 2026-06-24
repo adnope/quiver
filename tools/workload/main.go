@@ -199,7 +199,7 @@ func generateRecord(r *rand.Rand, injectError bool) IngestRecord {
 	}
 
 	packets := uint64(1 + r.Int63n(100))
-	bytesVal := uint64(packets * uint64(100+r.Int63n(1400)))
+	bytesVal := packets * uint64(100+r.Int63n(1400))
 
 	tcpFlags := uint32(0x18)
 	sampling := uint32(1)

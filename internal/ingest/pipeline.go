@@ -11,6 +11,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/twmb/franz-go/pkg/kadm"
+	"github.com/twmb/franz-go/pkg/kgo"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	"github.com/adnope/quiver/internal/config"
 	"github.com/adnope/quiver/internal/domain"
 	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
@@ -19,10 +24,6 @@ import (
 	"github.com/adnope/quiver/internal/observability"
 	"github.com/adnope/quiver/internal/storage/postgres"
 	"github.com/adnope/quiver/internal/validation"
-	"github.com/twmb/franz-go/pkg/kadm"
-	"github.com/twmb/franz-go/pkg/kgo"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type kafkaClient interface {
@@ -95,11 +96,13 @@ func NewPipeline(
 }
 
 func (p *Pipeline) Start(ctx context.Context) {
-	p.ctx, p.cancel = context.WithCancel(ctx)
+	runCtx, cancel := context.WithCancel(ctx)
+	p.ctx = runCtx
+	p.cancel = cancel
 	p.wg.Add(1)
-	go p.run()
+	go p.run(runCtx)
 	p.wg.Add(1)
-	go p.pollKafkaLag(p.ctx)
+	go p.pollKafkaLag(runCtx)
 }
 
 func (p *Pipeline) Stop() {
@@ -171,12 +174,12 @@ func (p *Pipeline) collectKafkaLag(ctx context.Context, admin *kadm.Client) {
 			p.metrics.Set("kafka_consumer_lag", map[string]string{
 				"topic":     partitionLag.Topic,
 				"partition": strconv.Itoa(int(partitionLag.Partition)),
-			}, uint64(partitionLag.Lag)) //nolint:gosec
+			}, uint64(partitionLag.Lag))
 		}
 	}
 }
 
-func (p *Pipeline) run() {
+func (p *Pipeline) run(ctx context.Context) {
 	defer p.wg.Done()
 	p.logger.Info("ingestion pipeline started", slog.String("topic", p.cfg.Kafka.Topics.Raw))
 
@@ -190,11 +193,11 @@ func (p *Pipeline) run() {
 	}
 
 	for {
-		if err := p.ctx.Err(); err != nil {
+		if err := ctx.Err(); err != nil {
 			return
 		}
 
-		pollCtx, pollCancel := context.WithTimeout(p.ctx, flushInterval)
+		pollCtx, pollCancel := context.WithTimeout(ctx, flushInterval)
 		fetches := p.client.PollRecords(pollCtx, batchSize)
 		pollCancel()
 
@@ -213,17 +216,17 @@ func (p *Pipeline) run() {
 
 		p.logger.Debug("fetched records from kafka", slog.Int("count", len(records)))
 		for {
-			if err := p.ctx.Err(); err != nil {
+			if err := ctx.Err(); err != nil {
 				return
 			}
-			err := p.processBatch(p.ctx, records)
+			err := p.processBatch(ctx, records)
 			if err == nil {
 				break
 			}
 			p.logger.Error("retrying batch process after failure", slog.Any("error", err))
 			retryTimer := time.NewTimer(2 * time.Second)
 			select {
-			case <-p.ctx.Done():
+			case <-ctx.Done():
 				retryTimer.Stop()
 				return
 			case <-retryTimer.C:

@@ -454,6 +454,8 @@ func aggregationOrder(endpoint postgres.AggregationEndpoint) string {
 		return aggregationOrderTopTalkers
 	case postgres.AggregationEndpointTopPorts:
 		return aggregationOrderTopPorts
+	case postgres.AggregationEndpointProtocols:
+		return aggregationOrderProtocols
 	default:
 		return aggregationOrderProtocols
 	}

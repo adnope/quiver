@@ -388,7 +388,7 @@ func flowResponse(record domain.NormalizedFlowRecord, includeAttrs bool) FlowRes
 }
 
 func includeAttributes(r *http.Request) bool {
-	for _, item := range strings.Split(r.URL.Query().Get("include"), ",") {
+	for item := range strings.SplitSeq(r.URL.Query().Get("include"), ",") {
 		if strings.TrimSpace(item) == "attributes" {
 			return true
 		}

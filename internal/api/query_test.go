@@ -161,7 +161,7 @@ func envLookupWithCursor() func(string) string {
 }
 
 func newQueryRequest(target string, apiKey string) *http.Request {
-	request := httptest.NewRequest(http.MethodGet, target, nil)
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
 	if apiKey != "" {
 		request.Header.Set(APIKeyHeader, apiKey)
 	}

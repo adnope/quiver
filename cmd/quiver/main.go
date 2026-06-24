@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"os/signal"
@@ -217,8 +218,6 @@ func (r *collectorsRegistry) Get() map[string]string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	res := make(map[string]string, len(r.status))
-	for k, v := range r.status {
-		res[k] = v
-	}
+	maps.Copy(res, r.status)
 	return res
 }

@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"flag"
 	"fmt"
@@ -23,7 +24,8 @@ func main() {
 	malformed := flag.String("malformed", "", "Type of malformed packet: 'short', 'version', 'mismatch', or ''")
 	flag.Parse()
 
-	conn, err := net.Dial("udp", *target)
+	dialer := net.Dialer{}
+	conn, err := dialer.DialContext(context.Background(), "udp", *target)
 	if err != nil {
 		fmt.Printf("Failed to dial target: %v\n", err)
 		os.Exit(1)
@@ -92,7 +94,7 @@ func generatePacket(sequence uint32, count uint16) []byte {
 	// Sampling interval
 	binary.BigEndian.PutUint16(packet[22:24], 1)
 
-	for i := 0; i < recordCount; i++ {
+	for i := range recordCount {
 		offset := v5HeaderLen + i*v5RecordLen
 		record := packet[offset : offset+v5RecordLen]
 		// Source IP: 10.10.0.1

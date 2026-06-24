@@ -136,7 +136,7 @@ func HealthHandler(checker HealthChecker, auth *Authenticator) http.Handler {
 	if checker == nil {
 		checker = StaticHealthChecker{Value: HealthOK}
 	}
-	return http.HandlerFunc(serveHealth(checker, auth))
+	return serveHealth(checker, auth)
 }
 
 // @Summary Health status
@@ -182,7 +182,7 @@ func serveHealth(checker HealthChecker, auth *Authenticator) http.HandlerFunc {
 }
 
 func MetricsHandler(registry *observability.Registry) http.Handler {
-	return http.HandlerFunc(serveMetrics(registry))
+	return serveMetrics(registry)
 }
 
 // serveMetrics godoc
@@ -362,6 +362,10 @@ func MetricsHistoryHandler(db *sql.DB) http.Handler {
 				}
 			}
 			points = append(points, p)
+		}
+		if err := rows.Err(); err != nil {
+			writeError(w, r, http.StatusInternalServerError, CodeInternalError, "failed to read metrics history", nil)
+			return
 		}
 
 		writeJSON(w, http.StatusOK, MetricHistoryResponse{Points: points})

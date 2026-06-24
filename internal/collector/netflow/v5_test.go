@@ -61,7 +61,7 @@ func validV5Packet(sequence uint32, count uint16) []byte {
 	packet[20] = 1
 	packet[21] = 2
 	binary.BigEndian.PutUint16(packet[22:24], 1)
-	for i := 0; i < recordCount; i++ {
+	for i := range recordCount {
 		offset := v5HeaderLen + i*v5RecordLen
 		record := packet[offset : offset+v5RecordLen]
 		copy(record[0:4], []byte{192, 0, 2, byte(10 + i)})

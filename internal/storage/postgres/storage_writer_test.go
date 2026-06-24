@@ -9,10 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	"github.com/adnope/quiver/internal/config"
 	"github.com/adnope/quiver/internal/domain"
 	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestStorageWriterInsertDuplicateAndCommit(t *testing.T) {
@@ -198,10 +199,10 @@ func validRawStorageEvent(id string) *flowv1.RawFlowEventEnvelope {
 				RestFlow: &flowv1.RestFlowInput{
 					EventStartTime: timestamppb.New(time.Date(2026, 6, 16, 10, 15, 20, 0, time.UTC)),
 					Tuple: &flowv1.NetworkTuple{
-						SrcIp:             testStringPtr("192.168.1.10"),
-						DstIp:             testStringPtr("8.8.8.8"),
-						SrcPort:           testUint32Ptr(51524),
-						DstPort:           testUint32Ptr(53),
+						SrcIp:             new("192.168.1.10"),
+						DstIp:             new("8.8.8.8"),
+						SrcPort:           new(uint32(51524)),
+						DstPort:           new(uint32(53)),
 						TransportProtocol: flowv1.TransportProtocol_TRANSPORT_PROTOCOL_UDP,
 						ProtocolNumber:    17,
 					},
@@ -209,12 +210,4 @@ func validRawStorageEvent(id string) *flowv1.RawFlowEventEnvelope {
 			},
 		},
 	}
-}
-
-func testStringPtr(value string) *string {
-	return &value
-}
-
-func testUint32Ptr(value uint32) *uint32 {
-	return &value
 }

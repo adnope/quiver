@@ -126,22 +126,22 @@ func (a metricAccumulator) toAggregate(
 		Count:              a.count,
 	}
 	if a.count > 0 {
-		agg.Sum = floatPtr(a.sum)
-		agg.Avg = floatPtr(a.sum / float64(a.count))
+		agg.Sum = new(a.sum)
+		agg.Avg = new(a.sum / float64(a.count))
 	}
 	if a.hasValue {
-		agg.Min = floatPtr(a.min)
-		agg.Max = floatPtr(a.max)
-		agg.First = floatPtr(a.first)
-		agg.Last = floatPtr(a.last)
+		agg.Min = new(a.min)
+		agg.Max = new(a.max)
+		agg.First = new(a.first)
+		agg.Last = new(a.last)
 	}
 	if a.kind == MetricKindCounter || a.kind == MetricKindGauge {
-		agg.Delta = floatPtr(a.delta)
+		agg.Delta = new(a.delta)
 	}
 	if a.kind == MetricKindDuration && len(histogram) > 0 {
-		agg.P90 = floatPtr(percentileFromHistogram(histogram, 0.90))
-		agg.P95 = floatPtr(percentileFromHistogram(histogram, 0.95))
-		agg.P99 = floatPtr(percentileFromHistogram(histogram, 0.99))
+		agg.P90 = new(percentileFromHistogram(histogram, 0.90))
+		agg.P95 = new(percentileFromHistogram(histogram, 0.95))
+		agg.P99 = new(percentileFromHistogram(histogram, 0.99))
 	}
 	return agg
 }
@@ -151,10 +151,6 @@ func normalizeLabels(labels map[string]string) map[string]string {
 		return map[string]string{}
 	}
 	return labels
-}
-
-func floatPtr(value float64) *float64 {
-	return &value
 }
 
 func alignBucketStart(now time.Time, width time.Duration) time.Time {

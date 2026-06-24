@@ -9,21 +9,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/twmb/franz-go/pkg/kgo"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	"github.com/adnope/quiver/internal/config"
 	"github.com/adnope/quiver/internal/domain"
 	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
 	"github.com/adnope/quiver/internal/observability"
 	"github.com/adnope/quiver/internal/storage/postgres"
-	"github.com/twmb/franz-go/pkg/kgo"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestProcessBatchSequential(t *testing.T) {
 	t.Parallel()
 
 	records := make([]*kgo.Record, 10)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		records[i] = testRecord(t, i)
 	}
 
@@ -73,7 +74,7 @@ func TestProcessBatchConcurrentSuccess(t *testing.T) {
 
 	// 250 records to trigger concurrent process (> 200)
 	records := make([]*kgo.Record, 250)
-	for i := 0; i < 250; i++ {
+	for i := range 250 {
 		records[i] = testRecord(t, i)
 	}
 
@@ -128,7 +129,7 @@ func TestProcessBatchConcurrentFailure(t *testing.T) {
 	t.Parallel()
 
 	records := make([]*kgo.Record, 250)
-	for i := 0; i < 250; i++ {
+	for i := range 250 {
 		records[i] = testRecord(t, i)
 	}
 
@@ -179,7 +180,7 @@ func TestProcessBatchConcurrentPanic(t *testing.T) {
 	t.Parallel()
 
 	records := make([]*kgo.Record, 250)
-	for i := 0; i < 250; i++ {
+	for i := range 250 {
 		records[i] = testRecord(t, i)
 	}
 
@@ -227,7 +228,7 @@ func TestProcessBatchConcurrentDeduplicationAndDLQ(t *testing.T) {
 	t.Parallel()
 
 	records := make([]*kgo.Record, 250)
-	for i := 0; i < 250; i++ {
+	for i := range 250 {
 		if i == 50 {
 			// One corrupt record to go to DLQ during validation/unmarshal
 			records[i] = &kgo.Record{Value: []byte("invalid protobuf data")}
@@ -399,8 +400,8 @@ func testRecord(t *testing.T, i int) *kgo.Record {
 				RestFlow: &flowv1.RestFlowInput{
 					EventStartTime: timestamppb.New(time.Date(2026, 6, 16, 10, 15, 20, 0, time.UTC)),
 					Tuple: &flowv1.NetworkTuple{
-						SrcIp:             proto.String("192.168.1.10"),
-						DstIp:             proto.String("8.8.8.8"),
+						SrcIp:             new("192.168.1.10"),
+						DstIp:             new("8.8.8.8"),
 						SrcPort:           &srcPort,
 						DstPort:           &dstPort,
 						TransportProtocol: flowv1.TransportProtocol_TRANSPORT_PROTOCOL_UDP,

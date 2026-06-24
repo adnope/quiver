@@ -7,12 +7,13 @@ import (
 	"fmt"
 	"time"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	"github.com/adnope/quiver/internal/config"
 	"github.com/adnope/quiver/internal/domain"
 	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
 	"github.com/adnope/quiver/internal/observability"
 	"github.com/adnope/quiver/internal/validation"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var ErrInvalidStorageWriter = errors.New("postgres: invalid storage writer")
@@ -123,10 +124,7 @@ func (w *StorageWriter) WriteBatch(
 	}
 
 	for len(valid) > 0 {
-		size := w.batchSize
-		if len(valid) < size {
-			size = len(valid)
-		}
+		size := min(len(valid), w.batchSize)
 		insertResult, err := w.insertWithIsolation(ctx, valid[:size])
 		if err != nil {
 			return StorageWriteResult{}, err
@@ -198,7 +196,7 @@ func addIntMetric(metrics *observability.Registry, name string, labels map[strin
 		return
 	}
 	// Storage counters are bounded by the configured batch size and validated as non-negative.
-	metrics.Add(name, labels, uint64(value)) //nolint:gosec
+	metrics.Add(name, labels, uint64(value))
 }
 
 func (w *StorageWriter) insertWithRetry(ctx context.Context, records []domain.NormalizedFlowRecord) (InsertResult, error) {
@@ -222,7 +220,7 @@ func (w *StorageWriter) insertWithRetry(ctx context.Context, records []domain.No
 
 func (w *StorageWriter) backoff(attempt int) time.Duration {
 	delay := w.initialBackoff
-	for i := 0; i < attempt; i++ {
+	for range attempt {
 		delay *= 2
 		if delay >= w.maxBackoff {
 			return w.maxBackoff
@@ -312,6 +310,8 @@ func sleepContext(ctx context.Context, delay time.Duration) error {
 
 func sourceTypeToProto(sourceType domain.SourceType) flowv1.SourceType {
 	switch sourceType {
+	case domain.SourceTypeUnknown:
+		return flowv1.SourceType_SOURCE_TYPE_UNSPECIFIED
 	case domain.SourceTypeNetFlowV5:
 		return flowv1.SourceType_SOURCE_TYPE_NETFLOW_V5
 	case domain.SourceTypeZeekConnJSON:

@@ -166,7 +166,7 @@ func (r *FlowRepository) InsertFlowRecords(ctx context.Context, records []domain
 	}
 	for i, record := range records {
 		if err := domain.ValidateNormalizedFlowRecord(record); err != nil {
-			return InsertResult{}, fmt.Errorf("%w: record %d: %v", ErrInvalidFlowQuery, i, err)
+			return InsertResult{}, fmt.Errorf("%w: record %d: %w", ErrInvalidFlowQuery, i, err)
 		}
 	}
 
@@ -180,10 +180,7 @@ func (r *FlowRepository) InsertFlowRecords(ctx context.Context, records []domain
 	var totalInserted int64
 
 	for startIdx := 0; startIdx < len(records); startIdx += maxRecordsPerChunk {
-		endIdx := startIdx + maxRecordsPerChunk
-		if endIdx > len(records) {
-			endIdx = len(records)
-		}
+		endIdx := min(startIdx+maxRecordsPerChunk, len(records))
 		chunk := records[startIdx:endIdx]
 
 		n := len(chunk)
@@ -396,7 +393,7 @@ func (r *FlowRepository) GetFlowByID(ctx context.Context, id string, eventStartT
 	// #nosec G202
 	var row *sql.Row
 	if eventStartTime != nil {
-		row = r.db.QueryRowContext( //nolint:gosec // Projection is a fixed internal column list; values remain parameterized.
+		row = r.db.QueryRowContext(
 			ctx,
 			`SELECT `+flowRecordColumns+`
 FROM quiver.flow_records
@@ -406,7 +403,7 @@ LIMIT 1`,
 			id,
 		)
 	} else {
-		row = r.db.QueryRowContext( //nolint:gosec // Projection is a fixed internal column list; values remain parameterized.
+		row = r.db.QueryRowContext(
 			ctx,
 			`SELECT `+flowRecordColumns+`
 FROM quiver.flow_records
@@ -655,30 +652,30 @@ func scanFlowRecord(row scanner) (domain.NormalizedFlowRecord, error) {
 	record.NormalizationStatus = domain.NormalizationStatus(normalizationStatus)
 	record.EventEndTime = nullableTimePtr(eventEndTime)
 	record.DurationMS = int64Ptr(durationMS)
-	if record.SrcPort, err = uint16Ptr("src_port", srcPort); err != nil {
+	if record.SrcPort, err = uint16Ptr("src_port", srcPort); err != nil && !errors.Is(err, errSQLNullValue) {
 		return domain.NormalizedFlowRecord{}, err
 	}
-	if record.DstPort, err = uint16Ptr("dst_port", dstPort); err != nil {
+	if record.DstPort, err = uint16Ptr("dst_port", dstPort); err != nil && !errors.Is(err, errSQLNullValue) {
 		return domain.NormalizedFlowRecord{}, err
 	}
-	if record.Bytes, err = uint64Ptr("bytes", bytesValue); err != nil {
+	if record.Bytes, err = uint64Ptr("bytes", bytesValue); err != nil && !errors.Is(err, errSQLNullValue) {
 		return domain.NormalizedFlowRecord{}, err
 	}
-	if record.Packets, err = uint64Ptr("packets", packets); err != nil {
+	if record.Packets, err = uint64Ptr("packets", packets); err != nil && !errors.Is(err, errSQLNullValue) {
 		return domain.NormalizedFlowRecord{}, err
 	}
-	if record.TCPFlags, err = uint16Ptr("tcp_flags", tcpFlags); err != nil {
+	if record.TCPFlags, err = uint16Ptr("tcp_flags", tcpFlags); err != nil && !errors.Is(err, errSQLNullValue) {
 		return domain.NormalizedFlowRecord{}, err
 	}
 	record.FlowState = stringPtr(flowState)
-	if record.InputInterface, err = uint32Ptr("input_interface", inputInterface); err != nil {
+	if record.InputInterface, err = uint32Ptr("input_interface", inputInterface); err != nil && !errors.Is(err, errSQLNullValue) {
 		return domain.NormalizedFlowRecord{}, err
 	}
-	if record.OutputInterface, err = uint32Ptr("output_interface", outputInterface); err != nil {
+	if record.OutputInterface, err = uint32Ptr("output_interface", outputInterface); err != nil && !errors.Is(err, errSQLNullValue) {
 		return domain.NormalizedFlowRecord{}, err
 	}
 	record.ApplicationProtocol = stringPtr(applicationProtocol)
-	if record.SamplingRate, err = uint32Ptr("sampling_rate", samplingRate); err != nil {
+	if record.SamplingRate, err = uint32Ptr("sampling_rate", samplingRate); err != nil && !errors.Is(err, errSQLNullValue) {
 		return domain.NormalizedFlowRecord{}, err
 	}
 	record.NormalizationError = stringPtr(normalizationError)
@@ -796,6 +793,9 @@ func buildAggregationSQL(query AggregationQuery, grouping aggregationGrouping, t
 	if targetTable == "quiver.flow_records" {
 		timeCol = "event_start_time"
 		switch query.Metric {
+		case AggregationMetricBytes:
+			valueExpr = "SUM(bytes)"
+			nullPredicate = "bytes IS NOT NULL"
 		case AggregationMetricPackets:
 			valueExpr = "SUM(packets)"
 			nullPredicate = "packets IS NOT NULL"
@@ -805,6 +805,9 @@ func buildAggregationSQL(query AggregationQuery, grouping aggregationGrouping, t
 		}
 	} else {
 		switch query.Metric {
+		case AggregationMetricBytes:
+			valueExpr = "SUM(bytes)"
+			nullPredicate = "bytes IS NOT NULL"
 		case AggregationMetricPackets:
 			valueExpr = "SUM(packets)"
 			nullPredicate = "packets IS NOT NULL"
@@ -992,9 +995,11 @@ func int64Ptr(value sql.NullInt64) *int64 {
 	return &value.Int64
 }
 
+var errSQLNullValue = errors.New("sql value is null")
+
 func uint16Ptr(field string, value sql.NullInt64) (*uint16, error) {
 	if !value.Valid {
-		return nil, nil
+		return nil, errSQLNullValue
 	}
 	converted, err := checkedUint16(field, value.Int64)
 	if err != nil {
@@ -1005,7 +1010,7 @@ func uint16Ptr(field string, value sql.NullInt64) (*uint16, error) {
 
 func uint32Ptr(field string, value sql.NullInt64) (*uint32, error) {
 	if !value.Valid {
-		return nil, nil
+		return nil, errSQLNullValue
 	}
 	if value.Int64 < 0 || value.Int64 > int64(^uint32(0)) {
 		return nil, fmt.Errorf("scan flow record: %s out of range", field)
@@ -1016,7 +1021,7 @@ func uint32Ptr(field string, value sql.NullInt64) (*uint32, error) {
 
 func uint64Ptr(field string, value sql.NullInt64) (*uint64, error) {
 	if !value.Valid {
-		return nil, nil
+		return nil, errSQLNullValue
 	}
 	if value.Int64 < 0 {
 		return nil, fmt.Errorf("scan flow record: %s out of range", field)

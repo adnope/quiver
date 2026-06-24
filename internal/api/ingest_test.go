@@ -211,12 +211,12 @@ func TestRestRecordToProto(t *testing.T) {
 		EventEndTime:        "2026-06-16T10:15:25Z",
 		SrcIP:               "192.168.1.10",
 		DstIP:               "8.8.8.8",
-		SrcPort:             uint32Ptr(51524),
-		DstPort:             uint32Ptr(53),
+		SrcPort:             new(uint32(51524)),
+		DstPort:             new(uint32(53)),
 		TransportProtocol:   "udp",
 		ProtocolNumber:      17,
-		Bytes:               uint64Ptr(420),
-		Packets:             uint64Ptr(3),
+		Bytes:               new(uint64(420)),
+		Packets:             new(uint64(3)),
 		ApplicationProtocol: "dns",
 		Attributes:          map[string]any{"integration": "demo-client"},
 	})
@@ -290,7 +290,7 @@ func envLookup() func(string) string {
 func newIngestRequest(t *testing.T, body string, apiKey string) *http.Request {
 	t.Helper()
 
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/ingest/flows", strings.NewReader(body))
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/ingest/flows", strings.NewReader(body))
 	request.RemoteAddr = "203.0.113.10:54321"
 	request.Header.Set("Content-Type", "application/json")
 	if apiKey != "" {
@@ -409,12 +409,4 @@ func assertNoHTTPResponse(t *testing.T, done <-chan *httptest.ResponseRecorder) 
 		t.Fatalf("response returned before Kafka ACK: status=%d body=%s", recorder.Code, recorder.Body.String())
 	case <-time.After(20 * time.Millisecond):
 	}
-}
-
-func uint32Ptr(value uint32) *uint32 {
-	return &value
-}
-
-func uint64Ptr(value uint64) *uint64 {
-	return &value
 }

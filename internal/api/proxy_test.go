@@ -108,7 +108,7 @@ func TestProxyHandlerAuthentication(t *testing.T) {
 					},
 				},
 			})
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader(bodyBytes))
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader(bodyBytes))
 			req.Header.Set("Content-Type", "application/json")
 			if tt.apiKey != "" {
 				req.Header.Set(APIKeyHeader, tt.apiKey)
@@ -172,7 +172,7 @@ func TestProxyHandlerGzipAndValidPayload(t *testing.T) {
 	}
 	_ = gw.Close()
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/ingest/proxy-netflow", &buf)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/ingest/proxy-netflow", &buf)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set(APIKeyHeader, "valid-gateway-key")
@@ -233,7 +233,7 @@ func TestProxyHandlerValidationAndErrors(t *testing.T) {
 	}
 
 	t.Run("invalid json", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader([]byte("{invalid-json")))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader([]byte("{invalid-json")))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set(APIKeyHeader, "valid-gateway-key")
 
@@ -266,7 +266,7 @@ func TestProxyHandlerValidationAndErrors(t *testing.T) {
 		}
 
 		bodyBytes, _ := json.Marshal(payload)
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader(bodyBytes))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader(bodyBytes))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set(APIKeyHeader, "valid-gateway-key")
 
@@ -300,7 +300,7 @@ func TestProxyHandlerValidationAndErrors(t *testing.T) {
 		}
 
 		bodyBytes, _ := json.Marshal(payload)
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader(bodyBytes))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader(bodyBytes))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set(APIKeyHeader, "valid-gateway-key")
 
@@ -351,7 +351,7 @@ func TestProxyHandlerEnforcesBodyAndBatchLimits(t *testing.T) {
 		t.Fatalf("create server: %v", err)
 	}
 
-	req := httptest.NewRequest(
+	req := httptest.NewRequestWithContext(context.Background(),
 		http.MethodPost,
 		"/api/v1/ingest/proxy-netflow",
 		bytes.NewReader([]byte(`{"records":[{"source_ip":"192.0.2.1","packet_data":"`+strings.Repeat("A", 80)+`"}]}`)),
@@ -385,7 +385,7 @@ func TestProxyHandlerEnforcesBodyAndBatchLimits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader(body))
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader(body))
 	req.Header.Set(APIKeyHeader, "valid-gateway-key")
 	w = httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)

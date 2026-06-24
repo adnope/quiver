@@ -5,10 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/adnope/quiver/internal/domain"
-	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/adnope/quiver/internal/domain"
+	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
 )
 
 func TestValidateRawEventEnvelope(t *testing.T) {
