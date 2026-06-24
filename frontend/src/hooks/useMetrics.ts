@@ -12,7 +12,7 @@ import {
 } from '@/lib/metrics-parser'
 import { useAppStore } from '@/store/app-store'
 import type { MetricRange, MetricWidget } from '@/lib/metrics-parser'
-import type { MetricAggregatePoint, MetricSnapshot } from '@/types/api'
+import type { MetricAggregatePoint, MetricAggregatesParams, MetricSnapshot } from '@/types/api'
 
 export function useLiveMetrics() {
   const apiBaseUrl = useAppStore((state) => state.apiBaseUrl)
@@ -60,6 +60,29 @@ export function useMetricAggregates(range: MetricRange, enabled = true) {
     retry: 2,
     staleTime: 10_000,
     refetchInterval: 10_000,
+    gcTime: 5 * 60_000,
+  })
+}
+
+
+export function useMetricAggregateWindow(
+  params: MetricAggregatesParams,
+  enabled = true,
+) {
+  const apiBaseUrl = useAppStore((state) => state.apiBaseUrl)
+  const apiKey = useAppStore((state) => state.apiKey)
+
+  return useQuery({
+    queryKey: ['metrics', 'aggregates', 'window', params, apiBaseUrl, Boolean(apiKey)],
+    enabled,
+    queryFn: ({ signal }) =>
+      getMetricAggregates(params, {
+        baseUrl: apiBaseUrl,
+        apiKey,
+        signal,
+      }),
+    retry: 2,
+    staleTime: 30_000,
     gcTime: 5 * 60_000,
   })
 }

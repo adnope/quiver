@@ -1,4 +1,4 @@
-export type ActiveTab = 'dashboard' | 'explorer' | 'analytics'
+export type ActiveTab = 'dashboard' | 'history' | 'explorer' | 'analytics'
 
 export type ThemePreference = 'dark' | 'light' | 'system'
 

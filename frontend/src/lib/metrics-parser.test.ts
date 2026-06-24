@@ -29,7 +29,7 @@ describe('metrics parser', () => {
   it('uses stable fallback labels when expected labels are missing', () => {
     expect(labelForMetric('ingestion', null)).toBe('unknown_source')
     expect(labelForMetric('ingestion', null, 'flow_records_stored_total')).toBe(
-      'Durable Persisted',
+      'Persisted',
     )
     expect(labelForMetric('deadLetter', {})).toBe('unknown_reason')
     expect(labelForMetric('deadLetter', {}, 'rate_limit_rejections_total')).toBe(
@@ -226,7 +226,7 @@ ignored_bucket{le="+Inf"} +Inf
     const deadLetter = buildLiveWidgetSnapshot(current, previous, 'deadLetter', 1, now)
     const dbLatency = buildLiveWidgetSnapshot(current, previous, 'dbLatency', 1, now)
 
-    expect(ingestion.data[0]?.['Durable Persisted']).toBe(15)
+    expect(ingestion.data[0]?.['Persisted']).toBe(15)
     expect(deadLetter.data[0]?.['Rate Limited']).toBe(3)
     expect(dbLatency.data[0]?.Average).toBe(30)
     expect(dbLatency.data[0]?.p95).toBe(55)
@@ -264,9 +264,9 @@ ignored_bucket{le="+Inf"} +Inf
       (datum) => datum.timestamp === '2026-06-20T15:02:00.000Z',
     )
 
-    expect(first?.REST).toBe(60)
+    expect(first?.REST).toBe(12)
     expect(missing?.REST).toBe(0)
-    expect(last?.REST).toBe(120)
+    expect(last?.REST).toBe(24)
   })
 
 

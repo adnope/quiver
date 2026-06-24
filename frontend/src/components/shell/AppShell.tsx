@@ -4,7 +4,9 @@ import { ApiSettingsDialog } from '@/components/shell/ApiSettingsDialog'
 import { DisconnectedBanner } from '@/components/shell/DisconnectedBanner'
 import { TopNav } from '@/components/shell/TopNav'
 import { useHealth } from '@/hooks/useHealth'
+import { routeForTab, isKnownRoute, tabFromPath } from '@/lib/routes'
 import { applyThemePreference, useAppStore } from '@/store/app-store'
+import type { ActiveTab } from '@/types/api'
 
 const DashboardView = lazy(() =>
   import('@/components/dashboard/DashboardView').then((module) => ({
@@ -16,6 +18,11 @@ const ExplorerView = lazy(() =>
     default: module.ExplorerView,
   })),
 )
+const HistoryView = lazy(() =>
+  import('@/components/history/HistoryView').then((module) => ({
+    default: module.HistoryView,
+  })),
+)
 const AnalyticsView = lazy(() =>
   import('@/components/analytics/AnalyticsView').then((module) => ({
     default: module.AnalyticsView,
@@ -25,6 +32,7 @@ const AnalyticsView = lazy(() =>
 export function AppShell() {
   const queryClient = useQueryClient()
   const activeTab = useAppStore((state) => state.activeTab)
+  const setActiveTab = useAppStore((state) => state.setActiveTab)
   const theme = useAppStore((state) => state.theme)
   const apiBaseUrl = useAppStore((state) => state.apiBaseUrl)
   const apiKey = useAppStore((state) => state.apiKey)
@@ -36,9 +44,44 @@ export function AppShell() {
     applyThemePreference(theme)
   }, [theme])
 
+  useEffect(() => {
+    function syncRoute() {
+      const legacyTab = legacyTabFromQuery()
+      if (legacyTab) {
+        const search = new URLSearchParams(window.location.search)
+        search.delete('tab')
+        const query = search.toString()
+        window.history.replaceState(
+          null,
+          '',
+          `${routeForTab(legacyTab)}${query ? `?${query}` : ''}${window.location.hash}`,
+        )
+        setActiveTab(legacyTab)
+        return
+      }
+
+      const nextTab = tabFromPath(window.location.pathname)
+      if (!isKnownRoute(window.location.pathname) || window.location.pathname === '/') {
+        window.history.replaceState(
+          null,
+          '',
+          `${routeForTab(nextTab)}${window.location.search}${window.location.hash}`,
+        )
+      }
+      setActiveTab(nextTab)
+    }
+
+    syncRoute()
+    window.addEventListener('popstate', syncRoute)
+    return () => window.removeEventListener('popstate', syncRoute)
+  }, [setActiveTab])
+
   const mainContent = useMemo(() => {
     if (activeTab === 'dashboard') {
       return <DashboardView />
+    }
+    if (activeTab === 'history') {
+      return <HistoryView />
     }
     if (activeTab === 'analytics') {
       return <AnalyticsView />
@@ -58,14 +101,16 @@ export function AppShell() {
       />
 
       <main className="mx-auto w-full max-w-[1440px] px-4 pb-6 pt-[72px] md:px-6">
-        {activeTab === 'dashboard' ? (
+        {activeTab === 'dashboard' || activeTab === 'history' ? (
           <div className="mb-4 flex items-end justify-between gap-4">
             <div>
               <h1 className="text-lg font-semibold tracking-normal text-[var(--text-primary)]">
-                Dashboard
+                {activeTab === 'history' ? 'History' : 'Dashboard'}
               </h1>
               <p className="mt-1 text-sm text-[var(--text-secondary)]">
-                Live metrics and historical telemetry
+                {activeTab === 'history'
+                  ? 'Aggregate metrics explorer for arbitrary time windows'
+                  : 'Real-time operational telemetry'}
               </p>
             </div>
           </div>
@@ -95,4 +140,12 @@ function ViewSkeleton() {
       ))}
     </div>
   )
+}
+
+function legacyTabFromQuery(): ActiveTab | undefined {
+  const tab = new URLSearchParams(window.location.search).get('tab')
+  if (tab === 'dashboard' || tab === 'history' || tab === 'explorer' || tab === 'analytics') {
+    return tab
+  }
+  return undefined
 }

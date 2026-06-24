@@ -84,7 +84,7 @@ export function ExplorerView() {
   const [selectedStartTime, setSelectedStartTime] = useState<string | undefined>()
   const [sortKey, setSortKey] = useState<SortKey>('event_start_time')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
-  const [limit, setLimit] = useState(100)
+  const [limit, setLimit] = useState(1000)
   const [includeAttributes, setIncludeAttributes] = useState(false)
   const [fromInput, setFromInput] = useState(initialTimeWindow.fromInput)
   const [toInput, setToInput] = useState(initialTimeWindow.toInput)

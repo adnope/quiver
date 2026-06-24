@@ -1,17 +1,19 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { MetricAreaChart } from '@/components/dashboard/MetricAreaChart'
 import { MaterialIcon } from '@/components/shell/MaterialIcon'
 import { Button } from '@/components/ui/button'
-import { useLiveMetrics, useMetricAggregates } from '@/hooks/useMetrics'
+import { useLiveMetrics } from '@/hooks/useMetrics'
 import { formatMetricValue, formatNumber } from '@/lib/format'
 import {
-  buildAggregateChart,
   buildHistoryChart,
   liveSnapshotsToHistoryPoints,
   type MetricRange,
   type MetricWidget,
 } from '@/lib/metrics-parser'
-import { useEffect, useMemo, useRef, useState } from 'react'
 import type { MetricHistoryPoint, MetricSnapshot } from '@/types/api'
+
+const LIVE_RANGE: MetricRange = '10m'
+const LIVE_WINDOW_MS = 10 * 60_000
 
 const cards = [
   {
@@ -45,23 +47,12 @@ const cards = [
   accent: string
 }>
 
-const ranges = [
-  { value: '1m', label: '1 minute' },
-  { value: '1h', label: '1 hour' },
-  { value: '12h', label: '12 hours' },
-  { value: '24h', label: '24 hours' },
-  { value: '1w', label: '1 week' },
-  { value: '30d', label: '30 days' },
-] satisfies Array<{ value: MetricRange; label: string }>
-
 type DashboardChart = ReturnType<typeof buildHistoryChart>
 
 export function DashboardView() {
-  const [range, setRange] = useState<MetricRange>('1h')
   const [livePoints, setLivePoints] = useState<MetricHistoryPoint[]>([])
   const previousLiveMetrics = useRef<MetricSnapshot[]>([])
   const live = useLiveMetrics()
-  const aggregates = useMetricAggregates(range, range !== '1m')
 
   useEffect(() => {
     const metrics = live.data?.metrics
@@ -80,7 +71,7 @@ export function DashboardView() {
       now,
     )
     previousLiveMetrics.current = metrics
-    const cutoff = now.getTime() - 60_000
+    const cutoff = now.getTime() - LIVE_WINDOW_MS
     setLivePoints((current) => [
       ...current.filter((point) => Date.parse(point.timestamp) >= cutoff),
       ...nextPoints,
@@ -92,60 +83,19 @@ export function DashboardView() {
       Object.fromEntries(
         cards.map((card) => [
           card.widget,
-          range === '1m'
-            ? buildHistoryChart(livePoints, card.widget, range)
-            : buildAggregateChart(
-                aggregates.data?.points ?? [],
-                card.widget,
-                range,
-              ),
+          buildHistoryChart(livePoints, card.widget, LIVE_RANGE),
         ]),
       ) as Record<MetricWidget, DashboardChart>,
-    [aggregates.data?.points, livePoints, range],
+    [livePoints],
   )
   const liveStats = useMemo(
     () => deriveLiveStats(live.data?.metrics ?? [], livePoints),
     [live.data?.metrics, livePoints],
   )
-  const chartIsLoading = range === '1m' ? live.isLoading : aggregates.isLoading
-  const chartIsError = range === '1m' ? live.isError : aggregates.isError
-  const refetchCharts = range === '1m' ? live.refetch : aggregates.refetch
-
-  const liveStatus = live.isError
-    ? 'Live metrics unavailable'
-    : live.isLoading
-      ? 'Loading live metrics'
-      : !live.data
-        ? 'Waiting for live metrics'
-        : null
 
   return (
     <section className="space-y-4">
-      <div className="flex items-center justify-between gap-3">
-        {liveStatus ? (
-          <div className="text-xs text-[var(--text-secondary)]">
-            {liveStatus}
-          </div>
-        ) : (
-          <div />
-        )}
-        <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
-          <span>Range</span>
-          <select
-            className="h-9 cursor-pointer rounded-md border border-[var(--border)] bg-[var(--panel)] px-3 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-500"
-            value={range}
-            onChange={(event) => setRange(event.target.value as MetricRange)}
-          >
-            {ranges.map((item) => (
-              <option key={item.value} value={item.value}>
-                {item.label}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4">
         {cards.map((card) => {
           const chart = charts[card.widget]
           const extraMetric = extraCardMetric(card.widget, liveStats)
@@ -172,12 +122,12 @@ export function DashboardView() {
                   ) : null}
                 </div>
                 <div className="flex items-center gap-2">
-                  {chartIsError ? (
+                  {live.isError ? (
                     <Button
                       type="button"
                       variant="ghost"
                       size="sm"
-                      onClick={() => void refetchCharts()}
+                      onClick={() => void live.refetch()}
                     >
                       Retry
                     </Button>
@@ -195,12 +145,13 @@ export function DashboardView() {
               </div>
               <MetricAreaChart
                 widget={card.widget}
-                range={range}
+                range={LIVE_RANGE}
                 data={chart.data}
                 series={chart.series}
-                isLoading={chartIsLoading}
-                onRetry={() => void refetchCharts()}
-                {...(chartIsError
+                isLoading={live.isLoading}
+                onRetry={() => void live.refetch()}
+                scrollable
+                {...(live.isError
                   ? { error: 'Metrics unavailable. Try again.' }
                   : {})}
               />
@@ -246,7 +197,7 @@ function primaryCardMetricValue(widget: MetricWidget, chart: DashboardChart) {
   }
 
   return chart.series
-    .filter((series) => series.label !== 'Durable Persisted')
+    .filter((series) => series.label !== 'Persisted')
     .reduce((sum, series) => {
       const value = latest[series.key]
       return sum + (typeof value === 'number' && Number.isFinite(value) ? value : 0)
@@ -291,62 +242,49 @@ function deriveLiveStats(
   return stats
 }
 
-function metricValue(
-  metrics: ReadonlyArray<MetricSnapshot>,
-  name: string,
-): number | undefined {
+function extraCardMetric(widget: MetricWidget, stats: LiveDashboardStats) {
+  switch (widget) {
+    case 'dbLatency':
+      if (stats.dbConnectionsInUse === undefined) {
+        return undefined
+      }
+      return `${formatNumber(stats.dbConnectionsInUse)} DB connections in use${
+        stats.dbConnectionsMaxOpen !== undefined
+          ? ` / ${formatNumber(stats.dbConnectionsMaxOpen)} max`
+          : ''
+      }`
+    case 'kafkaLag':
+      if (stats.drainSeconds === undefined) {
+        return `${formatNumber(stats.kafkaLag)} queued records`
+      }
+      return `${formatNumber(stats.kafkaLag)} queued · ${formatNumber(stats.drainSeconds)}s drain estimate`
+    case 'ingestion':
+      return `${formatMetricValue('ingestion', stats.durablePersistRate)} persisted`
+    default:
+      return undefined
+  }
+}
+
+function metricValue(metrics: ReadonlyArray<MetricSnapshot>, name: string) {
   return metrics.find((metric) => metric.name === name)?.value
 }
 
 function latestDeltaRate(
-  points: ReadonlyArray<MetricHistoryPoint>,
-  name: string,
+  livePoints: ReadonlyArray<MetricHistoryPoint>,
+  metricName: string,
 ) {
-  const latestTimestamp = points
-    .filter((point) => point.name === name)
+  const latestTimestamp = livePoints
+    .filter((point) => point.name === metricName)
     .map((point) => Date.parse(point.timestamp))
     .filter(Number.isFinite)
     .sort((a, b) => b - a)[0]
   if (latestTimestamp === undefined) {
     return 0
   }
-  return points
+  return livePoints
     .filter(
       (point) =>
-        point.name === name && Date.parse(point.timestamp) === latestTimestamp,
+        point.name === metricName && Date.parse(point.timestamp) === latestTimestamp,
     )
     .reduce((sum, point) => sum + Math.max(0, point.delta), 0)
-}
-
-function extraCardMetric(widget: MetricWidget, stats: LiveDashboardStats) {
-  if (widget === 'dbLatency' && stats.dbConnectionsOpen !== undefined) {
-    const maxOpen =
-      stats.dbConnectionsMaxOpen !== undefined && stats.dbConnectionsMaxOpen > 0
-        ? stats.dbConnectionsMaxOpen
-        : stats.dbConnectionsOpen
-
-    return `Connections: ${formatNumber(stats.dbConnectionsOpen)}/${formatNumber(maxOpen)}`
-  }
-  if (
-    widget === 'kafkaLag' &&
-    stats.kafkaLag > 0 &&
-    stats.drainSeconds !== undefined
-  ) {
-    return `Estimated Drain Time: ${formatDrainSeconds(stats.drainSeconds)}`
-  }
-  return undefined
-}
-
-function formatDrainSeconds(seconds: number) {
-  if (!Number.isFinite(seconds)) {
-    return '-'
-  }
-  if (seconds < 60) {
-    return `${formatNumber(seconds)}s`
-  }
-  const minutes = seconds / 60
-  if (minutes < 60) {
-    return `${formatNumber(minutes)}m`
-  }
-  return `${formatNumber(minutes / 60)}h`
 }

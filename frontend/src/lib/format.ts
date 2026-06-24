@@ -1,4 +1,4 @@
-import type { MetricRange, MetricWidget } from '@/lib/metrics-parser'
+import type { MetricChartRange, MetricWidget } from '@/lib/metrics-parser'
 
 export function formatNumber(value: number) {
   return new Intl.NumberFormat('en-US', {
@@ -37,12 +37,12 @@ export function formatOptionalNumber(value: number | undefined) {
   return value === undefined ? '-' : formatNumber(value)
 }
 
-export function formatTimestamp(value: string, range?: MetricRange) {
+export function formatTimestamp(value: string, range?: MetricChartRange) {
   const date = new Date(value)
   if (!Number.isFinite(date.getTime())) {
     return value
   }
-  if (range === '1m') {
+  if (range === '1m' || range === '10m' || range === '15m') {
     return new Intl.DateTimeFormat('en-US', {
       hour: '2-digit',
       minute: '2-digit',
