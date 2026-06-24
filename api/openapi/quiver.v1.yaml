@@ -914,8 +914,8 @@ paths:
   /api/v1/metrics/aggregates:
     get:
       description: Returns bounded system metric aggregate points for arbitrary from/to/step
-        windows. Duration percentiles are recomputed from merged histogram buckets when
-        histogram data exists.
+        windows. Duration percentiles are recomputed from merged histogram buckets
+        when histogram data exists.
       parameters:
       - description: API key with metrics scope when metrics auth is enabled
         in: header
