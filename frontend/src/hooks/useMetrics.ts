@@ -22,9 +22,9 @@ export function useLiveMetrics() {
     queryKey: ['metrics', 'live', apiBaseUrl, Boolean(apiKey)],
     queryFn: ({ signal }) =>
       getLiveMetrics({ baseUrl: apiBaseUrl, apiKey, signal }),
-    refetchInterval: 1_000,
+    refetchInterval: 5_000,
     retry: 2,
-    staleTime: 900,
+    staleTime: 4_500,
   })
 }
 

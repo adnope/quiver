@@ -79,7 +79,7 @@ interface SeriesPoint {
 
 const RANGE_CONFIG: Record<MetricRange, RangeConfig> = {
   '1m': { windowMs: 60_000, bucketMs: 5_000, bucketSeconds: 5 },
-  '10m': { windowMs: 10 * 60_000, bucketMs: 1_000, bucketSeconds: 1 },
+  '10m': { windowMs: 10 * 60_000, bucketMs: 5_000, bucketSeconds: 5 },
   '15m': { windowMs: 15 * 60_000, bucketMs: 1_000, bucketSeconds: 1 },
   '1h': { windowMs: 60 * 60_000, bucketMs: 20_000, bucketSeconds: 20 },
   '12h': {

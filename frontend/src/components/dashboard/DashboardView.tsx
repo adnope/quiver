@@ -73,6 +73,7 @@ export function DashboardView() {
     () => ({
       from: initialHistoryWindow.from,
       to: initialHistoryWindow.to,
+      step: `${LIVE_BUCKET_SECONDS}s`,
       metric: DASHBOARD_HISTORY_METRICS,
     }),
     [initialHistoryWindow],
