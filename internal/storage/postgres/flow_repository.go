@@ -77,6 +77,8 @@ const (
 	AggregationEndpointProtocols  AggregationEndpoint = "protocols"
 	AggregationEndpointTopPorts   AggregationEndpoint = "top-ports"
 	AggregationEndpointTopTalkers AggregationEndpoint = "top-talkers"
+
+	flowAggregationFiveMinuteMaxWindow = 6 * time.Hour
 )
 
 type AggregationCursor struct {
@@ -438,7 +440,7 @@ func (r *FlowRepository) TopTalkers(ctx context.Context, query AggregationQuery)
 		GroupBy: groupColumn,
 		OrderBy: "ip ASC",
 		Kind:    aggregationGroupIP,
-	}, "quiver.flow_hourly_talkers", "true")
+	}, aggregateTalkersTable(query), "true")
 	if err != nil {
 		return nil, err
 	}
@@ -480,10 +482,7 @@ func (r *FlowRepository) TopPorts(ctx context.Context, query AggregationQuery) (
 	if query.Direction == AggregationDirectionDst {
 		groupColumn = "dst_port"
 	}
-	targetTable := "quiver.flow_hourly_ports"
-	if query.SrcIP != nil || query.DstIP != nil {
-		targetTable = "quiver.flow_records"
-	}
+	targetTable := aggregatePortsTable(query)
 	sqlQuery, args, err := buildAggregationSQL(query, aggregationGrouping{
 		Select:  groupColumn + " AS port",
 		GroupBy: groupColumn,
@@ -532,7 +531,7 @@ func (r *FlowRepository) ProtocolDistribution(ctx context.Context, query Aggrega
 		GroupBy: "protocol_number, transport_protocol",
 		OrderBy: "protocol_number ASC, transport_protocol ASC",
 		Kind:    aggregationGroupProtocol,
-	}, "quiver.flow_hourly_talkers", "true")
+	}, aggregateTalkersTable(query), "true")
 	if err != nil {
 		return nil, err
 	}
@@ -768,6 +767,24 @@ func buildFlowWhere(query FlowSearchQuery) (string, []any) {
 		)
 	}
 	return strings.Join(clauses, " AND "), args
+}
+
+func aggregateTalkersTable(query AggregationQuery) string {
+	return selectFlowAggregateTable(query, "quiver.flow_5m_talkers", "quiver.flow_hourly_talkers")
+}
+
+func aggregatePortsTable(query AggregationQuery) string {
+	if query.SrcIP != nil || query.DstIP != nil {
+		return "quiver.flow_records"
+	}
+	return selectFlowAggregateTable(query, "quiver.flow_5m_ports", "quiver.flow_hourly_ports")
+}
+
+func selectFlowAggregateTable(query AggregationQuery, fiveMinuteTable string, hourlyTable string) string {
+	if query.To.Sub(query.From) <= flowAggregationFiveMinuteMaxWindow {
+		return fiveMinuteTable
+	}
+	return hourlyTable
 }
 
 type aggregationGroupKind string

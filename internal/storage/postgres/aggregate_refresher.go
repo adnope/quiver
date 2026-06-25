@@ -9,15 +9,20 @@ import (
 )
 
 const (
-	flowAggregateStartupBackfillWindow = 7 * 24 * time.Hour
-	flowAggregateRecentRefreshWindow   = 24 * time.Hour
-	flowAggregateRecentRefreshInterval = time.Minute
-	flowAggregateWeekRefreshInterval   = 5 * time.Minute
+	flowAggregateFiveMinuteRefreshWindow   = 24 * time.Hour
+	flowAggregateHourlyRefreshWindow       = 7 * 24 * time.Hour
+	flowAggregateFiveMinuteRefreshInterval = time.Minute
+	flowAggregateHourlyRefreshInterval     = 5 * time.Minute
 
 	flowAggregateRefreshLockKey int64 = 0x7175697665720001
 )
 
-var flowContinuousAggregateViews = [...]string{
+var flowFiveMinuteContinuousAggregateViews = [...]string{
+	"quiver.flow_5m_talkers",
+	"quiver.flow_5m_ports",
+}
+
+var flowHourlyContinuousAggregateViews = [...]string{
 	"quiver.flow_hourly_talkers",
 	"quiver.flow_hourly_ports",
 }
@@ -44,32 +49,35 @@ func (r *FlowAggregateRefresher) Run(ctx context.Context) {
 		return
 	}
 
-	if err := r.refresh(ctx, flowAggregateStartupBackfillWindow, "startup_backfill"); err != nil {
-		r.logger.WarnContext(ctx, "flow aggregate startup backfill failed", slog.Any("error", err))
+	if err := r.refresh(ctx, flowFiveMinuteContinuousAggregateViews[:], flowAggregateFiveMinuteRefreshWindow, "startup_5m_backfill"); err != nil {
+		r.logger.WarnContext(ctx, "flow aggregate 5-minute startup backfill failed", slog.Any("error", err))
+	}
+	if err := r.refresh(ctx, flowHourlyContinuousAggregateViews[:], flowAggregateHourlyRefreshWindow, "startup_hourly_backfill"); err != nil {
+		r.logger.WarnContext(ctx, "flow aggregate hourly startup backfill failed", slog.Any("error", err))
 	}
 
-	recentTicker := time.NewTicker(flowAggregateRecentRefreshInterval)
-	defer recentTicker.Stop()
-	weekTicker := time.NewTicker(flowAggregateWeekRefreshInterval)
-	defer weekTicker.Stop()
+	fiveMinuteTicker := time.NewTicker(flowAggregateFiveMinuteRefreshInterval)
+	defer fiveMinuteTicker.Stop()
+	hourlyTicker := time.NewTicker(flowAggregateHourlyRefreshInterval)
+	defer hourlyTicker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-recentTicker.C:
-			if err := r.refresh(ctx, flowAggregateRecentRefreshWindow, "recent_refresh"); err != nil {
-				r.logger.WarnContext(ctx, "flow aggregate recent refresh failed", slog.Any("error", err))
+		case <-fiveMinuteTicker.C:
+			if err := r.refresh(ctx, flowFiveMinuteContinuousAggregateViews[:], flowAggregateFiveMinuteRefreshWindow, "5m_refresh"); err != nil {
+				r.logger.WarnContext(ctx, "flow aggregate 5-minute refresh failed", slog.Any("error", err))
 			}
-		case <-weekTicker.C:
-			if err := r.refresh(ctx, flowAggregateStartupBackfillWindow, "week_refresh"); err != nil {
-				r.logger.WarnContext(ctx, "flow aggregate weekly-window refresh failed", slog.Any("error", err))
+		case <-hourlyTicker.C:
+			if err := r.refresh(ctx, flowHourlyContinuousAggregateViews[:], flowAggregateHourlyRefreshWindow, "hourly_refresh"); err != nil {
+				r.logger.WarnContext(ctx, "flow aggregate hourly refresh failed", slog.Any("error", err))
 			}
 		}
 	}
 }
 
-func (r *FlowAggregateRefresher) refresh(ctx context.Context, window time.Duration, reason string) error {
+func (r *FlowAggregateRefresher) refresh(ctx context.Context, views []string, window time.Duration, reason string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -97,7 +105,7 @@ func (r *FlowAggregateRefresher) refresh(ctx context.Context, window time.Durati
 
 	end := r.now().UTC()
 	start := end.Add(-window)
-	for _, view := range flowContinuousAggregateViews {
+	for _, view := range views {
 		query, err := refreshContinuousAggregateQuery(view)
 		if err != nil {
 			return err
@@ -111,6 +119,7 @@ func (r *FlowAggregateRefresher) refresh(ctx context.Context, window time.Durati
 		"flow continuous aggregates refreshed",
 		slog.String("reason", reason),
 		slog.Duration("window", window),
+		slog.Int("view_count", len(views)),
 		slog.Time("from", start),
 		slog.Time("to", end),
 	)
@@ -119,7 +128,10 @@ func (r *FlowAggregateRefresher) refresh(ctx context.Context, window time.Durati
 
 func refreshContinuousAggregateQuery(view string) (string, error) {
 	switch view {
-	case "quiver.flow_hourly_talkers", "quiver.flow_hourly_ports":
+	case "quiver.flow_5m_talkers",
+		"quiver.flow_5m_ports",
+		"quiver.flow_hourly_talkers",
+		"quiver.flow_hourly_ports":
 		return fmt.Sprintf("CALL refresh_continuous_aggregate('%s', $1::timestamptz, $2::timestamptz)", view), nil
 	default:
 		return "", fmt.Errorf("%w: unsupported continuous aggregate %q", ErrInvalidDatabaseConfig, view)

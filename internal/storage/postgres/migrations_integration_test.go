@@ -61,6 +61,19 @@ SELECT EXISTS (
 	requireExists(ctx, t, db, "collector_states table", `SELECT to_regclass('quiver.collector_states') IS NOT NULL`)
 	requireExists(ctx, t, db, "system_metric_aggregates table", `SELECT to_regclass('quiver.system_metric_aggregates') IS NOT NULL`)
 	requireExists(ctx, t, db, "system_metric_histogram_buckets table", `SELECT to_regclass('quiver.system_metric_histogram_buckets') IS NOT NULL`)
+	for _, viewName := range []string{
+		"flow_5m_talkers",
+		"flow_5m_ports",
+		"flow_hourly_talkers",
+		"flow_hourly_ports",
+	} {
+		requireExists(ctx, t, db, viewName+" continuous aggregate", `SELECT to_regclass('quiver.' || $1) IS NOT NULL`, viewName)
+		requireBoolQuery(ctx, t, db, viewName+" materialized-only", `
+SELECT materialized_only
+FROM timescaledb_information.continuous_aggregates
+WHERE view_schema = 'quiver'
+  AND view_name = $1`, true, viewName)
+	}
 	requireExists(ctx, t, db, "flow_records hypertable", `
 SELECT EXISTS (
     SELECT 1
@@ -122,6 +135,18 @@ SELECT EXISTS (
       AND hypertable_name = 'flow_records'
       AND proc_name = 'policy_compression'
 )`)
+}
+
+func requireBoolQuery(ctx context.Context, t *testing.T, db *sql.DB, name string, query string, want bool, args ...any) {
+	t.Helper()
+
+	var got bool
+	if err := db.QueryRowContext(ctx, query, args...).Scan(&got); err != nil {
+		t.Fatalf("query %s: %v", name, err)
+	}
+	if got != want {
+		t.Fatalf("%s = %t, want %t", name, got, want)
+	}
 }
 
 func requireExists(ctx context.Context, t *testing.T, db *sql.DB, name string, query string, args ...any) {
