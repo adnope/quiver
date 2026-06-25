@@ -105,6 +105,11 @@ fi
 echo "Ingest verification PASS!"
 
 echo "=================================================="
+echo "Refreshing 5-minute top-talkers aggregate..."
+compose exec -T timescaledb psql -U postgres -d quiver -v ON_ERROR_STOP=1 -c \
+  "CALL refresh_continuous_aggregate('quiver.flow_5m_talkers', '${FROM_TIME}'::timestamptz, '${TO_TIME}'::timestamptz);"
+
+echo "=================================================="
 echo "Verifying GET /api/v1/aggregations/top-talkers..."
 AGG_URL="http://localhost:${QUIVER_HOST_PORT}/api/v1/aggregations/top-talkers?from=${FROM_TIME}&to=${TO_TIME}&direction=src"
 AGG_RESP=$(curl -s -H "X-API-Key: ${QUIVER_DEMO_ADMIN_API_KEY}" "$AGG_URL")
