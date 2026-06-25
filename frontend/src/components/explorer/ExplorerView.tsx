@@ -85,7 +85,7 @@ export function ExplorerView() {
   const [sortKey, setSortKey] = useState<SortKey>('event_start_time')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
   const [limit, setLimit] = useState(1000)
-  const [includeAttributes, setIncludeAttributes] = useState(false)
+  const [includeAttributes, setIncludeAttributes] = useState(true)
   const [fromInput, setFromInput] = useState(initialTimeWindow.fromInput)
   const [toInput, setToInput] = useState(initialTimeWindow.toInput)
   const [timeWindow, setTimeWindow] = useState(initialTimeWindow.query)
@@ -272,7 +272,7 @@ export function ExplorerView() {
               {lastApiLatency !== null && (
                 <>
                   <span className="text-[var(--border)]">•</span>
-                  <span className="text-sky-400 font-mono">{lastApiLatency}ms latency</span>
+                  <span className="font-mono" style={{ color: 'var(--accent-blue)' }}>{lastApiLatency}ms latency</span>
                 </>
               )}
             </p>
@@ -328,6 +328,7 @@ export function ExplorerView() {
                   From
                   <input
                     type="datetime-local"
+                    step="1"
                     className={cn('h-9 min-w-0 rounded-md border bg-[var(--input)] px-2 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-500', timeError ? 'border-red-500' : 'border-[var(--border)]')}
                     value={fromInput}
                     onChange={(event) => setFromInput(event.target.value)}
@@ -337,6 +338,7 @@ export function ExplorerView() {
                   To
                   <input
                     type="datetime-local"
+                    step="1"
                     className={cn('h-9 min-w-0 rounded-md border bg-[var(--input)] px-2 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-500', timeError ? 'border-red-500' : 'border-[var(--border)]')}
                     value={toInput}
                     onChange={(event) => setToInput(event.target.value)}
@@ -863,10 +865,10 @@ function compareFlow(a: FlowResponse, b: FlowResponse, key: SortKey) {
   }
 }
 
-/** Convert a Date to the `YYYY-MM-DDTHH:mm` string required by datetime-local inputs */
+/** Convert a Date to the `YYYY-MM-DDTHH:mm:ss` string required by datetime-local inputs */
 function toLocalDatetime(d: Date) {
   const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
 function JsonTree({ value, name }: { value: unknown; name?: string }) {
@@ -874,7 +876,7 @@ function JsonTree({ value, name }: { value: unknown; name?: string }) {
     return (
       <div className="font-mono text-xs leading-6">
         {name ? <span className="text-[var(--text-secondary)]">{name}: </span> : null}
-        <span className="text-sky-300">{JSON.stringify(value)}</span>
+        <span style={{ color: 'var(--accent-blue)' }}>{JSON.stringify(value)}</span>
       </div>
     )
   }

@@ -166,6 +166,10 @@ func main() {
 			stop()
 		}
 	}()
+
+	aggregateRefresher := postgres.NewFlowAggregateRefresher(db, logger)
+	go aggregateRefresher.Run(ctx)
+
 	startCollectors(ctx, stop, logger, registry, netflowCollectors)
 
 	<-ctx.Done()

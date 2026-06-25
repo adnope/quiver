@@ -73,8 +73,8 @@ export function MetricAreaChart({
       ref={scrollRef}
       className={
         scrollable
-          ? 'relative h-44 overflow-x-auto overflow-y-hidden pb-2'
-          : 'relative h-44'
+          ? 'relative h-44 overflow-x-auto overflow-y-visible pb-2'
+          : 'relative h-44 overflow-visible'
       }
     >
       <div className="h-full" style={chartWidth ? { width: chartWidth } : undefined}>
@@ -111,6 +111,9 @@ export function MetricAreaChart({
           <Tooltip
             content={<MetricTooltip widget={widget} range={range} series={series} />}
             cursor={{ stroke: 'var(--border)', strokeDasharray: '3 3' }}
+            allowEscapeViewBox={{ x: false, y: false }}
+            wrapperStyle={{ zIndex: 20 }}
+            position={{ y: 0 }}
           />
           {series.length > 0 ? (
             series.map((item) => (
