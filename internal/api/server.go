@@ -69,7 +69,7 @@ func NewServerWithCollectors(
 	lookupEnv func(string) string,
 	metrics *observability.Registry,
 	health HealthChecker,
-	netflowCollectors []InjectableCollector,
+	packetCollector InjectableCollector,
 ) (*Server, error) {
 	auth, err := NewAuthenticator(cfg, lookupEnv)
 	if err != nil {
@@ -99,7 +99,7 @@ func NewServerWithCollectors(
 			route(metrics, "POST /api/v1/ingest/zeek/conn", RequestIDMiddleware(RequireScope(auth, limiter, metrics, ScopeIngest, zeekIngestHandler))),
 		)
 	}
-	proxyHandler := NewProxyHandler(cfg, netflowCollectors)
+	proxyHandler := NewProxyHandler(cfg, packetCollector)
 	mux.Handle(
 		"POST /api/v1/ingest/proxy-netflow",
 		route(metrics, "POST /api/v1/ingest/proxy-netflow", RequestIDMiddleware(RequireScope(auth, limiter, metrics, ScopeIngest, proxyHandler))),

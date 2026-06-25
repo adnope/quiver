@@ -10,11 +10,12 @@ import (
 	"maps"
 	"net"
 	"net/netip"
+	"sync"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/adnope/quiver/internal/config"
+	"github.com/adnope/quiver/internal/collector"
 	"github.com/adnope/quiver/internal/domain"
 	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
 	"github.com/adnope/quiver/internal/kafka"
@@ -24,8 +25,18 @@ import (
 
 var ErrCollector = errors.New("netflow: collector failed")
 
+type CollectorConfig struct {
+	CollectorID       string
+	ListenAddr        string
+	ReadBufferBytes   int
+	PacketBufferBytes int
+	AuthRequired      bool
+}
+
 type Collector struct {
-	cfg                config.NetFlowV5CollectorConfig
+	cfg                CollectorConfig
+	connMu             sync.Mutex
+	packetConn         net.PacketConn
 	deadLetterMaxBytes int
 	publisher          kafka.RawEventPublisher
 	metrics            *observability.Registry
@@ -35,7 +46,7 @@ type Collector struct {
 }
 
 func NewCollector(
-	cfg config.NetFlowV5CollectorConfig,
+	cfg CollectorConfig,
 	deadLetterMaxBytes int,
 	publisher kafka.RawEventPublisher,
 	metrics *observability.Registry,
@@ -64,23 +75,53 @@ func NewCollector(
 	}, nil
 }
 
-func (c *Collector) Run(ctx context.Context) error {
+func (c *Collector) ID() string {
+	return c.cfg.CollectorID
+}
+
+func (c *Collector) Type() string {
+	return PluginType
+}
+
+func (c *Collector) SourceType() flowv1.SourceType {
+	return flowv1.SourceType_SOURCE_TYPE_NETFLOW_V5
+}
+
+func (c *Collector) Open(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("run netflow collector: %w", err)
+		return fmt.Errorf("open netflow collector: %w", err)
+	}
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+	if c.packetConn != nil {
+		return nil
 	}
 	listenConfig := net.ListenConfig{}
 	packetConn, err := listenConfig.ListenPacket(ctx, "udp", c.cfg.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("%w: listen udp: %w", ErrCollector, err)
 	}
-	defer func() {
-		_ = packetConn.Close()
-	}()
 	if c.cfg.ReadBufferBytes > 0 {
 		if udpConn, ok := packetConn.(*net.UDPConn); ok {
 			if err := udpConn.SetReadBuffer(c.cfg.ReadBufferBytes); err != nil {
 				c.logger.WarnContext(ctx, "netflow read buffer could not be configured", slog.Any("error", err))
 			}
+		}
+	}
+	c.packetConn = packetConn
+	return nil
+}
+
+func (c *Collector) Run(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("run netflow collector: %w", err)
+	}
+	c.connMu.Lock()
+	hasConn := c.packetConn != nil
+	c.connMu.Unlock()
+	if !hasConn {
+		if err := c.Open(ctx); err != nil {
+			return err
 		}
 	}
 
@@ -93,14 +134,23 @@ func (c *Collector) Run(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("run netflow collector: %w", err)
 		}
+		c.connMu.Lock()
+		packetConn := c.packetConn
+		c.connMu.Unlock()
+		if packetConn == nil {
+			return fmt.Errorf("%w: udp socket is not open", ErrCollector)
+		}
 		deadline := time.Now().Add(time.Second)
 		if err := packetConn.SetReadDeadline(deadline); err != nil {
 			return fmt.Errorf("%w: set read deadline: %w", ErrCollector, err)
 		}
 		n, addr, err := packetConn.ReadFrom(buffer)
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) && ctx.Err() != nil {
+				return ctx.Err()
+			}
 			var netErr net.Error
-			if errors.As(err, &netErr) {
+			if errors.As(err, &netErr) && netErr.Timeout() {
 				continue
 			}
 			return fmt.Errorf("%w: read packet: %w", ErrCollector, err)
@@ -115,6 +165,25 @@ func (c *Collector) Run(ctx context.Context) error {
 			c.logger.WarnContext(ctx, "netflow packet handling failed", slog.Any("error", err))
 		}
 	}
+}
+
+func (c *Collector) Close(ctx context.Context) error {
+	c.connMu.Lock()
+	packetConn := c.packetConn
+	c.packetConn = nil
+	c.connMu.Unlock()
+	if packetConn == nil {
+		return nil
+	}
+	err := packetConn.Close()
+	if err != nil {
+		return fmt.Errorf("%w: close udp socket: %w", ErrCollector, err)
+	}
+	return nil
+}
+
+func (c *Collector) Health(ctx context.Context) collector.CollectorHealth {
+	return collector.CollectorHealth{}
 }
 
 func (c *Collector) HandlePacket(ctx context.Context, sourceIP netip.Addr, sourceHost string, data []byte) error {
@@ -298,8 +367,4 @@ func truncatePacket(packet []byte, maxBytes int) ([]byte, bool) {
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
-}
-
-func (c *Collector) CollectorID() string {
-	return c.cfg.CollectorID
 }

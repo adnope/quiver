@@ -41,6 +41,7 @@ type Config struct {
 	RestIngest           RESTIngestConfig            `yaml:"rest_ingest"`
 	ZeekIngest           ZeekIngestConfig            `yaml:"zeek_ingest"`
 	QuiverClientGateways []QuiverClientGatewayConfig `yaml:"quiver_client_gateways"`
+	ProxyNetFlow         ProxyNetFlowConfig          `yaml:"proxy_netflow"`
 	Collectors           CollectorsConfig            `yaml:"collectors"`
 	DeadLetter           DeadLetterConfig            `yaml:"dead_letter"`
 	Observability        ObservabilityConfig         `yaml:"observability"`
@@ -164,28 +165,105 @@ type QuiverClientGatewayConfig struct {
 	KeyEnv     string `yaml:"key_env"`
 }
 
+type ProxyNetFlowConfig struct {
+	CollectorID string `yaml:"collector_id"`
+}
+
 type CollectorsConfig struct {
-	NetFlowV5 []NetFlowV5CollectorConfig `yaml:"netflow_v5"`
+	Restart   CollectorRestartConfig    `yaml:"restart"`
+	Instances []CollectorInstanceConfig `yaml:"instances"`
 }
 
-type NetFlowV5CollectorConfig struct {
-	Enabled           bool   `yaml:"enabled"`
-	CollectorID       string `yaml:"collector_id"`
-	ListenAddr        string `yaml:"listen_addr"`
-	ReadBufferBytes   int    `yaml:"read_buffer_bytes"`
-	PacketBufferBytes int    `yaml:"packet_buffer_bytes"`
-	AuthRequired      bool   `yaml:"auth_required"`
+type CollectorInstanceConfig struct {
+	Type        string                 `yaml:"type"`
+	CollectorID string                 `yaml:"collector_id"`
+	Enabled     bool                   `yaml:"enabled"`
+	Restart     CollectorRestartConfig `yaml:"restart"`
+	Settings    *yaml.Node             `yaml:"settings"`
 }
 
-func (n *NetFlowV5CollectorConfig) UnmarshalYAML(value *yaml.Node) error {
-	type alias NetFlowV5CollectorConfig
-	aux := alias{
-		AuthRequired: true, // Default to true
+func (c *CollectorInstanceConfig) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("collector instance must be a mapping")
 	}
-	if err := value.Decode(&aux); err != nil {
+	type instanceFields struct {
+		Type        string                 `yaml:"type"`
+		CollectorID string                 `yaml:"collector_id"`
+		Enabled     bool                   `yaml:"enabled"`
+		Restart     CollectorRestartConfig `yaml:"restart"`
+	}
+	aux := instanceFields{Enabled: true}
+	settings, err := decodeCollectorInstanceFields(value, &aux)
+	if err != nil {
 		return err
 	}
-	*n = NetFlowV5CollectorConfig(aux)
+	*c = CollectorInstanceConfig{
+		Type:        aux.Type,
+		CollectorID: aux.CollectorID,
+		Enabled:     aux.Enabled,
+		Restart:     aux.Restart,
+		Settings:    settings,
+	}
+	return nil
+}
+
+func decodeCollectorInstanceFields(value *yaml.Node, out any) (*yaml.Node, error) {
+	var settings *yaml.Node
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		key := value.Content[i].Value
+		switch key {
+		case "type", "collector_id", "enabled", "restart":
+		case "settings":
+			settings = value.Content[i+1]
+		default:
+			return nil, fmt.Errorf("field %s not found in type config.CollectorInstanceConfig", key)
+		}
+	}
+	if err := value.Decode(out); err != nil {
+		return nil, err
+	}
+	return settings, nil
+}
+
+type CollectorRestartConfig struct {
+	Policy         string   `yaml:"policy"`
+	InitialBackoff Duration `yaml:"initial_backoff"`
+	MaxBackoff     Duration `yaml:"max_backoff"`
+	MaxRestarts    int      `yaml:"max_restarts"`
+	MaxRestartsSet bool     `yaml:"-"`
+}
+
+func (c *CollectorRestartConfig) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("collector restart config must be a mapping")
+	}
+	var cfg CollectorRestartConfig
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		key := value.Content[i].Value
+		field := value.Content[i+1]
+		switch key {
+		case "policy":
+			if err := field.Decode(&cfg.Policy); err != nil {
+				return err
+			}
+		case "initial_backoff":
+			if err := field.Decode(&cfg.InitialBackoff); err != nil {
+				return err
+			}
+		case "max_backoff":
+			if err := field.Decode(&cfg.MaxBackoff); err != nil {
+				return err
+			}
+		case "max_restarts":
+			if err := field.Decode(&cfg.MaxRestarts); err != nil {
+				return err
+			}
+			cfg.MaxRestartsSet = true
+		default:
+			return fmt.Errorf("field %s not found in type config.CollectorRestartConfig", key)
+		}
+	}
+	*c = cfg
 	return nil
 }
 
@@ -338,8 +416,16 @@ func Default() Config {
 			},
 			Metrics: EndpointAuthConfig{AuthRequired: true},
 		},
-		RestIngest: RESTIngestConfig{MaxBatchSize: DefaultMaxBatchSize},
-		ZeekIngest: ZeekIngestConfig{MaxBatchSize: DefaultMaxBatchSize},
+		RestIngest:   RESTIngestConfig{MaxBatchSize: DefaultMaxBatchSize},
+		ZeekIngest:   ZeekIngestConfig{MaxBatchSize: DefaultMaxBatchSize},
+		ProxyNetFlow: ProxyNetFlowConfig{CollectorID: "netflow-main"},
+		Collectors: CollectorsConfig{
+			Restart: CollectorRestartConfig{
+				Policy:         "always",
+				InitialBackoff: Duration(time.Second),
+				MaxBackoff:     Duration(30 * time.Second),
+			},
+		},
 		DeadLetter: DeadLetterConfig{MaxRawPacketBytes: 1500},
 		Observability: ObservabilityConfig{
 			MetricsSaveInterval:         DefaultMetricsSaveInterval,
@@ -376,6 +462,9 @@ func (c Config) Validate(lookupEnv func(string) string) error {
 		return err
 	}
 	if err := c.validateQuiverClientGateways(lookupEnv); err != nil {
+		return err
+	}
+	if err := c.validateProxyNetFlow(); err != nil {
 		return err
 	}
 	if err := c.validateCollectors(); err != nil {
@@ -543,23 +632,79 @@ func (c Config) validateZeekIngest() error {
 	return nil
 }
 
+func (c Config) validateProxyNetFlow() error {
+	if len(c.QuiverClientGateways) == 0 {
+		return nil
+	}
+	if strings.TrimSpace(c.ProxyNetFlow.CollectorID) == "" {
+		return fmt.Errorf("%w: proxy_netflow.collector_id is required when quiver_client_gateways are configured", ErrInvalidConfig)
+	}
+	return nil
+}
+
 func (c Config) validateCollectors() error {
+	if err := validateRestartConfig("collectors.restart", c.Collectors.Restart, false); err != nil {
+		return err
+	}
+
 	collectorIDs := map[string]struct{}{}
+	if c.RestIngest.Enabled {
+		if err := reserveCollectorID(collectorIDs, c.RestIngest.CollectorID); err != nil {
+			return err
+		}
+	}
 	if c.ZeekIngest.Enabled {
 		if err := reserveCollectorID(collectorIDs, c.ZeekIngest.CollectorID); err != nil {
 			return err
 		}
 	}
-	for _, collector := range c.Collectors.NetFlowV5 {
-		if !collector.Enabled {
+	for i, instance := range c.Collectors.Instances {
+		if !instance.Enabled {
 			continue
 		}
-		if err := reserveCollectorID(collectorIDs, collector.CollectorID); err != nil {
+		path := fmt.Sprintf("collectors.instances[%d]", i)
+		if strings.TrimSpace(instance.Type) == "" {
+			return fmt.Errorf("%w: %s.type is required", ErrInvalidConfig, path)
+		}
+		if strings.TrimSpace(instance.CollectorID) == "" {
+			return fmt.Errorf("%w: %s.collector_id is required", ErrInvalidConfig, path)
+		}
+		if err := validateRestartConfig(path+".restart", instance.Restart, true); err != nil {
 			return err
 		}
-		if _, _, err := net.SplitHostPort(collector.ListenAddr); err != nil {
-			return fmt.Errorf("%w: netflow_v5.listen_addr must be host:port: %w", ErrInvalidConfig, err)
+		if err := reserveCollectorID(collectorIDs, instance.CollectorID); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+func validateRestartConfig(path string, cfg CollectorRestartConfig, allowEmpty bool) error {
+	policy := strings.TrimSpace(cfg.Policy)
+	if policy == "" {
+		if allowEmpty {
+			return validateRestartDurations(path, cfg)
+		}
+		return fmt.Errorf("%w: %s.policy is required", ErrInvalidConfig, path)
+	}
+	if policy != "always" && policy != "never" {
+		return fmt.Errorf("%w: %s.policy must be always or never", ErrInvalidConfig, path)
+	}
+	return validateRestartDurations(path, cfg)
+}
+
+func validateRestartDurations(path string, cfg CollectorRestartConfig) error {
+	if cfg.InitialBackoff < 0 {
+		return fmt.Errorf("%w: %s.initial_backoff must be non-negative", ErrInvalidConfig, path)
+	}
+	if cfg.MaxBackoff < 0 {
+		return fmt.Errorf("%w: %s.max_backoff must be non-negative", ErrInvalidConfig, path)
+	}
+	if cfg.InitialBackoff > 0 && cfg.MaxBackoff > 0 && cfg.InitialBackoff > cfg.MaxBackoff {
+		return fmt.Errorf("%w: %s.initial_backoff must be <= max_backoff", ErrInvalidConfig, path)
+	}
+	if cfg.MaxRestarts < 0 {
+		return fmt.Errorf("%w: %s.max_restarts must be >= 0", ErrInvalidConfig, path)
 	}
 	return nil
 }

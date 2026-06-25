@@ -44,7 +44,14 @@ func TestConfigValidateFailures(t *testing.T) {
 		{
 			name: "duplicate collector id",
 			mutate: func(c *Config) {
-				c.ZeekIngest.CollectorID = c.Collectors.NetFlowV5[0].CollectorID
+				c.ZeekIngest.CollectorID = c.Collectors.Instances[0].CollectorID
+			},
+			expected: "duplicate collector_id",
+		},
+		{
+			name: "duplicate rest ingest collector id",
+			mutate: func(c *Config) {
+				c.RestIngest.CollectorID = c.Collectors.Instances[0].CollectorID
 			},
 			expected: "duplicate collector_id",
 		},
@@ -184,10 +191,10 @@ func TestLoadBytes(t *testing.T) {
 	}
 }
 
-func TestNetFlowV5CollectorDefaultAuthRequired(t *testing.T) {
+func TestCollectorInstanceDefaultEnabled(t *testing.T) {
 	t.Parallel()
 
-	yamlContent := strings.ReplaceAll(validYAML(), "      auth_required: false", "")
+	yamlContent := strings.ReplaceAll(validYAML(), "      enabled: true\n", "")
 	cfg, err := LoadBytes([]byte(yamlContent), envLookup(map[string]string{
 		"QUIVER_DATABASE_DSN":         "postgres://timescaledb:5432/quiver?sslmode=disable",
 		cursorEnv:                     "cursor-key",
@@ -200,12 +207,29 @@ func TestNetFlowV5CollectorDefaultAuthRequired(t *testing.T) {
 		t.Fatalf("LoadBytes() error = %v", err)
 	}
 
-	if len(cfg.Collectors.NetFlowV5) != 1 {
-		t.Fatalf("expected 1 NetFlow collector, got %d", len(cfg.Collectors.NetFlowV5))
+	if len(cfg.Collectors.Instances) != 1 {
+		t.Fatalf("expected 1 collector instance, got %d", len(cfg.Collectors.Instances))
 	}
 
-	if !cfg.Collectors.NetFlowV5[0].AuthRequired {
-		t.Fatal("expected NetFlow collector auth_required to default to true")
+	instance := cfg.Collectors.Instances[0]
+	if !instance.Enabled {
+		t.Fatal("expected collector instance enabled to default to true")
+	}
+	if instance.Settings == nil {
+		t.Fatal("expected collector instance settings to be preserved")
+	}
+	var settings struct {
+		ListenAddr   string `yaml:"listen_addr"`
+		AuthRequired bool   `yaml:"auth_required"`
+	}
+	if err := instance.Settings.Decode(&settings); err != nil {
+		t.Fatalf("decode collector settings: %v", err)
+	}
+	if settings.ListenAddr != "0.0.0.0:2055" {
+		t.Fatalf("listen_addr setting = %q", settings.ListenAddr)
+	}
+	if settings.AuthRequired {
+		t.Fatal("expected auth_required setting to be false")
 	}
 }
 
@@ -218,6 +242,99 @@ func TestLoadBytesRejectsUnknownFields(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "field unknown not found") {
 		t.Fatalf("error %q does not describe unknown field", err)
+	}
+}
+
+func TestLoadBytesRejectsUnknownRestartFields(t *testing.T) {
+	t.Parallel()
+
+	yamlContent := strings.Replace(validYAML(), "    max_restarts: 0\n", "    max_restarts: 0\n    typo_field: true\n", 1)
+	_, err := LoadBytes([]byte(yamlContent), envLookup(map[string]string{
+		"QUIVER_DATABASE_DSN":         "postgres://timescaledb:5432/quiver?sslmode=disable",
+		cursorEnv:                     "cursor-key",
+		"QUIVER_DEMO_ADMIN_API_KEY":   "admin-key",
+		"REST_INGEST_DEMO_CLIENT_KEY": "ingest-key",
+		"NETFLOW_GATEWAY_DEMO_KEY":    "netflow-key",
+		"ZEEK_SHIPPER_DEMO_KEY":       "zeek-key",
+	}))
+	if err == nil {
+		t.Fatal("expected unknown restart field error")
+	}
+	if !strings.Contains(err.Error(), "field typo_field not found") {
+		t.Fatalf("error %q does not describe unknown restart field", err)
+	}
+}
+
+func TestLoadBytesRejectsUnknownInstanceRestartFields(t *testing.T) {
+	t.Parallel()
+
+	yamlContent := strings.Replace(validYAML(), "      settings:\n", "      restart:\n        policy: always\n        typo_field: true\n      settings:\n", 1)
+	_, err := LoadBytes([]byte(yamlContent), envLookup(map[string]string{
+		"QUIVER_DATABASE_DSN":         "postgres://timescaledb:5432/quiver?sslmode=disable",
+		cursorEnv:                     "cursor-key",
+		"QUIVER_DEMO_ADMIN_API_KEY":   "admin-key",
+		"REST_INGEST_DEMO_CLIENT_KEY": "ingest-key",
+		"NETFLOW_GATEWAY_DEMO_KEY":    "netflow-key",
+		"ZEEK_SHIPPER_DEMO_KEY":       "zeek-key",
+	}))
+	if err == nil {
+		t.Fatal("expected unknown instance restart field error")
+	}
+	if !strings.Contains(err.Error(), "field typo_field not found") {
+		t.Fatalf("error %q does not describe unknown instance restart field", err)
+	}
+}
+
+func TestLoadBytesRejectsLegacyNetFlowCollectorShape(t *testing.T) {
+	t.Parallel()
+
+	yamlContent := strings.Replace(validYAML(), `collectors:
+  restart:
+    policy: always
+    initial_backoff: "1s"
+    max_backoff: "30s"
+    max_restarts: 0
+  instances:
+    - type: netflow_v5
+      collector_id: netflow-main
+      enabled: true
+      settings:
+        listen_addr: "0.0.0.0:2055"
+        auth_required: false`, `collectors:
+  netflow_v5:
+    - enabled: true
+      collector_id: netflow-main
+      listen_addr: "0.0.0.0:2055"
+      auth_required: false`, 1)
+	_, err := LoadBytes([]byte(yamlContent), envLookup(map[string]string{
+		"QUIVER_DATABASE_DSN":         "postgres://timescaledb:5432/quiver?sslmode=disable",
+		cursorEnv:                     "cursor-key",
+		"QUIVER_DEMO_ADMIN_API_KEY":   "admin-key",
+		"REST_INGEST_DEMO_CLIENT_KEY": "ingest-key",
+		"NETFLOW_GATEWAY_DEMO_KEY":    "netflow-key",
+		"ZEEK_SHIPPER_DEMO_KEY":       "zeek-key",
+	}))
+	if err == nil {
+		t.Fatal("expected legacy collectors.netflow_v5 shape to fail")
+	}
+	if !strings.Contains(err.Error(), "field netflow_v5 not found") {
+		t.Fatalf("error %q does not describe legacy field", err)
+	}
+}
+
+func TestValidateSkipsDisabledCollectorInstances(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Collectors.Instances = append(cfg.Collectors.Instances, CollectorInstanceConfig{Enabled: false})
+	if err := cfg.Validate(envLookup(map[string]string{
+		cursorEnv:                     "cursor-key",
+		"QUIVER_DEMO_ADMIN_API_KEY":   "admin-key",
+		"REST_INGEST_DEMO_CLIENT_KEY": "ingest-key",
+		"NETFLOW_GATEWAY_DEMO_KEY":    "netflow-key",
+		"ZEEK_SHIPPER_DEMO_KEY":       "zeek-key",
+	})); err != nil {
+		t.Fatalf("Validate() error = %v", err)
 	}
 }
 
@@ -356,12 +473,12 @@ func validConfig() Config {
 	cfg.ZeekIngest.Enabled = true
 	cfg.ZeekIngest.CollectorID = "zeek-conn-http"
 	cfg.ZeekIngest.MaxBatchSize = 1000
-	cfg.Collectors.NetFlowV5 = []NetFlowV5CollectorConfig{
+	cfg.ProxyNetFlow.CollectorID = "netflow-main"
+	cfg.Collectors.Instances = []CollectorInstanceConfig{
 		{
-			Enabled:      true,
-			CollectorID:  "netflow-main",
-			ListenAddr:   "0.0.0.0:2055",
-			AuthRequired: false,
+			Type:        "netflow_v5",
+			CollectorID: "netflow-main",
+			Enabled:     true,
 		},
 	}
 	cfg.QuiverClientGateways = []QuiverClientGatewayConfig{
@@ -420,12 +537,21 @@ zeek_ingest:
   enabled: true
   collector_id: zeek-conn-http
   max_batch_size: 1000
+proxy_netflow:
+  collector_id: netflow-main
 collectors:
-  netflow_v5:
-    - enabled: true
+  restart:
+    policy: always
+    initial_backoff: "1s"
+    max_backoff: "30s"
+    max_restarts: 0
+  instances:
+    - type: netflow_v5
       collector_id: netflow-main
-      listen_addr: "0.0.0.0:2055"
-      auth_required: false
+      enabled: true
+      settings:
+        listen_addr: "0.0.0.0:2055"
+        auth_required: false
 quiver_client_gateways:
   - name: netflow-demo-gateway
     source_host: netflow-gateway-01

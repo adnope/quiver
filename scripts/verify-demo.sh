@@ -10,6 +10,8 @@ COMPOSE_FILE="${VERIFY_COMPOSE_FILE:-docker-compose.verify.yml}"
 
 QUIVER_HOST_PORT="${VERIFY_HOST_PORT:-8237}"
 NETFLOW_PORT="${VERIFY_NETFLOW_PORT:-2056}"
+NETFLOW_COLLECTOR_ID="${VERIFY_NETFLOW_COLLECTOR_ID:-netflow-main}"
+NETFLOW_GATEWAY_SOURCE_HOST="${VERIFY_NETFLOW_GATEWAY_SOURCE_HOST:-netflow-gateway-01}"
 
 QUIVER_DEMO_ADMIN_API_KEY="demoadminkey123"
 REST_INGEST_DEMO_CLIENT_KEY="democlientkey456"
@@ -37,17 +39,21 @@ compose up -d --build
 
 echo "Waiting for Quiver API to be healthy..."
 HEALTH_URL="http://localhost:${QUIVER_HOST_PORT}/health"
-MAX_ATTEMPTS=20
+MAX_ATTEMPTS=10
 ATTEMPT=1
 HEALTHY=false
 
 while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
-  if curl -s --fail "$HEALTH_URL" | grep -q '"status":"ok"'; then
+  HEALTH_RESPONSE="$(curl -s --fail "$HEALTH_URL" || true)"
+  if echo "$HEALTH_RESPONSE" | grep -q '"status":"ok"'; then
     echo "Quiver API is healthy!"
     HEALTHY=true
     break
   fi
   echo "Attempt $ATTEMPT/$MAX_ATTEMPTS: Quiver not ready yet, sleeping 2s..."
+  if [ -n "$HEALTH_RESPONSE" ]; then
+    echo "Health response: $HEALTH_RESPONSE"
+  fi
   sleep 2
   ATTEMPT=$((ATTEMPT + 1))
 done
@@ -57,6 +63,32 @@ if [ "$HEALTHY" = "false" ]; then
   compose logs
   exit 1
 fi
+
+echo "=================================================="
+echo "Verifying detailed collector health..."
+DETAILED_HEALTH=$(curl -s --fail -H "X-API-Key: ${QUIVER_DEMO_ADMIN_API_KEY}" "$HEALTH_URL")
+echo "Detailed Health: $DETAILED_HEALTH"
+if ! echo "$DETAILED_HEALTH" | grep -Fq '"database":"ok"'; then
+  echo "ERROR: Detailed health does not report database ok."
+  exit 1
+fi
+if ! echo "$DETAILED_HEALTH" | grep -Fq '"kafka":"ok"'; then
+  echo "ERROR: Detailed health does not report kafka ok."
+  exit 1
+fi
+if ! echo "$DETAILED_HEALTH" | grep -Fq "\"collector_id\":\"${NETFLOW_COLLECTOR_ID}\""; then
+  echo "ERROR: Detailed health is missing collector_id ${NETFLOW_COLLECTOR_ID}."
+  exit 1
+fi
+if ! echo "$DETAILED_HEALTH" | grep -Fq '"type":"netflow_v5"'; then
+  echo "ERROR: Detailed health is missing netflow_v5 collector type."
+  exit 1
+fi
+if ! echo "$DETAILED_HEALTH" | grep -Eq '"status":"(opened|running)"'; then
+  echo "ERROR: NetFlow collector is not opened or running in detailed health."
+  exit 1
+fi
+echo "Collector health verification PASS!"
 
 echo "=================================================="
 echo "Ingesting REST Batch JSON flows..."
@@ -76,8 +108,8 @@ go run tools/netflowgen/main.go -target "localhost:${NETFLOW_PORT}" -count 3 -se
 go run tools/netflowgen/main.go -target "localhost:${NETFLOW_PORT}" -count 1 -seq 4 -malformed version
 go run tools/netflowgen/main.go -target "localhost:${NETFLOW_PORT}" -count 1 -seq 5 -malformed version
 
-echo "Waiting 12 seconds for processing pipelines to complete..."
-sleep 12
+echo "Waiting 10 seconds for processing pipelines to complete..."
+sleep 10
 
 echo "=================================================="
 echo "Querying API GET /api/v1/flows..."
@@ -105,6 +137,22 @@ fi
 echo "Ingest verification PASS!"
 
 echo "=================================================="
+echo "Validating NetFlow proxy target collector and source host..."
+NETFLOW_URL="${URL}&source_type=netflow_v5&collector_id=${NETFLOW_COLLECTOR_ID}&source_host=${NETFLOW_GATEWAY_SOURCE_HOST}"
+echo "URL: $NETFLOW_URL"
+NETFLOW_RESPONSE=$(curl -s -H "X-API-Key: ${QUIVER_DEMO_ADMIN_API_KEY}" "$NETFLOW_URL")
+echo "NetFlow Response: $NETFLOW_RESPONSE"
+if ! echo "$NETFLOW_RESPONSE" | grep -Fq "\"collector_id\":\"${NETFLOW_COLLECTOR_ID}\""; then
+  echo "ERROR: Missing collector_id ${NETFLOW_COLLECTOR_ID} in filtered NetFlow query."
+  exit 1
+fi
+if ! echo "$NETFLOW_RESPONSE" | grep -Fq "\"source_host\":\"${NETFLOW_GATEWAY_SOURCE_HOST}\""; then
+  echo "ERROR: Missing source_host ${NETFLOW_GATEWAY_SOURCE_HOST} in filtered NetFlow query."
+  exit 1
+fi
+echo "NetFlow proxy collector verification PASS!"
+
+echo "=================================================="
 echo "Refreshing 5-minute top-talkers aggregate..."
 compose exec -T timescaledb psql -U postgres -d quiver -v ON_ERROR_STOP=1 -c \
   "CALL refresh_continuous_aggregate('quiver.flow_5m_talkers', '${FROM_TIME}'::timestamptz, '${TO_TIME}'::timestamptz);"
@@ -123,9 +171,21 @@ echo "Aggregations verification PASS!"
 echo "=================================================="
 echo "Querying GET /metrics..."
 METRICS_RESP=$(curl -s -H "X-API-Key: ${QUIVER_DEMO_ADMIN_API_KEY}" "http://localhost:${QUIVER_HOST_PORT}/metrics")
-echo "Metrics contains http_requests_total? ..."
+echo "Metrics contains http_requests_total and collector framework metrics? ..."
 if ! echo "$METRICS_RESP" | grep -q 'api_http_requests_total'; then
   echo "ERROR: Missing expected Prometheus metrics."
+  exit 1
+fi
+if ! echo "$METRICS_RESP" | grep -Fq "collector_status{collector_id=\"${NETFLOW_COLLECTOR_ID}\",source_type=\"netflow_v5\",status=\"running\"} 1"; then
+  echo "ERROR: Missing running collector_status metric for ${NETFLOW_COLLECTOR_ID}."
+  exit 1
+fi
+if ! echo "$METRICS_RESP" | grep -Fq "collector_packets_received_total{collector_id=\"${NETFLOW_COLLECTOR_ID}\",source_host=\"${NETFLOW_GATEWAY_SOURCE_HOST}\",source_type=\"netflow_v5\"}"; then
+  echo "ERROR: Missing NetFlow packet receive metric for ${NETFLOW_COLLECTOR_ID}/${NETFLOW_GATEWAY_SOURCE_HOST}."
+  exit 1
+fi
+if ! echo "$METRICS_RESP" | grep -Fq "collector_parse_errors_total{collector_id=\"${NETFLOW_COLLECTOR_ID}\",error_code=\"unsupported_version\",source_host=\"${NETFLOW_GATEWAY_SOURCE_HOST}\",source_type=\"netflow_v5\"} 2"; then
+  echo "ERROR: Missing expected NetFlow unsupported_version parse error metric."
   exit 1
 fi
 echo "Metrics verification PASS!"

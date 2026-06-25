@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/adnope/quiver/internal/collector"
 	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
 	"github.com/adnope/quiver/internal/observability"
 )
@@ -117,10 +118,10 @@ func TestCompositeHealthChecker(t *testing.T) {
 	checker := &CompositeHealthChecker{
 		DB:        nil, // skipped ping if nil
 		Publisher: &mockPublisher{healthy: true},
-		CollectorStatus: func() map[string]string {
-			return map[string]string{
-				"zeek_json":  "running",
-				"netflow_v5": "running",
+		CollectorSnapshots: func(context.Context) []collector.StatusSnapshot {
+			return []collector.StatusSnapshot{
+				healthSnapshot("zeek_json", collector.StateRunning),
+				healthSnapshot("netflow_v5", collector.StateRunning),
 			}
 		},
 	}
@@ -135,18 +136,18 @@ func TestCompositeHealthChecker(t *testing.T) {
 	if detailed.Kafka != HealthOK {
 		t.Fatalf("expected detailed.Kafka HealthOK, got %s", detailed.Kafka)
 	}
-	if detailed.Collectors["zeek_json"] != HealthOK {
-		t.Fatalf("expected zeek_json HealthOK, got %s", detailed.Collectors["zeek_json"])
+	if got := snapshotStatus(detailed.Collectors, "zeek_json"); got != collector.StateRunning {
+		t.Fatalf("expected zeek_json running, got %s", got)
 	}
 
-	// 2. Degraded case (collector stopped)
+	// 2. Degraded case (collector restarting)
 	checkerDegraded := &CompositeHealthChecker{
 		DB:        nil,
 		Publisher: &mockPublisher{healthy: true},
-		CollectorStatus: func() map[string]string {
-			return map[string]string{
-				"zeek_json":  "stopped",
-				"netflow_v5": "running",
+		CollectorSnapshots: func(context.Context) []collector.StatusSnapshot {
+			return []collector.StatusSnapshot{
+				healthSnapshot("zeek_json", collector.StateRestarting),
+				healthSnapshot("netflow_v5", collector.StateRunning),
 			}
 		},
 	}
@@ -157,18 +158,18 @@ func TestCompositeHealthChecker(t *testing.T) {
 	if detailedDegraded.Status != HealthDegraded {
 		t.Fatalf("expected DetailedStatus HealthDegraded, got %s", detailedDegraded.Status)
 	}
-	if detailedDegraded.Collectors["zeek_json"] != HealthFail {
-		t.Fatalf("expected zeek_json HealthFail, got %s", detailedDegraded.Collectors["zeek_json"])
+	if got := snapshotStatus(detailedDegraded.Collectors, "zeek_json"); got != collector.StateRestarting {
+		t.Fatalf("expected zeek_json restarting, got %s", got)
 	}
 
 	// 3. Failed case (publisher unhealthy)
 	checkerFailed := &CompositeHealthChecker{
 		DB:        nil,
 		Publisher: &mockPublisher{healthy: false},
-		CollectorStatus: func() map[string]string {
-			return map[string]string{
-				"zeek_json":  "running",
-				"netflow_v5": "running",
+		CollectorSnapshots: func(context.Context) []collector.StatusSnapshot {
+			return []collector.StatusSnapshot{
+				healthSnapshot("zeek_json", collector.StateRunning),
+				healthSnapshot("netflow_v5", collector.StateRunning),
 			}
 		},
 	}
@@ -193,9 +194,9 @@ func TestDetailedHealthRoute(t *testing.T) {
 	checker := &CompositeHealthChecker{
 		DB:        nil,
 		Publisher: &mockPublisher{healthy: true},
-		CollectorStatus: func() map[string]string {
-			return map[string]string{
-				"zeek_json": "running",
+		CollectorSnapshots: func(context.Context) []collector.StatusSnapshot {
+			return []collector.StatusSnapshot{
+				healthSnapshot("zeek_json", collector.StateRunning),
 			}
 		},
 	}
@@ -227,7 +228,26 @@ func TestDetailedHealthRoute(t *testing.T) {
 		t.Fatalf("status = %d, want 200, body=%s", recorderAuth.Code, recorderAuth.Body.String())
 	}
 	body := recorderAuth.Body.String()
-	if !strings.Contains(body, `"database":"ok"`) || !strings.Contains(body, `"kafka":"ok"`) || !strings.Contains(body, `"zeek_json":"ok"`) {
+	if !strings.Contains(body, `"database":"ok"`) || !strings.Contains(body, `"kafka":"ok"`) || !strings.Contains(body, `"collector_id":"zeek_json"`) || !strings.Contains(body, `"status":"running"`) {
 		t.Fatalf("expected detailed response, got %s", body)
 	}
+}
+
+func healthSnapshot(id string, state collector.State) collector.StatusSnapshot {
+	return collector.StatusSnapshot{
+		CollectorID:   id,
+		Type:          id,
+		SourceType:    id,
+		Status:        state,
+		RestartPolicy: "always",
+	}
+}
+
+func snapshotStatus(snapshots []collector.StatusSnapshot, id string) collector.State {
+	for _, snapshot := range snapshots {
+		if snapshot.CollectorID == id {
+			return snapshot.Status
+		}
+	}
+	return ""
 }

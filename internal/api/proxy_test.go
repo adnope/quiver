@@ -70,7 +70,7 @@ func TestProxyHandlerAuthentication(t *testing.T) {
 	}
 
 	collector := &mockCollector{}
-	server, err := NewServerWithCollectors(cfg, nil, nil, nil, env, nil, StaticHealthChecker{Value: HealthOK}, []InjectableCollector{collector})
+	server, err := NewServerWithCollectors(cfg, nil, nil, nil, env, nil, StaticHealthChecker{Value: HealthOK}, collector)
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
@@ -124,6 +124,36 @@ func TestProxyHandlerAuthentication(t *testing.T) {
 	}
 }
 
+func TestProxyHandlerReturnsUnavailableWithoutCollector(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Config{}
+	cfg.QuiverClientGateways = []config.QuiverClientGatewayConfig{{
+		Name:       "client-1",
+		SourceHost: "gateway-host-01",
+		KeyEnv:     "CLIENT_GATEWAY_KEY",
+	}}
+	cfg.API.RateLimits.Ingest.RequestsPerMinute = 60
+	env := func(key string) string {
+		if key == "CLIENT_GATEWAY_KEY" {
+			return "valid-gateway-key"
+		}
+		return ""
+	}
+	server, err := NewServerWithCollectors(cfg, nil, nil, nil, env, nil, StaticHealthChecker{Value: HealthOK}, nil)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	bodyBytes, _ := json.Marshal(ProxyRequest{Records: []ProxyRecord{{SourceIP: "192.0.2.1", PacketData: "AA=="}}})
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader(bodyBytes))
+	req.Header.Set(APIKeyHeader, "valid-gateway-key")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", w.Code)
+	}
+}
+
 func TestProxyHandlerGzipAndValidPayload(t *testing.T) {
 	t.Parallel()
 
@@ -145,7 +175,7 @@ func TestProxyHandlerGzipAndValidPayload(t *testing.T) {
 	}
 
 	collector := &mockCollector{}
-	server, err := NewServerWithCollectors(cfg, nil, nil, nil, env, nil, StaticHealthChecker{Value: HealthOK}, []InjectableCollector{collector})
+	server, err := NewServerWithCollectors(cfg, nil, nil, nil, env, nil, StaticHealthChecker{Value: HealthOK}, collector)
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
@@ -227,7 +257,7 @@ func TestProxyHandlerValidationAndErrors(t *testing.T) {
 	}
 
 	collector := &mockCollector{}
-	server, err := NewServerWithCollectors(cfg, nil, nil, nil, env, nil, StaticHealthChecker{Value: HealthOK}, []InjectableCollector{collector})
+	server, err := NewServerWithCollectors(cfg, nil, nil, nil, env, nil, StaticHealthChecker{Value: HealthOK}, collector)
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
@@ -345,7 +375,7 @@ func TestProxyHandlerEnforcesBodyAndBatchLimits(t *testing.T) {
 		env,
 		nil,
 		StaticHealthChecker{Value: HealthOK},
-		[]InjectableCollector{&mockCollector{}},
+		&mockCollector{},
 	)
 	if err != nil {
 		t.Fatalf("create server: %v", err)
@@ -372,7 +402,7 @@ func TestProxyHandlerEnforcesBodyAndBatchLimits(t *testing.T) {
 		env,
 		nil,
 		StaticHealthChecker{Value: HealthOK},
-		[]InjectableCollector{&mockCollector{}},
+		&mockCollector{},
 	)
 	if err != nil {
 		t.Fatalf("create batch-limit server: %v", err)

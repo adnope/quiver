@@ -82,14 +82,29 @@ quiver_client_gateways:
     source_host: "zeek-probe-01"
     key_env: "ZEEK_SHIPPER_DEMO_KEY"
 
+proxy_netflow:
+  collector_id: "netflow-main"
+
 collectors:
-  netflow_v5:
-    - enabled: true
+  restart:
+    policy: "always"
+    initial_backoff: "1s"
+    max_backoff: "30s"
+    max_restarts: 0
+  instances:
+    - type: "netflow_v5"
       collector_id: "netflow-main"
-      listen_addr: "0.0.0.0:${NETFLOW_PORT}"
-      read_buffer_bytes: 4194304
-      packet_buffer_bytes: 65535
-      auth_required: false
+      enabled: true
+      restart:
+        policy: "always"
+        initial_backoff: "1s"
+        max_backoff: "30s"
+        max_restarts: 0
+      settings:
+        listen_addr: "0.0.0.0:${NETFLOW_PORT}"
+        read_buffer_bytes: 4194304
+        packet_buffer_bytes: 65535
+        auth_required: false
 
 observability:
   metrics_save_interval: "5s"
