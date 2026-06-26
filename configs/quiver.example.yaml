@@ -105,6 +105,23 @@ collectors:
         read_buffer_bytes: 4194304
         packet_buffer_bytes: 65535
         auth_required: true
+    - type: "zeek_conn_tcp"
+      collector_id: "zeek-conn-tcp-main"
+      enabled: false
+      restart:
+        policy: "always"
+        initial_backoff: "1s"
+        max_backoff: "30s"
+        max_restarts: 0
+      settings:
+        listen_addr: "127.0.0.1:4770"
+        max_connections: 32
+        auth_timeout: "5s"
+        idle_timeout: "60s"
+        max_line_bytes: 1048576
+        batch_size: 100
+        flush_interval: "1s"
+        trust_peer_ip: false
 
 observability:
   metrics_save_interval: "5s"

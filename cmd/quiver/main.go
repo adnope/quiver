@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/adnope/quiver/internal/api"
+	quiverauth "github.com/adnope/quiver/internal/auth"
 	"github.com/adnope/quiver/internal/collector"
 	"github.com/adnope/quiver/internal/collector/builtin"
 	"github.com/adnope/quiver/internal/config"
@@ -112,12 +113,20 @@ func main() {
 		logger.ErrorContext(ctx, "create collector registry failed", slog.String("component", "cmd"), slog.Any("error", err))
 		os.Exit(1)
 	}
+	authenticator, err := quiverauth.NewAuthenticator(cfg, os.Getenv)
+	if err != nil {
+		logger.ErrorContext(ctx, "create authenticator failed", slog.String("component", "cmd"), slog.Any("error", err))
+		os.Exit(1)
+	}
 
 	collectorManager, err := collector.NewManager(ctx, builtinRegistry, cfg.Collectors, collector.BuildContext{
 		Publisher:          publisher,
 		Metrics:            metrics,
 		Logger:             logger,
 		DeadLetterMaxBytes: cfg.DeadLetter.MaxRawPacketBytes,
+		Services: collector.Services{
+			APIKeyAuthenticator: authenticator,
+		},
 	})
 	if err != nil {
 		logger.ErrorContext(ctx, "create collector manager failed", slog.String("component", "cmd"), slog.Any("error", err))

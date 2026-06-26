@@ -47,3 +47,24 @@ func TestParseConnLineTreatsDashAsMissing(t *testing.T) {
 		t.Fatalf("dash fields should be omitted: %+v", flow)
 	}
 }
+
+func TestParseConnLineAcceptsKnownUnderscoreAliases(t *testing.T) {
+	t.Parallel()
+
+	flow, err := ParseConnLine([]byte(`{"ts":1718532920.125,"uid":"C1","id_orig_h":"192.0.2.10","id_orig_p":51524,"id_resp_h":"198.51.100.20","id_resp_p":443,"proto":"tcp"}`))
+	if err != nil {
+		t.Fatalf("ParseConnLine() error = %v", err)
+	}
+	if flow.GetIdOrigH() != "192.0.2.10" || flow.GetIdOrigP() != 51524 || flow.GetIdRespH() != "198.51.100.20" || flow.GetIdRespP() != 443 {
+		t.Fatalf("aliases not mapped: %+v", flow)
+	}
+}
+
+func TestParseConnLineRejectsConflictingAliases(t *testing.T) {
+	t.Parallel()
+
+	_, err := ParseConnLine([]byte(`{"ts":1718532920.125,"uid":"C1","id.orig_h":"192.0.2.10","id_orig_h":"192.0.2.11","id.resp_h":"198.51.100.20","proto":"tcp"}`))
+	if !errors.Is(err, ErrInvalidLine) {
+		t.Fatalf("ParseConnLine() error = %v, want ErrInvalidLine", err)
+	}
+}

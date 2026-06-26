@@ -411,6 +411,7 @@ func TestDemoConfigLoads(t *testing.T) {
 		"NETFLOW_GATEWAY_DEMO_KEY":    fixtureValue("netflow"),
 		"ZEEK_SHIPPER_DEMO_KEY":       fixtureValue("zeek"),
 		"NETFLOW_PORT":                "2055",
+		"ZEEK_CONN_TCP_PORT":          "4770",
 		"POSTGRES_POOL_SIZE":          "20",
 		"POSTGRES_MAX_IDLE_CONNS":     "10",
 	}))
@@ -438,6 +439,7 @@ func TestDevConfigLoads(t *testing.T) {
 		"NETFLOW_GATEWAY_DEMO_KEY":    fixtureValue("netflow"),
 		"ZEEK_SHIPPER_DEMO_KEY":       fixtureValue("zeek"),
 		"NETFLOW_PORT":                "2055",
+		"ZEEK_CONN_TCP_PORT":          "4770",
 		"POSTGRES_POOL_SIZE":          "20",
 		"POSTGRES_MAX_IDLE_CONNS":     "10",
 	}))

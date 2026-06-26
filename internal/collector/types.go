@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/netip"
 
+	quiverauth "github.com/adnope/quiver/internal/auth"
 	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
 	"github.com/adnope/quiver/internal/kafka"
 	"github.com/adnope/quiver/internal/observability"
@@ -35,9 +36,14 @@ type CollectorHealth struct {
 	Details map[string]string
 }
 
+type Services struct {
+	APIKeyAuthenticator quiverauth.APIKeyAuthenticator
+}
+
 type BuildContext struct {
 	Publisher          kafka.RawEventPublisher
 	Metrics            *observability.Registry
 	Logger             *slog.Logger
 	DeadLetterMaxBytes int
+	Services           Services
 }

@@ -69,6 +69,9 @@ services:
       - ./configs:/configs
     expose:
       - "${QUIVER_INTERNAL_PORT}"
+      - "${ZEEK_CONN_TCP_PORT}"
+    ports:
+      - "${ZEEK_CONN_TCP_PORT}:${ZEEK_CONN_TCP_PORT}"
     depends_on:
       timescaledb:
         condition: service_healthy
