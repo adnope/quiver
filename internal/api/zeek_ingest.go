@@ -12,13 +12,14 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	"github.com/adnope/quiver/internal/collector/zeek"
 	"github.com/adnope/quiver/internal/config"
 	"github.com/adnope/quiver/internal/domain"
 	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
 	"github.com/adnope/quiver/internal/kafka"
 	"github.com/adnope/quiver/internal/validation"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type ZeekConnIngestHandler struct {
@@ -116,6 +117,7 @@ func (h *ZeekConnIngestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	results := make([]publishResult, len(request.Records))
 	sem := make(chan struct{}, 50)
 	var wg sync.WaitGroup
+	ctx := r.Context()
 
 	for index, raw := range request.Records {
 		wg.Add(1)
@@ -131,9 +133,9 @@ func (h *ZeekConnIngestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 				return
 			}
 
-			event, recordErr := h.recordToEvent(r, principal.SourceHost, line)
+			event, recordErr := h.recordToEvent(r.WithContext(ctx), principal.SourceHost, line)
 			if recordErr != nil {
-				if err := h.publishDeadLetter(r, principal.SourceHost, line, recordErr.Code, recordErr.Message); err != nil {
+				if err := h.publishDeadLetter(r.WithContext(ctx), principal.SourceHost, line, recordErr.Code, recordErr.Message); err != nil {
 					results[idx] = publishResult{pubErr: err}
 					return
 				}
@@ -141,7 +143,7 @@ func (h *ZeekConnIngestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 				return
 			}
 
-			if err := h.publisher.PublishRaw(r.Context(), event); err != nil {
+			if err := h.publisher.PublishRaw(ctx, event); err != nil {
 				results[idx] = publishResult{pubErr: err}
 				return
 			}

@@ -72,7 +72,7 @@ func ValidateDeadLetterEvent(event *flowv1.DeadLetterEvent) error {
 	}
 	if event.GetRawEvent() != nil {
 		if err := ValidateRawEventEnvelope(event.GetRawEvent()); err != nil {
-			return fmt.Errorf("%w: invalid raw_event: %v", ErrInvalidProtobufEvent, err)
+			return fmt.Errorf("%w: invalid raw_event: %w", ErrInvalidProtobufEvent, err)
 		}
 	}
 	if event.GetRawEvent() == nil && event.GetRawPayloadDebug() == nil {
@@ -110,6 +110,8 @@ func validateSource(source *flowv1.SourceIdentity, strict bool) error {
 
 func validateGeneratedSourceType(sourceType flowv1.SourceType) error {
 	switch sourceType {
+	case flowv1.SourceType_SOURCE_TYPE_UNSPECIFIED:
+		return fmt.Errorf("%w: unknown source.source_type %d", ErrInvalidProtobufEvent, sourceType)
 	case flowv1.SourceType_SOURCE_TYPE_NETFLOW_V5,
 		flowv1.SourceType_SOURCE_TYPE_ZEEK_CONN_JSON,
 		flowv1.SourceType_SOURCE_TYPE_REST_JSON,
@@ -125,6 +127,8 @@ func validateGeneratedSourceType(sourceType flowv1.SourceType) error {
 
 func validatePayloadMatchesSource(sourceType flowv1.SourceType, payload *flowv1.RawEventPayload) error {
 	switch sourceType {
+	case flowv1.SourceType_SOURCE_TYPE_UNSPECIFIED:
+		return fmt.Errorf("%w: source.payload does not match source.source_type %d", ErrInvalidProtobufEvent, sourceType)
 	case flowv1.SourceType_SOURCE_TYPE_NETFLOW_V5:
 		if payload.GetNetflowV5() != nil {
 			return nil

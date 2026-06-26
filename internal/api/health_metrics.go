@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/adnope/quiver/internal/collector"
 	"github.com/adnope/quiver/internal/kafka"
 	"github.com/adnope/quiver/internal/observability"
 )
@@ -40,10 +41,10 @@ type HealthResponse struct {
 }
 
 type DetailedHealthResponse struct {
-	Status     HealthStatus            `json:"status"`
-	Database   HealthStatus            `json:"database"`
-	Kafka      HealthStatus            `json:"kafka"`
-	Collectors map[string]HealthStatus `json:"collectors"`
+	Status     HealthStatus               `json:"status"`
+	Database   HealthStatus               `json:"database"`
+	Kafka      HealthStatus               `json:"kafka"`
+	Collectors []collector.StatusSnapshot `json:"collectors"`
 }
 
 type DetailedHealthChecker interface {
@@ -52,9 +53,9 @@ type DetailedHealthChecker interface {
 }
 
 type CompositeHealthChecker struct {
-	DB              *sql.DB
-	Publisher       kafka.RawEventPublisher
-	CollectorStatus func() map[string]string
+	DB                 *sql.DB
+	Publisher          kafka.RawEventPublisher
+	CollectorSnapshots func(context.Context) []collector.StatusSnapshot
 }
 
 func (c *CompositeHealthChecker) Status() HealthStatus {
@@ -76,11 +77,10 @@ func (c *CompositeHealthChecker) Status() HealthStatus {
 			}
 		}
 	}
-	if c.CollectorStatus != nil {
-		for _, status := range c.CollectorStatus() {
-			if status == "stopped" || status == "failed" {
-				return HealthDegraded
-			}
+	if c.CollectorSnapshots != nil {
+		status := collectorHealthStatus(c.CollectorSnapshots(ctx))
+		if status != HealthOK {
+			return status
 		}
 	}
 	return HealthOK
@@ -88,10 +88,9 @@ func (c *CompositeHealthChecker) Status() HealthStatus {
 
 func (c *CompositeHealthChecker) DetailedStatus(ctx context.Context) DetailedHealthResponse {
 	res := DetailedHealthResponse{
-		Status:     HealthOK,
-		Database:   HealthOK,
-		Kafka:      HealthOK,
-		Collectors: map[string]HealthStatus{},
+		Status:   HealthOK,
+		Database: HealthOK,
+		Kafka:    HealthOK,
 	}
 
 	pingCtx, pingCancel := context.WithTimeout(ctx, 2*time.Second)
@@ -116,27 +115,55 @@ func (c *CompositeHealthChecker) DetailedStatus(ctx context.Context) DetailedHea
 		}
 	}
 
-	if c.CollectorStatus != nil {
-		for id, status := range c.CollectorStatus() {
-			cStat := HealthOK
-			if status == "stopped" || status == "failed" {
-				cStat = HealthFail
-				if res.Status != HealthFail {
-					res.Status = HealthDegraded
-				}
-			}
-			res.Collectors[id] = cStat
+	if c.CollectorSnapshots != nil {
+		res.Collectors = c.CollectorSnapshots(ctx)
+		collectorStatus := collectorHealthStatus(res.Collectors)
+		if collectorStatus == HealthFail {
+			res.Status = HealthFail
+		} else if collectorStatus == HealthDegraded && res.Status != HealthFail {
+			res.Status = HealthDegraded
 		}
 	}
 
 	return res
 }
 
+func collectorHealthStatus(snapshots []collector.StatusSnapshot) HealthStatus {
+	if len(snapshots) == 0 {
+		return HealthOK
+	}
+	running := 0
+	degraded := 0
+	failed := 0
+	for _, snapshot := range snapshots {
+		switch snapshot.Status {
+		case collector.StateRunning, collector.StateOpened:
+			running++
+		case collector.StateFailed:
+			failed++
+		case collector.StateRestarting, collector.StateStopped:
+			degraded++
+		default:
+			degraded++
+		}
+	}
+	if failed == len(snapshots) {
+		return HealthFail
+	}
+	if failed > 0 || degraded > 0 {
+		return HealthDegraded
+	}
+	if running == len(snapshots) {
+		return HealthOK
+	}
+	return HealthDegraded
+}
+
 func HealthHandler(checker HealthChecker, auth *Authenticator) http.Handler {
 	if checker == nil {
 		checker = StaticHealthChecker{Value: HealthOK}
 	}
-	return http.HandlerFunc(serveHealth(checker, auth))
+	return serveHealth(checker, auth)
 }
 
 // @Summary Health status
@@ -182,7 +209,7 @@ func serveHealth(checker HealthChecker, auth *Authenticator) http.HandlerFunc {
 }
 
 func MetricsHandler(registry *observability.Registry) http.Handler {
-	return http.HandlerFunc(serveMetrics(registry))
+	return serveMetrics(registry)
 }
 
 // serveMetrics godoc
@@ -362,6 +389,10 @@ func MetricsHistoryHandler(db *sql.DB) http.Handler {
 				}
 			}
 			points = append(points, p)
+		}
+		if err := rows.Err(); err != nil {
+			writeError(w, r, http.StatusInternalServerError, CodeInternalError, "failed to read metrics history", nil)
+			return
 		}
 
 		writeJSON(w, http.StatusOK, MetricHistoryResponse{Points: points})

@@ -26,8 +26,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/adnope/quiver/internal/domain"
 	_ "github.com/lib/pq"
+
+	"github.com/adnope/quiver/internal/domain"
 )
 
 type PerformanceSmoke struct {
@@ -68,9 +69,9 @@ type SourceStats struct {
 }
 
 type sourceCounters struct {
-	attempted int64
-	accepted  int64
-	failed    int64
+	attempted atomic.Int64
+	accepted  atomic.Int64
+	failed    atomic.Int64
 }
 
 type sourceSnapshot struct {
@@ -116,9 +117,9 @@ var (
 	internalIPs = []string{"192.168.1.10", "192.168.1.50", "10.0.0.5", "172.16.5.12"}
 	publicIPs   = []string{"8.8.8.8", "1.1.1.1", "142.250.190.46", "104.244.42.1"}
 
-	attempted int64
-	accepted  int64
-	failed    int64
+	attempted atomic.Int64
+	accepted  atomic.Int64
+	failed    atomic.Int64
 
 	restCounters sourceCounters
 	udpCounters  sourceCounters
@@ -237,7 +238,7 @@ func main() {
 	startTime := time.Now()
 	warnings := []string{}
 	bottleneckDetected := false
-	actualDuration := float64(0)
+	var actualDuration float64
 	targetRPS := cfg.RPS
 	generatorUnderproducedSteps := 0
 
@@ -254,12 +255,10 @@ func main() {
 		targetRpsZeek.Store(int64(rZeek))
 	}
 
-	for i := 0; i < cfg.QueryWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range cfg.QueryWorkers {
+		wg.Go(func() {
 			runQueryWorker(ctx, client, cfg.TargetREST, cfg.AdminKey, &queryMu, &queryLatencies)
-		}()
+		})
 	}
 
 	for i := 0; i < cfg.RESTWorkers; i++ {
@@ -305,9 +304,9 @@ func main() {
 			restTarget, udpTarget, zeekTarget := splitSourceRPS(currentRPS, cfg)
 			fmt.Printf("-> Ramp Step: %d RPS (REST=%d UDP=%d Zeek=%d)\n", currentRPS, restTarget, udpTarget, zeekTarget)
 
-			startAttempted := atomic.LoadInt64(&attempted)
-			startAccepted := atomic.LoadInt64(&accepted)
-			startFailed := atomic.LoadInt64(&failed)
+			startAttempted := attempted.Load()
+			startAccepted := accepted.Load()
+			startFailed := failed.Load()
 
 			startREST := snapshotCounters(&restCounters)
 			startUDP := snapshotCounters(&udpCounters)
@@ -322,9 +321,9 @@ func main() {
 				break rampLoop
 			}
 
-			endAttempted := atomic.LoadInt64(&attempted)
-			endAccepted := atomic.LoadInt64(&accepted)
-			endFailed := atomic.LoadInt64(&failed)
+			endAttempted := attempted.Load()
+			endAccepted := accepted.Load()
+			endFailed := failed.Load()
 
 			stepAttempted := endAttempted - startAttempted
 			stepAccepted := endAccepted - startAccepted
@@ -410,10 +409,7 @@ func main() {
 	}
 
 	totalPersisted := int64(finalPersisted - initialPersisted)
-	droppedOrLag := atomic.LoadInt64(&accepted) - totalPersisted
-	if droppedOrLag < 0 {
-		droppedOrLag = 0
-	}
+	droppedOrLag := max(accepted.Load()-totalPersisted, 0)
 
 	if droppedOrLag > 0 {
 		warnings = append(warnings, fmt.Sprintf("%d records were accepted but not persisted within drain timeout. Kafka consumer lag or drops occurred.", droppedOrLag))
@@ -424,11 +420,9 @@ func main() {
 		totalPersistenceDuration = time.Second
 	}
 	durableThroughput := float64(totalPersisted) / totalPersistenceDuration.Seconds()
-	avgIngestionRPS := float64(atomic.LoadInt64(&accepted)) / actualDuration
+	avgIngestionRPS := float64(accepted.Load()) / actualDuration
 	drainDuration := lastIncreaseTime.Sub(drainStart)
-	if drainDuration < 0 {
-		drainDuration = 0
-	}
+	drainDuration = max(drainDuration, 0)
 
 	queryMu.Lock()
 	var lats Latencies
@@ -459,10 +453,10 @@ func main() {
 		DurationSeconds:      actualDuration,
 		Mode:                 modeName,
 		TargetRPS:            targetRPS,
-		RecordsAttempted:     atomic.LoadInt64(&attempted),
-		RecordsAccepted:      atomic.LoadInt64(&accepted),
+		RecordsAttempted:     attempted.Load(),
+		RecordsAccepted:      accepted.Load(),
 		RecordsPersisted:     totalPersisted,
-		RecordsFailed:        atomic.LoadInt64(&failed),
+		RecordsFailed:        failed.Load(),
 		RecordsDropped:       droppedOrLag,
 		ThroughputDurableRPS: durableThroughput,
 		QueryLatencies:       lats,
@@ -482,13 +476,13 @@ func main() {
 	}
 
 	artifactPath := "artifacts/performance-smoke.json"
-	if err := os.MkdirAll("artifacts", 0750); err != nil {
+	if err := os.MkdirAll("artifacts", 0o750); err != nil {
 		fmt.Printf("Failed to create artifacts directory: %v\n", err)
 	} else {
 		fileBytes, err := json.MarshalIndent(result, "", "    ")
 		if err != nil {
 			fmt.Printf("Failed to encode performance artifact: %v\n", err)
-		} else if err := os.WriteFile(artifactPath, fileBytes, 0600); err != nil {
+		} else if err := os.WriteFile(artifactPath, fileBytes, 0o600); err != nil {
 			fmt.Printf("Failed to write performance artifact: %v\n", err)
 		}
 	}
@@ -711,7 +705,7 @@ func runRESTWorker(ctx context.Context, cfg Config, workerID int, targetRPS *ato
 			return
 		case <-ticker.C:
 			records := make([]IngestRecord, 0, batchSize)
-			for i := 0; i < batchSize; i++ {
+			for range batchSize {
 				srcPort := uint32(32768 + r.Intn(32768))
 				dstPort := uint32(80)
 				if r.Intn(2) == 0 {
@@ -787,7 +781,8 @@ func sendRESTIngestBatch(ctx context.Context, client *http.Client, targetURL str
 }
 
 func runUDPWorker(ctx context.Context, cfg Config, workerID int, targetRPS *atomic.Int64) {
-	conn, err := net.Dial("udp", cfg.TargetUDP)
+	dialer := net.Dialer{}
+	conn, err := dialer.DialContext(ctx, "udp", cfg.TargetUDP)
 	if err != nil {
 		fmt.Printf("UDP connection failed for worker %d: %v\n", workerID, err)
 		return
@@ -846,7 +841,7 @@ func runUDPWorker(ctx context.Context, cfg Config, workerID int, targetRPS *atom
 			packet[21] = 2
 			binary.BigEndian.PutUint16(packet[22:24], uint16(workerID+1))
 
-			for i := 0; i < batchSize; i++ {
+			for i := range batchSize {
 				offset := 24 + i*48
 				record := packet[offset : offset+48]
 
@@ -907,11 +902,11 @@ func runZeekWorker(ctx context.Context, cfg Config, workerID int, targetRPS *ato
 
 	if cfg.ZeekMode == "file" && cfg.TargetZeek != "" {
 		dir := filepath.Dir(cfg.TargetZeek)
-		if err := os.MkdirAll(dir, 0750); err != nil {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
 			fmt.Printf("Failed to create Zeek log directory %s: %v\n", dir, err)
 			return
 		}
-		file, err = os.OpenFile(cfg.TargetZeek, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		file, err = os.OpenFile(cfg.TargetZeek, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 		if err != nil {
 			fmt.Printf("Failed to open Zeek log file %s: %v\n", cfg.TargetZeek, err)
 			return
@@ -957,7 +952,7 @@ func runZeekWorker(ctx context.Context, cfg Config, workerID int, targetRPS *ato
 			if cfg.ZeekMode == "http" {
 				targetURL := fmt.Sprintf("%s/api/v1/ingest/zeek/conn", cfg.TargetREST)
 				records := make([]json.RawMessage, 0, batchSize)
-				for i := 0; i < batchSize; i++ {
+				for range batchSize {
 					rec := generateZeekRecord(r)
 					data, _ := json.Marshal(rec)
 					records = append(records, data)
@@ -987,7 +982,7 @@ func runZeekWorker(ctx context.Context, cfg Config, workerID int, targetRPS *ato
 				}
 			} else if file != nil {
 				var buf bytes.Buffer
-				for i := 0; i < batchSize; i++ {
+				for range batchSize {
 					rec := generateZeekRecord(r)
 					data, _ := json.Marshal(rec)
 					buf.Write(data)
@@ -1109,12 +1104,8 @@ func activeWorkersForTarget(targetRPS int, workers int, batchSize int) int {
 	const desiredMinInterval = 100 * time.Millisecond
 
 	active := int(math.Ceil(float64(targetRPS) * desiredMinInterval.Seconds() / float64(batchSize)))
-	if active < 1 {
-		active = 1
-	}
-	if active > workers {
-		active = workers
-	}
+	active = max(active, 1)
+	active = min(active, workers)
 	return active
 }
 
@@ -1131,25 +1122,25 @@ func waitOrDone(ctx context.Context, d time.Duration) bool {
 }
 
 func recordAttempt(c *sourceCounters, n int64) {
-	atomic.AddInt64(&c.attempted, n)
-	atomic.AddInt64(&attempted, n)
+	c.attempted.Add(n)
+	attempted.Add(n)
 }
 
 func recordAccepted(c *sourceCounters, n int64) {
-	atomic.AddInt64(&c.accepted, n)
-	atomic.AddInt64(&accepted, n)
+	c.accepted.Add(n)
+	accepted.Add(n)
 }
 
 func recordFailure(c *sourceCounters, n int64) {
-	atomic.AddInt64(&c.failed, n)
-	atomic.AddInt64(&failed, n)
+	c.failed.Add(n)
+	failed.Add(n)
 }
 
 func snapshotCounters(c *sourceCounters) sourceSnapshot {
 	return sourceSnapshot{
-		attempted: atomic.LoadInt64(&c.attempted),
-		accepted:  atomic.LoadInt64(&c.accepted),
-		failed:    atomic.LoadInt64(&c.failed),
+		attempted: c.attempted.Load(),
+		accepted:  c.accepted.Load(),
+		failed:    c.failed.Load(),
 	}
 }
 

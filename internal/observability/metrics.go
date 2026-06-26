@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -123,7 +124,7 @@ func durationMillis(elapsed time.Duration) uint64 {
 		return 1
 	}
 	// time.Duration is int64, so a positive millisecond count always fits in uint64.
-	return uint64(millis) //nolint:gosec
+	return uint64(millis)
 }
 
 func (r *Registry) WritePrometheus() []byte {
@@ -221,11 +222,8 @@ func percentile(samples []uint64, quantile float64) uint64 {
 		return samples[0]
 	}
 	ordered := append([]uint64(nil), samples...)
-	sort.Slice(ordered, func(i, j int) bool { return ordered[i] < ordered[j] })
-	index := int(math.Ceil(quantile*float64(len(ordered)))) - 1
-	if index < 0 {
-		index = 0
-	}
+	slices.Sort(ordered)
+	index := max(int(math.Ceil(quantile*float64(len(ordered))))-1, 0)
 	if index >= len(ordered) {
 		index = len(ordered) - 1
 	}
@@ -237,8 +235,8 @@ func decodeLabels(s string) map[string]string {
 		return nil
 	}
 	res := make(map[string]string)
-	pairs := strings.Split(s, ",")
-	for _, pair := range pairs {
+	pairs := strings.SplitSeq(s, ",")
+	for pair := range pairs {
 		kv := strings.SplitN(pair, "=", 2)
 		if len(kv) == 2 {
 			k := kv[0]

@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/adnope/quiver/internal/config"
 	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
 	"github.com/adnope/quiver/internal/kafka"
 )
@@ -18,8 +17,7 @@ func TestNetFlowCollectorIntegrationUDP(t *testing.T) {
 	publisher := &fakeIntegrationPublisher{}
 	addr := "127.0.0.1:22055"
 
-	cfg := config.NetFlowV5CollectorConfig{
-		Enabled:         true,
+	cfg := CollectorConfig{
 		CollectorID:     "netflow-integration-01",
 		ListenAddr:      addr,
 		ReadBufferBytes: 1024,

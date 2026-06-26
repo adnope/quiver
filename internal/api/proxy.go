@@ -31,10 +31,10 @@ type ProxyRequest struct {
 type ProxyHandler struct {
 	maxBatchSize        int
 	maxRequestBodyBytes int64
-	collectors          []InjectableCollector
+	collector           InjectableCollector
 }
 
-func NewProxyHandler(cfg config.Config, collectors []InjectableCollector) *ProxyHandler {
+func NewProxyHandler(cfg config.Config, collector InjectableCollector) *ProxyHandler {
 	maxRequestBodyBytes := cfg.API.MaxRequestBodyBytes
 	if maxRequestBodyBytes <= 0 {
 		maxRequestBodyBytes = config.DefaultMaxRequestBodyBytes
@@ -42,7 +42,7 @@ func NewProxyHandler(cfg config.Config, collectors []InjectableCollector) *Proxy
 	return &ProxyHandler{
 		maxBatchSize:        config.DefaultMaxBatchSize,
 		maxRequestBodyBytes: maxRequestBodyBytes,
-		collectors:          collectors,
+		collector:           collector,
 	}
 }
 
@@ -55,7 +55,7 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(h.collectors) == 0 {
+	if h.collector == nil {
 		writeError(w, r, http.StatusServiceUnavailable, CodeServiceUnavailable, "netflow collector unavailable", nil)
 		return
 	}
@@ -115,14 +115,7 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		var relayErr error
-		for _, col := range h.collectors {
-			if err := col.HandlePacket(r.Context(), sourceIP, principal.SourceHost, rawBytes); err != nil {
-				relayErr = err
-			}
-		}
-
-		if relayErr != nil {
+		if err := h.collector.HandlePacket(r.Context(), sourceIP, principal.SourceHost, rawBytes); err != nil {
 			rejected++
 		} else {
 			accepted++

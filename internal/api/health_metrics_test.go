@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/adnope/quiver/internal/collector"
 	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
 	"github.com/adnope/quiver/internal/observability"
 )
@@ -22,7 +23,7 @@ func TestHealthRoute(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
 	server.Handler().ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusOK {
@@ -43,7 +44,7 @@ func TestHealthRouteFailureStatus(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/health", nil))
+	server.Handler().ServeHTTP(recorder, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil))
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", recorder.Code)
 	}
@@ -61,13 +62,13 @@ func TestMetricsRouteRequiresMetricsScope(t *testing.T) {
 	}
 
 	missing := httptest.NewRecorder()
-	server.Handler().ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	server.Handler().ServeHTTP(missing, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/metrics", nil))
 	if missing.Code != http.StatusUnauthorized {
 		t.Fatalf("missing key status = %d, want 401", missing.Code)
 	}
 
 	wrongScope := httptest.NewRecorder()
-	wrongRequest := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	wrongRequest := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/metrics", nil)
 	wrongRequest.Header.Set(APIKeyHeader, "query-key")
 	server.Handler().ServeHTTP(wrongScope, wrongRequest)
 	if wrongScope.Code != http.StatusForbidden {
@@ -75,7 +76,7 @@ func TestMetricsRouteRequiresMetricsScope(t *testing.T) {
 	}
 
 	ok := httptest.NewRecorder()
-	okRequest := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	okRequest := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/metrics", nil)
 	okRequest.Header.Set(APIKeyHeader, "metrics-key")
 	server.Handler().ServeHTTP(ok, okRequest)
 	if ok.Code != http.StatusOK {
@@ -97,12 +98,15 @@ type mockPublisher struct {
 func (m *mockPublisher) PublishRaw(ctx context.Context, event *flowv1.RawFlowEventEnvelope) error {
 	return nil
 }
+
 func (m *mockPublisher) PublishDeadLetter(ctx context.Context, event *flowv1.DeadLetterEvent) error {
 	return nil
 }
+
 func (m *mockPublisher) Flush(ctx context.Context) error {
 	return nil
 }
+
 func (m *mockPublisher) Healthy() bool {
 	return m.healthy
 }
@@ -114,10 +118,10 @@ func TestCompositeHealthChecker(t *testing.T) {
 	checker := &CompositeHealthChecker{
 		DB:        nil, // skipped ping if nil
 		Publisher: &mockPublisher{healthy: true},
-		CollectorStatus: func() map[string]string {
-			return map[string]string{
-				"zeek_json":  "running",
-				"netflow_v5": "running",
+		CollectorSnapshots: func(context.Context) []collector.StatusSnapshot {
+			return []collector.StatusSnapshot{
+				healthSnapshot("zeek_json", collector.StateRunning),
+				healthSnapshot("netflow_v5", collector.StateRunning),
 			}
 		},
 	}
@@ -132,18 +136,18 @@ func TestCompositeHealthChecker(t *testing.T) {
 	if detailed.Kafka != HealthOK {
 		t.Fatalf("expected detailed.Kafka HealthOK, got %s", detailed.Kafka)
 	}
-	if detailed.Collectors["zeek_json"] != HealthOK {
-		t.Fatalf("expected zeek_json HealthOK, got %s", detailed.Collectors["zeek_json"])
+	if got := snapshotStatus(detailed.Collectors, "zeek_json"); got != collector.StateRunning {
+		t.Fatalf("expected zeek_json running, got %s", got)
 	}
 
-	// 2. Degraded case (collector stopped)
+	// 2. Degraded case (collector restarting)
 	checkerDegraded := &CompositeHealthChecker{
 		DB:        nil,
 		Publisher: &mockPublisher{healthy: true},
-		CollectorStatus: func() map[string]string {
-			return map[string]string{
-				"zeek_json":  "stopped",
-				"netflow_v5": "running",
+		CollectorSnapshots: func(context.Context) []collector.StatusSnapshot {
+			return []collector.StatusSnapshot{
+				healthSnapshot("zeek_json", collector.StateRestarting),
+				healthSnapshot("netflow_v5", collector.StateRunning),
 			}
 		},
 	}
@@ -154,18 +158,18 @@ func TestCompositeHealthChecker(t *testing.T) {
 	if detailedDegraded.Status != HealthDegraded {
 		t.Fatalf("expected DetailedStatus HealthDegraded, got %s", detailedDegraded.Status)
 	}
-	if detailedDegraded.Collectors["zeek_json"] != HealthFail {
-		t.Fatalf("expected zeek_json HealthFail, got %s", detailedDegraded.Collectors["zeek_json"])
+	if got := snapshotStatus(detailedDegraded.Collectors, "zeek_json"); got != collector.StateRestarting {
+		t.Fatalf("expected zeek_json restarting, got %s", got)
 	}
 
 	// 3. Failed case (publisher unhealthy)
 	checkerFailed := &CompositeHealthChecker{
 		DB:        nil,
 		Publisher: &mockPublisher{healthy: false},
-		CollectorStatus: func() map[string]string {
-			return map[string]string{
-				"zeek_json":  "running",
-				"netflow_v5": "running",
+		CollectorSnapshots: func(context.Context) []collector.StatusSnapshot {
+			return []collector.StatusSnapshot{
+				healthSnapshot("zeek_json", collector.StateRunning),
+				healthSnapshot("netflow_v5", collector.StateRunning),
 			}
 		},
 	}
@@ -190,9 +194,9 @@ func TestDetailedHealthRoute(t *testing.T) {
 	checker := &CompositeHealthChecker{
 		DB:        nil,
 		Publisher: &mockPublisher{healthy: true},
-		CollectorStatus: func() map[string]string {
-			return map[string]string{
-				"zeek_json": "running",
+		CollectorSnapshots: func(context.Context) []collector.StatusSnapshot {
+			return []collector.StatusSnapshot{
+				healthSnapshot("zeek_json", collector.StateRunning),
 			}
 		},
 	}
@@ -204,7 +208,7 @@ func TestDetailedHealthRoute(t *testing.T) {
 
 	// 1. Unauthenticated request should return generic response only
 	recorderUnauth := httptest.NewRecorder()
-	reqUnauth := httptest.NewRequest(http.MethodGet, "/health", nil)
+	reqUnauth := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
 	server.Handler().ServeHTTP(recorderUnauth, reqUnauth)
 
 	if recorderUnauth.Code != http.StatusOK {
@@ -216,7 +220,7 @@ func TestDetailedHealthRoute(t *testing.T) {
 
 	// 2. Authenticated request with metrics scope should return detailed response
 	recorderAuth := httptest.NewRecorder()
-	reqAuth := httptest.NewRequest(http.MethodGet, "/health", nil)
+	reqAuth := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
 	reqAuth.Header.Set(APIKeyHeader, "metrics-key")
 	server.Handler().ServeHTTP(recorderAuth, reqAuth)
 
@@ -224,7 +228,26 @@ func TestDetailedHealthRoute(t *testing.T) {
 		t.Fatalf("status = %d, want 200, body=%s", recorderAuth.Code, recorderAuth.Body.String())
 	}
 	body := recorderAuth.Body.String()
-	if !strings.Contains(body, `"database":"ok"`) || !strings.Contains(body, `"kafka":"ok"`) || !strings.Contains(body, `"zeek_json":"ok"`) {
+	if !strings.Contains(body, `"database":"ok"`) || !strings.Contains(body, `"kafka":"ok"`) || !strings.Contains(body, `"collector_id":"zeek_json"`) || !strings.Contains(body, `"status":"running"`) {
 		t.Fatalf("expected detailed response, got %s", body)
 	}
+}
+
+func healthSnapshot(id string, state collector.State) collector.StatusSnapshot {
+	return collector.StatusSnapshot{
+		CollectorID:   id,
+		Type:          id,
+		SourceType:    id,
+		Status:        state,
+		RestartPolicy: "always",
+	}
+}
+
+func snapshotStatus(snapshots []collector.StatusSnapshot, id string) collector.State {
+	for _, snapshot := range snapshots {
+		if snapshot.CollectorID == id {
+			return snapshot.Status
+		}
+	}
+	return ""
 }

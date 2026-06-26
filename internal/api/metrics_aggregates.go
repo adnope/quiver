@@ -320,7 +320,7 @@ func queryMetricHistogramBuckets(
 			rollups[key] = rollup
 		}
 		if bucketIndex >= 0 && count > 0 {
-			rollup.histogramByBucket[bucketIndex] += uint64(count) //nolint:gosec
+			rollup.histogramByBucket[bucketIndex] += uint64(count)
 			rollup.hasHistogramCounts = true
 		}
 	}
@@ -484,7 +484,7 @@ func nonNegativeInt64(value int64) uint64 {
 	if value <= 0 {
 		return 0
 	}
-	return uint64(value) //nolint:gosec
+	return uint64(value)
 }
 
 func nullFloatPtr(value sql.NullFloat64) *float64 {
@@ -589,43 +589,43 @@ func (r *aggregateRollup) addRow(row MetricAggregatePoint) {
 
 func (r *aggregateRollup) toPoint() MetricAggregatePoint {
 	if r.hasSum {
-		r.point.Sum = floatPtr(r.sum)
+		r.point.Sum = new(r.sum)
 		if r.point.Count > 0 {
-			r.point.Avg = floatPtr(r.sum / float64(r.point.Count))
+			r.point.Avg = new(r.sum / float64(r.point.Count))
 		} else if r.point.SampleCount > 0 {
-			r.point.Avg = floatPtr(r.sum / float64(r.point.SampleCount))
+			r.point.Avg = new(r.sum / float64(r.point.SampleCount))
 		}
 	}
 	if r.hasMin {
-		r.point.Min = floatPtr(r.min)
+		r.point.Min = new(r.min)
 	}
 	if r.hasMax {
-		r.point.Max = floatPtr(r.max)
+		r.point.Max = new(r.max)
 	}
 	if r.hasFirst {
-		r.point.First = floatPtr(r.first)
+		r.point.First = new(r.first)
 	}
 	if r.hasLast {
-		r.point.Last = floatPtr(r.last)
+		r.point.Last = new(r.last)
 	}
 	if r.hasDelta {
-		r.point.Delta = floatPtr(r.delta)
+		r.point.Delta = new(r.delta)
 	}
 	if r.hasHistogramCounts {
 		counts := histogramCountsSlice(r.histogramByBucket)
-		r.point.P90 = floatPtr(observability.PercentileFromHistogramBuckets(counts, 0.90))
-		r.point.P95 = floatPtr(observability.PercentileFromHistogramBuckets(counts, 0.95))
-		r.point.P99 = floatPtr(observability.PercentileFromHistogramBuckets(counts, 0.99))
+		r.point.P90 = new(observability.PercentileFromHistogramBuckets(counts, 0.90))
+		r.point.P95 = new(observability.PercentileFromHistogramBuckets(counts, 0.95))
+		r.point.P99 = new(observability.PercentileFromHistogramBuckets(counts, 0.99))
 		return r.point
 	}
 	if r.hasP90 {
-		r.point.P90 = floatPtr(r.p90)
+		r.point.P90 = new(r.p90)
 	}
 	if r.hasP95 {
-		r.point.P95 = floatPtr(r.p95)
+		r.point.P95 = new(r.p95)
 	}
 	if r.hasP99 {
-		r.point.P99 = floatPtr(r.p99)
+		r.point.P99 = new(r.p99)
 	}
 	return r.point
 }
@@ -647,8 +647,4 @@ func histogramCountsSlice(countsByBucket map[int]uint64) []uint64 {
 		}
 	}
 	return counts
-}
-
-func floatPtr(value float64) *float64 {
-	return &value
 }

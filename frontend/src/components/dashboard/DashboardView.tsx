@@ -349,10 +349,8 @@ function deriveLiveStats(
   const kafkaLag = metrics
     .filter((metric) => metric.name === 'kafka_consumer_lag')
     .reduce((sum, metric) => sum + metric.value, 0)
-  const durablePersistRate = latestDeltaRate(
-    livePoints,
-    'flow_records_stored_total',
-  )
+  const durablePersistRate =
+    latestDeltaRate(livePoints, 'flow_records_stored_total') / LIVE_BUCKET_SECONDS
   const drainSeconds =
     kafkaLag > 0 && durablePersistRate > 0
       ? kafkaLag / durablePersistRate

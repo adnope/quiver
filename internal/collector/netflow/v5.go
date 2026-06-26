@@ -7,8 +7,9 @@ import (
 	"net"
 	"time"
 
-	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
 )
 
 const (
@@ -76,36 +77,28 @@ func ParseV5Packet(data []byte) (V5Packet, error) {
 			RecordIndex:      uint32(i),
 			SrcAddr:          net.IP(record[0:4]).String(),
 			DstAddr:          net.IP(record[4:8]).String(),
-			NextHop:          stringPtr(net.IP(record[8:12]).String()),
-			InputInterface:   uint32Ptr(uint32(binary.BigEndian.Uint16(record[12:14]))),
-			OutputInterface:  uint32Ptr(uint32(binary.BigEndian.Uint16(record[14:16]))),
+			NextHop:          new(net.IP(record[8:12]).String()),
+			InputInterface:   new(uint32(binary.BigEndian.Uint16(record[12:14]))),
+			OutputInterface:  new(uint32(binary.BigEndian.Uint16(record[14:16]))),
 			Packets:          uint64(binary.BigEndian.Uint32(record[16:20])),
 			Bytes:            uint64(binary.BigEndian.Uint32(record[20:24])),
 			FirstSwitchedMs:  binary.BigEndian.Uint32(record[24:28]),
 			LastSwitchedMs:   binary.BigEndian.Uint32(record[28:32]),
 			ExporterUnixTime: timestamppb.New(exporterTime),
 			ExporterUptimeMs: &sysUptime,
-			SrcPort:          uint32Ptr(uint32(binary.BigEndian.Uint16(record[32:34]))),
-			DstPort:          uint32Ptr(uint32(binary.BigEndian.Uint16(record[34:36]))),
+			SrcPort:          new(uint32(binary.BigEndian.Uint16(record[32:34]))),
+			DstPort:          new(uint32(binary.BigEndian.Uint16(record[34:36]))),
 			TcpFlags:         uint32(record[37]),
 			ProtocolNumber:   uint32(record[38]),
 			Tos:              uint32(record[39]),
-			SrcAs:            uint32Ptr(uint32(binary.BigEndian.Uint16(record[40:42]))),
-			DstAs:            uint32Ptr(uint32(binary.BigEndian.Uint16(record[42:44]))),
-			SrcMask:          uint32Ptr(uint32(record[44])),
-			DstMask:          uint32Ptr(uint32(record[45])),
+			SrcAs:            new(uint32(binary.BigEndian.Uint16(record[40:42]))),
+			DstAs:            new(uint32(binary.BigEndian.Uint16(record[42:44]))),
+			SrcMask:          new(uint32(record[44])),
+			DstMask:          new(uint32(record[45])),
 			EngineType:       &engineType,
 			EngineId:         &engineID,
 			SamplingRate:     &sampling,
 		})
 	}
 	return packet, nil
-}
-
-func stringPtr(value string) *string {
-	return &value
-}
-
-func uint32Ptr(value uint32) *uint32 {
-	return &value
 }

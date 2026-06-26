@@ -61,6 +61,35 @@ const sourceTypes: SourceType[] = ['rest_json', 'zeek_conn_json', 'netflow_v5', 
 const protocols: TransportProtocol[] = ['tcp', 'udp', 'icmp', 'gre', 'esp', 'other', 'unknown']
 const directions: FlowDirection[] = ['inbound', 'outbound', 'internal', 'external', 'unknown']
 
+async function copyTextToClipboard(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return
+    } catch {
+      // Some dev origins expose the Clipboard API but reject writes outside secure contexts.
+    }
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  textarea.style.top = '0'
+  document.body.appendChild(textarea)
+
+  try {
+    textarea.select()
+    const copied = document.execCommand('copy')
+    if (!copied) {
+      throw new Error('copy command rejected')
+    }
+  } finally {
+    document.body.removeChild(textarea)
+  }
+}
+
 export function ExplorerView() {
   const lastApiLatency = useAppStore((state) => state.lastApiLatency)
   const [initialTimeWindow] = useState(createInitialTimeWindow)
@@ -85,10 +114,11 @@ export function ExplorerView() {
   const [sortKey, setSortKey] = useState<SortKey>('event_start_time')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
   const [limit, setLimit] = useState(1000)
-  const [includeAttributes, setIncludeAttributes] = useState(false)
+  const [includeAttributes, setIncludeAttributes] = useState(true)
   const [fromInput, setFromInput] = useState(initialTimeWindow.fromInput)
   const [toInput, setToInput] = useState(initialTimeWindow.toInput)
   const [timeWindow, setTimeWindow] = useState(initialTimeWindow.query)
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
 
   const [searchInput, setSearchInput] = useState('')
   const [srcIpInput, setSrcIpInput] = useState('')
@@ -169,6 +199,23 @@ export function ExplorerView() {
     rowVirtualizer.getTotalSize() - (virtualRows.at(-1)?.end ?? 0)
   const columnCount = includeAttributes ? 16 : 15
   const selectedFlow = useFlowById(selectedId, selectedStartTime, true)
+
+  useEffect(() => {
+    setCopyStatus('idle')
+  }, [selectedId, selectedStartTime])
+
+  const copySelectedFlow = async () => {
+    if (!selectedFlow.data) {
+      return
+    }
+    const prettyJson = JSON.stringify(selectedFlow.data, null, 2)
+    try {
+      await copyTextToClipboard(prettyJson)
+      setCopyStatus('copied')
+    } catch {
+      setCopyStatus('failed')
+    }
+  }
 
   useEffect(() => {
     const sentinel = sentinelRef.current
@@ -272,7 +319,7 @@ export function ExplorerView() {
               {lastApiLatency !== null && (
                 <>
                   <span className="text-[var(--border)]">•</span>
-                  <span className="text-sky-400 font-mono">{lastApiLatency}ms latency</span>
+                  <span className="font-mono" style={{ color: 'var(--accent-blue)' }}>{lastApiLatency}ms latency</span>
                 </>
               )}
             </p>
@@ -328,6 +375,7 @@ export function ExplorerView() {
                   From
                   <input
                     type="datetime-local"
+                    step="1"
                     className={cn('h-9 min-w-0 rounded-md border bg-[var(--input)] px-2 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-500', timeError ? 'border-red-500' : 'border-[var(--border)]')}
                     value={fromInput}
                     onChange={(event) => setFromInput(event.target.value)}
@@ -337,6 +385,7 @@ export function ExplorerView() {
                   To
                   <input
                     type="datetime-local"
+                    step="1"
                     className={cn('h-9 min-w-0 rounded-md border bg-[var(--input)] px-2 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-500', timeError ? 'border-red-500' : 'border-[var(--border)]')}
                     value={toInput}
                     onChange={(event) => setToInput(event.target.value)}
@@ -604,10 +653,24 @@ export function ExplorerView() {
             }
           }}
         />
-        <div className="flex h-12 items-center border-b border-[var(--border)] px-4">
+        <div className="flex h-12 items-center justify-between gap-3 border-b border-[var(--border)] px-4">
           <h2 className="text-sm font-semibold tracking-normal text-[var(--text-primary)]">
             Cell Data
           </h2>
+          {selectedFlow.data ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => void copySelectedFlow()}
+              title="Copy prettified JSON"
+              aria-label="Copy prettified cell data JSON"
+              className="h-8 px-2"
+            >
+              <MaterialIcon name={copyStatus === 'copied' ? 'check' : 'content_copy'} />
+              <span className="text-xs">{copyStatus === 'failed' ? 'Failed' : 'Copy'}</span>
+            </Button>
+          ) : null}
         </div>
         <div className="min-h-0 flex-1 overflow-auto p-4">
           {selectedId ? (
@@ -863,10 +926,10 @@ function compareFlow(a: FlowResponse, b: FlowResponse, key: SortKey) {
   }
 }
 
-/** Convert a Date to the `YYYY-MM-DDTHH:mm` string required by datetime-local inputs */
+/** Convert a Date to the `YYYY-MM-DDTHH:mm:ss` string required by datetime-local inputs */
 function toLocalDatetime(d: Date) {
   const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
 function JsonTree({ value, name }: { value: unknown; name?: string }) {
@@ -874,7 +937,7 @@ function JsonTree({ value, name }: { value: unknown; name?: string }) {
     return (
       <div className="font-mono text-xs leading-6">
         {name ? <span className="text-[var(--text-secondary)]">{name}: </span> : null}
-        <span className="text-sky-300">{JSON.stringify(value)}</span>
+        <span style={{ color: 'var(--accent-blue)' }}>{JSON.stringify(value)}</span>
       </div>
     )
   }

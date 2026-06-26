@@ -12,9 +12,7 @@ import (
 	"github.com/adnope/quiver/internal/domain"
 )
 
-var (
-	ErrInvalidState = errors.New("postgres: invalid collector state")
-)
+var ErrInvalidState = errors.New("postgres: invalid collector state")
 
 type CollectorStateStore interface {
 	Load(ctx context.Context, key string) (CollectorState, bool, error)

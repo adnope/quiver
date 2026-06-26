@@ -38,7 +38,7 @@ func TestRegistryDurationPercentileSnapshots(t *testing.T) {
 	key := seriesKey{name: "storage_insert_duration", labels: encodeLabels(map[string]string{"status": "ok"})}
 	registry.durations[key] = make([]uint64, 100)
 	for i := range registry.durations[key] {
-		registry.durations[key][i] = uint64(i + 1) //nolint:gosec
+		registry.durations[key][i] = uint64(i + 1)
 	}
 
 	snapshots := registry.Snapshot()
@@ -54,7 +54,7 @@ func TestRegistryDurationPercentileSnapshots(t *testing.T) {
 func TestRegistryObserveDurationSlidingWindow(t *testing.T) {
 	registry := NewRegistry()
 
-	for i := 0; i < durationReservoirSize+25; i++ {
+	for range durationReservoirSize + 25 {
 		registry.ObserveDuration("storage_insert_duration", nil, time.Now().Add(-time.Millisecond))
 	}
 
@@ -105,6 +105,7 @@ type errorDriver struct{}
 func (errorDriver) Open(string) (driver.Conn, error) {
 	return nil, errors.New("expected test driver failure")
 }
+
 func TestRegistryDrainDurationAggregatesAndHistogram(t *testing.T) {
 	registry := NewRegistry()
 	key := seriesKey{name: "storage_insert_duration", labels: encodeLabels(map[string]string{"status": "ok"})}
@@ -156,6 +157,7 @@ func TestRegistryDrainCounterAndGaugeAggregates(t *testing.T) {
 	counter := findAggregate(aggregates, "flow_records_stored_total")
 	if counter == nil {
 		t.Fatal("missing counter aggregate")
+		return
 	}
 	if counter.MetricKind != MetricKindCounter || counter.Count != 2 || valueOrZero(counter.Sum) != 5 || valueOrZero(counter.Delta) != 5 {
 		t.Fatalf("counter aggregate = %+v", counter)
@@ -167,6 +169,7 @@ func TestRegistryDrainCounterAndGaugeAggregates(t *testing.T) {
 	gauge := findAggregate(aggregates, "db_connections_open")
 	if gauge == nil {
 		t.Fatal("missing gauge aggregate")
+		return
 	}
 	if gauge.MetricKind != MetricKindGauge || gauge.Count != 2 || valueOrZero(gauge.Avg) != 5 || valueOrZero(gauge.Min) != 4 || valueOrZero(gauge.Max) != 6 {
 		t.Fatalf("gauge aggregate = %+v", gauge)

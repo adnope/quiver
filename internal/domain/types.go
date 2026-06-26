@@ -119,6 +119,8 @@ func IsUUIDv7(value string) bool {
 
 func ValidSourceType(sourceType SourceType) bool {
 	switch sourceType {
+	case SourceTypeUnknown:
+		return false
 	case SourceTypeNetFlowV5,
 		SourceTypeNetFlowV9,
 		SourceTypeZeekConnJSON,

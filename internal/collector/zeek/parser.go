@@ -7,9 +7,10 @@ import (
 	"fmt"
 	"strings"
 
+	"google.golang.org/protobuf/types/known/structpb"
+
 	"github.com/adnope/quiver/internal/domain"
 	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 var ErrInvalidLine = errors.New("zeek: invalid conn json line")
@@ -19,7 +20,10 @@ func ParseConnLine(line []byte) (*flowv1.ZeekConnFlow, error) {
 	decoder.UseNumber()
 	fields := map[string]any{}
 	if err := decoder.Decode(&fields); err != nil {
-		return nil, fmt.Errorf("%w: decode json: %v", ErrInvalidLine, err)
+		return nil, fmt.Errorf("%w: decode json: %w", ErrInvalidLine, err)
+	}
+	if err := normalizeAliases(fields); err != nil {
+		return nil, err
 	}
 	flow := &flowv1.ZeekConnFlow{}
 	extra := map[string]any{}
@@ -104,11 +108,42 @@ func ParseConnLine(line []byte) (*flowv1.ZeekConnFlow, error) {
 	if len(extra) > 0 {
 		value, err := structpb.NewStruct(extra)
 		if err != nil {
-			return nil, fmt.Errorf("%w: extra fields: %v", ErrInvalidLine, err)
+			return nil, fmt.Errorf("%w: extra fields: %w", ErrInvalidLine, err)
 		}
 		flow.Extra = value
 	}
 	return flow, nil
+}
+
+var fieldAliases = map[string]string{
+	"id_orig_h": "id.orig_h",
+	"id_orig_p": "id.orig_p",
+	"id_resp_h": "id.resp_h",
+	"id_resp_p": "id.resp_p",
+}
+
+func normalizeAliases(fields map[string]any) error {
+	for alias, canonical := range fieldAliases {
+		aliasValue, aliasOK := fields[alias]
+		if !aliasOK {
+			continue
+		}
+		canonicalValue, canonicalOK := fields[canonical]
+		if canonicalOK && !equalJSONField(aliasValue, canonicalValue) {
+			return fmt.Errorf("%w: conflicting values for %s and %s", ErrInvalidLine, canonical, alias)
+		}
+		if !canonicalOK {
+			fields[canonical] = aliasValue
+		}
+		delete(fields, alias)
+	}
+	return nil
+}
+
+func equalJSONField(left any, right any) bool {
+	leftData, leftErr := json.Marshal(left)
+	rightData, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftData, rightData)
 }
 
 func stringField(value any) string {

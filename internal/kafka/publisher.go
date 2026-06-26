@@ -9,10 +9,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/adnope/quiver/internal/config"
 	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
 	"github.com/adnope/quiver/internal/validation"
-	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -133,7 +134,7 @@ func (p *Publisher) PublishRaw(ctx context.Context, event *flowv1.RawFlowEventEn
 		return fmt.Errorf("%w: context is nil", ErrInvalidEvent)
 	}
 	if err := validation.ValidateRawEventEnvelope(event); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidEvent, err)
+		return fmt.Errorf("%w: %w", ErrInvalidEvent, err)
 	}
 
 	value, err := proto.MarshalOptions{Deterministic: true}.Marshal(event)
@@ -158,7 +159,7 @@ func (p *Publisher) PublishDeadLetter(ctx context.Context, event *flowv1.DeadLet
 		return fmt.Errorf("%w: context is nil", ErrInvalidEvent)
 	}
 	if err := validation.ValidateDeadLetterEvent(event); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidEvent, err)
+		return fmt.Errorf("%w: %w", ErrInvalidEvent, err)
 	}
 
 	value, err := proto.MarshalOptions{Deterministic: true}.Marshal(event)

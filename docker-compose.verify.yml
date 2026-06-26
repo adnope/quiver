@@ -69,10 +69,13 @@ services:
       REST_INGEST_DEMO_CLIENT_KEY: democlientkey456
       NETFLOW_GATEWAY_DEMO_KEY: netflowgatewaykey456
       ZEEK_SHIPPER_DEMO_KEY: zeekshipperkey456
+      ZEEK_CONN_TCP_PORT: "4771"
     volumes:
       - ./configs:/configs
     expose:
       - "8080"
+    ports:
+      - "4771:4771"
     depends_on:
       timescaledb:
         condition: service_healthy

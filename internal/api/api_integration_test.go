@@ -109,7 +109,7 @@ func TestAPIIntegrationWithTimescaleDB(t *testing.T) {
 	}
 
 	// 3. Test Query API: GET /api/v1/flows
-	req := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/flows?from=%s&to=%s&limit=2", seedTime.Add(-10*time.Minute).Format(time.RFC3339), seedTime.Add(10*time.Minute).Format(time.RFC3339)), nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", fmt.Sprintf("/api/v1/flows?from=%s&to=%s&limit=2", seedTime.Add(-10*time.Minute).Format(time.RFC3339), seedTime.Add(10*time.Minute).Format(time.RFC3339)), nil)
 	req.Header.Set("X-API-Key", "clientsecret456")
 	w := httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
@@ -134,7 +134,7 @@ func TestAPIIntegrationWithTimescaleDB(t *testing.T) {
 	if searchResp.NextCursor == "" {
 		t.Error("Expected next_cursor to be populated")
 	} else {
-		reqPagination := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/flows?from=%s&to=%s&cursor=%s", seedTime.Add(-10*time.Minute).Format(time.RFC3339), seedTime.Add(10*time.Minute).Format(time.RFC3339), searchResp.NextCursor), nil)
+		reqPagination := httptest.NewRequestWithContext(context.Background(), "GET", fmt.Sprintf("/api/v1/flows?from=%s&to=%s&cursor=%s", seedTime.Add(-10*time.Minute).Format(time.RFC3339), seedTime.Add(10*time.Minute).Format(time.RFC3339), searchResp.NextCursor), nil)
 		reqPagination.Header.Set("X-API-Key", "clientsecret456")
 		wPagination := httptest.NewRecorder()
 		server.Handler().ServeHTTP(wPagination, reqPagination)
@@ -145,7 +145,7 @@ func TestAPIIntegrationWithTimescaleDB(t *testing.T) {
 	}
 
 	// 4. Test Query aggregations
-	reqAgg := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/aggregations/top-talkers?from=%s&to=%s&direction=src", seedTime.Add(-10*time.Minute).Format(time.RFC3339), seedTime.Add(10*time.Minute).Format(time.RFC3339)), nil)
+	reqAgg := httptest.NewRequestWithContext(context.Background(), "GET", fmt.Sprintf("/api/v1/aggregations/top-talkers?from=%s&to=%s&direction=src", seedTime.Add(-10*time.Minute).Format(time.RFC3339), seedTime.Add(10*time.Minute).Format(time.RFC3339)), nil)
 	reqAgg.Header.Set("X-API-Key", "clientsecret456")
 	wAgg := httptest.NewRecorder()
 	server.Handler().ServeHTTP(wAgg, reqAgg)
@@ -155,7 +155,7 @@ func TestAPIIntegrationWithTimescaleDB(t *testing.T) {
 	}
 
 	// 5. Test metrics auth & output
-	reqMetrics := httptest.NewRequest("GET", "/metrics", nil)
+	reqMetrics := httptest.NewRequestWithContext(context.Background(), "GET", "/metrics", nil)
 	reqMetrics.Header.Set("X-API-Key", "adminsecret123")
 	wMetrics := httptest.NewRecorder()
 	server.Handler().ServeHTTP(wMetrics, reqMetrics)
@@ -169,7 +169,7 @@ func TestAPIIntegrationWithTimescaleDB(t *testing.T) {
 
 	// 6. Test JSON /api/v1/metrics/live
 	metrics.Inc("test_live_metric_total", map[string]string{"label_key": "label_val"})
-	reqLive := httptest.NewRequest("GET", "/api/v1/metrics/live", nil)
+	reqLive := httptest.NewRequestWithContext(context.Background(), "GET", "/api/v1/metrics/live", nil)
 	reqLive.Header.Set("X-API-Key", "adminsecret123")
 	wLive := httptest.NewRecorder()
 	server.Handler().ServeHTTP(wLive, reqLive)
@@ -182,7 +182,7 @@ func TestAPIIntegrationWithTimescaleDB(t *testing.T) {
 	}
 
 	// Test live metrics auth block
-	reqLiveNoAuth := httptest.NewRequest("GET", "/api/v1/metrics/live", nil)
+	reqLiveNoAuth := httptest.NewRequestWithContext(context.Background(), "GET", "/api/v1/metrics/live", nil)
 	wLiveNoAuth := httptest.NewRecorder()
 	server.Handler().ServeHTTP(wLiveNoAuth, reqLiveNoAuth)
 	if wLiveNoAuth.Code != http.StatusUnauthorized {
@@ -197,7 +197,7 @@ func TestAPIIntegrationWithTimescaleDB(t *testing.T) {
 		t.Fatalf("Failed to seed system_metrics: %v", err)
 	}
 
-	reqHist := httptest.NewRequest("GET", "/api/v1/metrics/history?range=1h", nil)
+	reqHist := httptest.NewRequestWithContext(context.Background(), "GET", "/api/v1/metrics/history?range=1h", nil)
 	reqHist.Header.Set("X-API-Key", "adminsecret123")
 	wHist := httptest.NewRecorder()
 	server.Handler().ServeHTTP(wHist, reqHist)

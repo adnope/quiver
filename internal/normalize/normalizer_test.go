@@ -7,11 +7,12 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	"github.com/adnope/quiver/internal/domain"
 	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
 	"github.com/adnope/quiver/internal/validation"
-	"google.golang.org/protobuf/types/known/structpb"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestNormalizeRESTFlow(t *testing.T) {
@@ -258,8 +259,8 @@ func rawRESTEvent(t *testing.T) *flowv1.RawFlowEventEnvelope {
 					EventEndTime:        end,
 					ApplicationProtocol: &applicationProtocol,
 					Tuple: &flowv1.NetworkTuple{
-						SrcIp:             testPtr("192.168.1.10"),
-						DstIp:             testPtr("8.8.8.8"),
+						SrcIp:             new("192.168.1.10"),
+						DstIp:             new("8.8.8.8"),
 						SrcPort:           &srcPort,
 						DstPort:           &dstPort,
 						TransportProtocol: flowv1.TransportProtocol_TRANSPORT_PROTOCOL_UDP,
@@ -301,9 +302,9 @@ func rawZeekEvent(t *testing.T) *flowv1.RawFlowEventEnvelope {
 					Ts:        1781604920.123,
 					Uid:       "CAbCdEf123",
 					IdOrigH:   "192.168.1.10",
-					IdOrigP:   testPtr(uint32(51524)),
+					IdOrigP:   new(uint32(51524)),
 					IdRespH:   "8.8.8.8",
-					IdRespP:   testPtr(uint32(53)),
+					IdRespP:   new(uint32(53)),
 					Proto:     "udp",
 					Service:   &service,
 					Duration:  &duration,
@@ -457,8 +458,4 @@ func TestNormalizerEdgeCases(t *testing.T) {
 			t.Error("Expected attributes to be populated")
 		}
 	})
-}
-
-func testPtr[T any](value T) *T {
-	return &value
 }

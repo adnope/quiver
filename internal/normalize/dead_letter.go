@@ -4,10 +4,11 @@ import (
 	"fmt"
 	"time"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	"github.com/adnope/quiver/internal/domain"
 	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
 	"github.com/adnope/quiver/internal/validation"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const normalizationFailureCode = "normalization_failed"
@@ -41,7 +42,7 @@ func NewDeadLetterEvent(event *flowv1.RawFlowEventEnvelope, cause error, now tim
 		RawEvent: event,
 	}
 	if err := validation.ValidateDeadLetterEvent(deadLetter); err != nil {
-		return nil, fmt.Errorf("%w: invalid dead-letter event: %v", ErrNormalize, err)
+		return nil, fmt.Errorf("%w: invalid dead-letter event: %w", ErrNormalize, err)
 	}
 	return deadLetter, nil
 }

@@ -189,6 +189,7 @@ export function HistoryView() {
               From
               <input
                 type="datetime-local"
+                step="1"
                 className="h-9 min-w-0 rounded-md border border-[var(--border)] bg-[var(--input)] px-2 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-500"
                 value={draftFrom}
                 onChange={(event) => setDraftFrom(event.target.value)}
@@ -198,6 +199,7 @@ export function HistoryView() {
               To
               <input
                 type="datetime-local"
+                step="1"
                 className="h-9 min-w-0 rounded-md border border-[var(--border)] bg-[var(--input)] px-2 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-500"
                 value={draftTo}
                 onChange={(event) => setDraftTo(event.target.value)}
@@ -542,7 +544,7 @@ function toLocalInputValue(date: Date) {
     return ''
   }
   const offsetMs = date.getTimezoneOffset() * 60_000
-  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16)
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 19)
 }
 
 function writeHistoryQuery(windowState: HistoryWindow) {

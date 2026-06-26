@@ -2,18 +2,19 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
 	"github.com/adnope/quiver/internal/api"
-	collectorNetflow "github.com/adnope/quiver/internal/collector/netflow"
+	quiverauth "github.com/adnope/quiver/internal/auth"
+	"github.com/adnope/quiver/internal/collector"
+	"github.com/adnope/quiver/internal/collector/builtin"
 	"github.com/adnope/quiver/internal/config"
 	"github.com/adnope/quiver/internal/ingest"
 	"github.com/adnope/quiver/internal/kafka"
@@ -107,30 +108,47 @@ func main() {
 	pipeline.Start(ctx)
 	defer pipeline.Stop()
 
-	registry := newCollectorsRegistry()
-
-	healthChecker := &api.CompositeHealthChecker{
-		DB:              db,
-		Publisher:       publisher,
-		CollectorStatus: registry.Get,
+	builtinRegistry, err := builtin.NewRegistry()
+	if err != nil {
+		logger.ErrorContext(ctx, "create collector registry failed", slog.String("component", "cmd"), slog.Any("error", err))
+		os.Exit(1)
+	}
+	authenticator, err := quiverauth.NewAuthenticator(cfg, os.Getenv)
+	if err != nil {
+		logger.ErrorContext(ctx, "create authenticator failed", slog.String("component", "cmd"), slog.Any("error", err))
+		os.Exit(1)
 	}
 
-	var netflowCollectors []*collectorNetflow.Collector
-	for _, collectorCfg := range cfg.Collectors.NetFlowV5 {
-		if !collectorCfg.Enabled {
-			continue
-		}
-		collector, err := collectorNetflow.NewCollector(collectorCfg, cfg.DeadLetter.MaxRawPacketBytes, publisher, metrics, logger)
-		if err != nil {
-			logger.ErrorContext(ctx, "create netflow collector failed", slog.String("component", "cmd"), slog.Any("error", err))
+	collectorManager, err := collector.NewManager(ctx, builtinRegistry, cfg.Collectors, collector.BuildContext{
+		Publisher:          publisher,
+		Metrics:            metrics,
+		Logger:             logger,
+		DeadLetterMaxBytes: cfg.DeadLetter.MaxRawPacketBytes,
+		Services: collector.Services{
+			APIKeyAuthenticator: authenticator,
+		},
+	})
+	if err != nil {
+		logger.ErrorContext(ctx, "create collector manager failed", slog.String("component", "cmd"), slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	var proxyTarget api.InjectableCollector
+	if len(cfg.QuiverClientGateways) > 0 {
+		targetID := cfg.ProxyNetFlow.CollectorID
+		target, ok := collectorManager.PacketCollector(targetID)
+		if !ok {
+			err := proxyTargetError(collectorManager, targetID)
+			logger.ErrorContext(ctx, "secure proxy target unavailable", slog.String("component", "cmd"), slog.String("collector_id", targetID), slog.Any("error", err))
 			os.Exit(1)
 		}
-		netflowCollectors = append(netflowCollectors, collector)
+		proxyTarget = target
 	}
 
-	var injectableCollectors []api.InjectableCollector
-	for _, c := range netflowCollectors {
-		injectableCollectors = append(injectableCollectors, c)
+	healthChecker := &api.CompositeHealthChecker{
+		DB:                 db,
+		Publisher:          publisher,
+		CollectorSnapshots: collectorManager.StatusSnapshots,
 	}
 
 	apiServer, err := api.NewServerWithCollectors(
@@ -141,7 +159,7 @@ func main() {
 		os.Getenv,
 		metrics,
 		healthChecker,
-		injectableCollectors,
+		proxyTarget,
 	)
 	if err != nil {
 		logger.ErrorContext(ctx, "create api server failed", slog.String("component", "cmd"), slog.Any("error", err))
@@ -159,13 +177,21 @@ func main() {
 		slog.String("component", "cmd"),
 		slog.String("http_addr", cfg.Server.HTTPAddr),
 	)
+	collectorManager.Start(ctx)
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), cfg.Shutdown.Timeout.Std())
+		defer cancel()
+		collectorManager.Stop(stopCtx)
+	}()
 	go func() {
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("http server failed", slog.String("component", "cmd"), slog.Any("error", err))
 			stop()
 		}
 	}()
-	startCollectors(ctx, stop, logger, registry, netflowCollectors)
+
+	aggregateRefresher := postgres.NewFlowAggregateRefresher(db, logger)
+	go aggregateRefresher.Run(ctx)
 
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Shutdown.Timeout.Std())
@@ -176,49 +202,9 @@ func main() {
 	logger.Info("quiver stopped", slog.String("component", "cmd"))
 }
 
-func startCollectors(
-	ctx context.Context,
-	stop context.CancelFunc,
-	logger *slog.Logger,
-	registry *collectorsRegistry,
-	netflowCollectors []*collectorNetflow.Collector,
-) {
-	for _, collector := range netflowCollectors {
-		id := collector.CollectorID()
-		registry.Set(id, "running")
-		go func(c *collectorNetflow.Collector, cid string) {
-			if err := c.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				logger.Error("netflow collector stopped", slog.String("component", "cmd"), slog.String("collector_id", cid), slog.Any("error", err))
-				registry.Set(cid, "stopped")
-				stop()
-			}
-		}(collector, id)
+func proxyTargetError(manager *collector.Manager, collectorID string) error {
+	if manager.CollectorExists(collectorID) {
+		return fmt.Errorf("collector %q does not implement packet collector", collectorID)
 	}
-}
-
-type collectorsRegistry struct {
-	mu     sync.Mutex
-	status map[string]string
-}
-
-func newCollectorsRegistry() *collectorsRegistry {
-	return &collectorsRegistry{
-		status: make(map[string]string),
-	}
-}
-
-func (r *collectorsRegistry) Set(id string, status string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.status[id] = status
-}
-
-func (r *collectorsRegistry) Get() map[string]string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	res := make(map[string]string, len(r.status))
-	for k, v := range r.status {
-		res[k] = v
-	}
-	return res
+	return fmt.Errorf("collector %q does not exist", collectorID)
 }

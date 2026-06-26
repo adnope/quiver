@@ -70,7 +70,7 @@ func TestProxyHandlerAuthentication(t *testing.T) {
 	}
 
 	collector := &mockCollector{}
-	server, err := NewServerWithCollectors(cfg, nil, nil, nil, env, nil, StaticHealthChecker{Value: HealthOK}, []InjectableCollector{collector})
+	server, err := NewServerWithCollectors(cfg, nil, nil, nil, env, nil, StaticHealthChecker{Value: HealthOK}, collector)
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestProxyHandlerAuthentication(t *testing.T) {
 					},
 				},
 			})
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader(bodyBytes))
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader(bodyBytes))
 			req.Header.Set("Content-Type", "application/json")
 			if tt.apiKey != "" {
 				req.Header.Set(APIKeyHeader, tt.apiKey)
@@ -121,6 +121,36 @@ func TestProxyHandlerAuthentication(t *testing.T) {
 				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
 			}
 		})
+	}
+}
+
+func TestProxyHandlerReturnsUnavailableWithoutCollector(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Config{}
+	cfg.QuiverClientGateways = []config.QuiverClientGatewayConfig{{
+		Name:       "client-1",
+		SourceHost: "gateway-host-01",
+		KeyEnv:     "CLIENT_GATEWAY_KEY",
+	}}
+	cfg.API.RateLimits.Ingest.RequestsPerMinute = 60
+	env := func(key string) string {
+		if key == "CLIENT_GATEWAY_KEY" {
+			return "valid-gateway-key"
+		}
+		return ""
+	}
+	server, err := NewServerWithCollectors(cfg, nil, nil, nil, env, nil, StaticHealthChecker{Value: HealthOK}, nil)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	bodyBytes, _ := json.Marshal(ProxyRequest{Records: []ProxyRecord{{SourceIP: "192.0.2.1", PacketData: "AA=="}}})
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader(bodyBytes))
+	req.Header.Set(APIKeyHeader, "valid-gateway-key")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", w.Code)
 	}
 }
 
@@ -145,7 +175,7 @@ func TestProxyHandlerGzipAndValidPayload(t *testing.T) {
 	}
 
 	collector := &mockCollector{}
-	server, err := NewServerWithCollectors(cfg, nil, nil, nil, env, nil, StaticHealthChecker{Value: HealthOK}, []InjectableCollector{collector})
+	server, err := NewServerWithCollectors(cfg, nil, nil, nil, env, nil, StaticHealthChecker{Value: HealthOK}, collector)
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
@@ -172,7 +202,7 @@ func TestProxyHandlerGzipAndValidPayload(t *testing.T) {
 	}
 	_ = gw.Close()
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/ingest/proxy-netflow", &buf)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/ingest/proxy-netflow", &buf)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set(APIKeyHeader, "valid-gateway-key")
@@ -227,13 +257,13 @@ func TestProxyHandlerValidationAndErrors(t *testing.T) {
 	}
 
 	collector := &mockCollector{}
-	server, err := NewServerWithCollectors(cfg, nil, nil, nil, env, nil, StaticHealthChecker{Value: HealthOK}, []InjectableCollector{collector})
+	server, err := NewServerWithCollectors(cfg, nil, nil, nil, env, nil, StaticHealthChecker{Value: HealthOK}, collector)
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
 
 	t.Run("invalid json", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader([]byte("{invalid-json")))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader([]byte("{invalid-json")))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set(APIKeyHeader, "valid-gateway-key")
 
@@ -266,7 +296,7 @@ func TestProxyHandlerValidationAndErrors(t *testing.T) {
 		}
 
 		bodyBytes, _ := json.Marshal(payload)
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader(bodyBytes))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader(bodyBytes))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set(APIKeyHeader, "valid-gateway-key")
 
@@ -300,7 +330,7 @@ func TestProxyHandlerValidationAndErrors(t *testing.T) {
 		}
 
 		bodyBytes, _ := json.Marshal(payload)
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader(bodyBytes))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader(bodyBytes))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set(APIKeyHeader, "valid-gateway-key")
 
@@ -345,13 +375,13 @@ func TestProxyHandlerEnforcesBodyAndBatchLimits(t *testing.T) {
 		env,
 		nil,
 		StaticHealthChecker{Value: HealthOK},
-		[]InjectableCollector{&mockCollector{}},
+		&mockCollector{},
 	)
 	if err != nil {
 		t.Fatalf("create server: %v", err)
 	}
 
-	req := httptest.NewRequest(
+	req := httptest.NewRequestWithContext(context.Background(),
 		http.MethodPost,
 		"/api/v1/ingest/proxy-netflow",
 		bytes.NewReader([]byte(`{"records":[{"source_ip":"192.0.2.1","packet_data":"`+strings.Repeat("A", 80)+`"}]}`)),
@@ -372,7 +402,7 @@ func TestProxyHandlerEnforcesBodyAndBatchLimits(t *testing.T) {
 		env,
 		nil,
 		StaticHealthChecker{Value: HealthOK},
-		[]InjectableCollector{&mockCollector{}},
+		&mockCollector{},
 	)
 	if err != nil {
 		t.Fatalf("create batch-limit server: %v", err)
@@ -385,7 +415,7 @@ func TestProxyHandlerEnforcesBodyAndBatchLimits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader(body))
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader(body))
 	req.Header.Set(APIKeyHeader, "valid-gateway-key")
 	w = httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)

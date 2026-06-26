@@ -18,6 +18,25 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 )
 
+func refreshFlowAggregateViews(ctx context.Context, t *testing.T, db *sql.DB, from time.Time, to time.Time) {
+	t.Helper()
+
+	for _, viewName := range []string{
+		"quiver.flow_5m_talkers",
+		"quiver.flow_5m_ports",
+		"quiver.flow_hourly_talkers",
+		"quiver.flow_hourly_ports",
+	} {
+		query, err := refreshContinuousAggregateQuery(viewName)
+		if err != nil {
+			t.Fatalf("build refresh query for %s: %v", viewName, err)
+		}
+		if _, err := db.ExecContext(ctx, query, from, to); err != nil {
+			t.Fatalf("Failed to refresh %s: %v", viewName, err)
+		}
+	}
+}
+
 func TestFlowRepositoryIntegration(t *testing.T) {
 	dsn := os.Getenv("QUIVER_TEST_DATABASE_DSN")
 	if dsn == "" {
@@ -124,6 +143,10 @@ func TestFlowRepositoryIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InsertFlowRecords failed: %v", err)
 	}
+
+	refreshStart := seedTime.Add(-time.Hour)
+	refreshEnd := seedTime.Add(time.Hour)
+	refreshFlowAggregateViews(ctx, t, db, refreshStart, refreshEnd)
 
 	// 3. Test GetFlowByID
 	t.Run("GetFlowByID", func(t *testing.T) {
@@ -284,37 +307,47 @@ func TestFlowRepositoryIntegration(t *testing.T) {
 
 	// 7. Test Continuous Aggregate Materialization
 	t.Run("ContinuousAggregateMaterialization", func(t *testing.T) {
-		windowStart := seedTime.Truncate(time.Hour)
-		windowEnd := windowStart.Add(time.Hour)
+		refreshFlowAggregateViews(ctx, t, db, refreshStart, refreshEnd)
 
-		// Refresh both views
-		_, err := db.ExecContext(ctx, "CALL refresh_continuous_aggregate('quiver.flow_hourly_talkers', $1::timestamptz, $2::timestamptz)", windowStart, windowEnd)
-		if err != nil {
-			t.Fatalf("Failed to refresh flow_hourly_talkers: %v", err)
-		}
-		_, err = db.ExecContext(ctx, "CALL refresh_continuous_aggregate('quiver.flow_hourly_ports', $1::timestamptz, $2::timestamptz)", windowStart, windowEnd)
-		if err != nil {
-			t.Fatalf("Failed to refresh flow_hourly_ports: %v", err)
-		}
-
-		// Verify flow_hourly_talkers count
-		var talkersCount int
-		err = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM quiver.flow_hourly_talkers").Scan(&talkersCount)
-		if err != nil {
-			t.Fatalf("Failed to query flow_hourly_talkers: %v", err)
-		}
-		if talkersCount != 2 {
-			t.Errorf("Expected 2 rows in flow_hourly_talkers, got %d", talkersCount)
+		for _, viewName := range []string{
+			"flow_5m_talkers",
+			"flow_5m_ports",
+			"flow_hourly_talkers",
+			"flow_hourly_ports",
+		} {
+			var rowCount int
+			query := "SELECT COUNT(*) FROM quiver." + viewName + " WHERE bucket >= $1 AND bucket < $2"
+			if err := db.QueryRowContext(ctx, query, refreshStart, refreshEnd).Scan(&rowCount); err != nil {
+				t.Fatalf("Failed to query %s: %v", viewName, err)
+			}
+			if rowCount != 2 {
+				t.Errorf("Expected 2 rows in %s, got %d", viewName, rowCount)
+			}
 		}
 
-		// Verify flow_hourly_ports count
-		var portsCount int
-		err = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM quiver.flow_hourly_ports").Scan(&portsCount)
-		if err != nil {
-			t.Fatalf("Failed to query flow_hourly_ports: %v", err)
+		shortQuery := AggregationQuery{
+			From:      seedTime.Add(-10 * time.Minute),
+			To:        seedTime.Add(10 * time.Minute),
+			Metric:    AggregationMetricBytes,
+			Limit:     10,
+			Direction: AggregationDirectionSrc,
 		}
-		if portsCount != 2 {
-			t.Errorf("Expected 2 rows in flow_hourly_ports, got %d", portsCount)
+		shortPorts, err := flowRepo.TopPorts(ctx, shortQuery)
+		if err != nil {
+			t.Fatalf("TopPorts short-window query failed: %v", err)
+		}
+		if len(shortPorts) != 2 || shortPorts[0].Port != 54321 || shortPorts[0].Value != 1500 {
+			t.Fatalf("unexpected short-window TopPorts result: %+v", shortPorts)
+		}
+
+		longQuery := shortQuery
+		longQuery.From = seedTime.Add(-7 * time.Hour)
+		longPorts, err := flowRepo.TopPorts(ctx, longQuery)
+		if err != nil {
+			t.Fatalf("TopPorts long-window query failed: %v", err)
+		}
+		if len(longPorts) != 2 || longPorts[0].Port != 54321 || longPorts[0].Value != 1500 {
+			t.Fatalf("unexpected long-window TopPorts result: %+v", longPorts)
 		}
 	})
 }

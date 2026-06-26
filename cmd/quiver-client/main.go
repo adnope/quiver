@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -118,8 +119,12 @@ func main() {
 		},
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	// Setup listening socket
-	packetConn, err := net.ListenPacket("udp", cfg.ListenAddr)
+	listenConfig := net.ListenConfig{}
+	packetConn, err := listenConfig.ListenPacket(ctx, "udp", cfg.ListenAddr)
 	if err != nil {
 		log.Fatalf("Failed to listen on UDP %s: %v", cfg.ListenAddr, err)
 	}
@@ -127,16 +132,11 @@ func main() {
 
 	log.Printf("quiver-client listening on UDP %s", cfg.ListenAddr)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	queue := make(chan QueueItem, 10000)
 	var wg sync.WaitGroup
 
 	// Start UDP receiver goroutine
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		buf := make([]byte, 2048)
 		for {
 			select {
@@ -146,7 +146,8 @@ func main() {
 				_ = packetConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 				n, addr, err := packetConn.ReadFrom(buf)
 				if err != nil {
-					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					var netErr net.Error
+					if errors.As(err, &netErr) {
 						continue
 					}
 					select {
@@ -177,12 +178,10 @@ func main() {
 				}
 			}
 		}
-	}()
+	})
 
 	// Start single-worker sender goroutine
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		var batch []QueueItem
 		ticker := time.NewTicker(time.Duration(cfg.BatchIntervalMS) * time.Millisecond)
 		defer ticker.Stop()
@@ -210,7 +209,7 @@ func main() {
 				flush()
 			}
 		}
-	}()
+	})
 
 	<-ctx.Done()
 	log.Println("Shutting down quiver-client...")
@@ -251,7 +250,7 @@ func sendBatchWithRetry(ctx context.Context, client *http.Client, cfg ClientConf
 	maxBackoff := 5 * time.Second
 	maxRetries := 5
 
-	for retry := 0; retry < maxRetries; retry++ {
+	for retry := range maxRetries {
 		select {
 		case <-ctx.Done():
 			return

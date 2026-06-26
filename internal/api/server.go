@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -14,6 +15,8 @@ import (
 type Server struct {
 	mux *http.ServeMux
 }
+
+var errCursorSecretNotConfigured = errors.New("cursor secret is not configured")
 
 func NewServer(cfg config.Config, publisher kafka.RawEventPublisher, lookupEnv func(string) string) (*Server, error) {
 	return NewServerWithStores(cfg, publisher, nil, nil, lookupEnv)
@@ -66,13 +69,16 @@ func NewServerWithCollectors(
 	lookupEnv func(string) string,
 	metrics *observability.Registry,
 	health HealthChecker,
-	netflowCollectors []InjectableCollector,
+	packetCollector InjectableCollector,
 ) (*Server, error) {
 	auth, err := NewAuthenticator(cfg, lookupEnv)
 	if err != nil {
 		return nil, err
 	}
 	cursorCodec, err := cursorCodecFromConfig(cfg, lookupEnv)
+	if errors.Is(err, errCursorSecretNotConfigured) {
+		err = nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +99,7 @@ func NewServerWithCollectors(
 			route(metrics, "POST /api/v1/ingest/zeek/conn", RequestIDMiddleware(RequireScope(auth, limiter, metrics, ScopeIngest, zeekIngestHandler))),
 		)
 	}
-	proxyHandler := NewProxyHandler(cfg, netflowCollectors)
+	proxyHandler := NewProxyHandler(cfg, packetCollector)
 	mux.Handle(
 		"POST /api/v1/ingest/proxy-netflow",
 		route(metrics, "POST /api/v1/ingest/proxy-netflow", RequestIDMiddleware(RequireScope(auth, limiter, metrics, ScopeIngest, proxyHandler))),
@@ -150,7 +156,6 @@ func NewServerWithCollectors(
 	mux.Handle("GET /", route(metrics, "GET /", FrontendHandler(web.DistFS())))
 
 	return &Server{mux: mux}, nil
-
 }
 
 func (s *Server) Handler() http.Handler {
@@ -162,15 +167,15 @@ func (s *Server) Handler() http.Handler {
 
 func cursorCodecFromConfig(cfg config.Config, lookupEnv func(string) string) (*CursorCodec, error) {
 	if lookupEnv == nil {
-		return nil, nil
+		return nil, errCursorSecretNotConfigured
 	}
 	envName := strings.TrimSpace(cfg.API.Cursor.HMACSecretEnv)
 	if envName == "" {
-		return nil, nil
+		return nil, errCursorSecretNotConfigured
 	}
 	secret := strings.TrimSpace(lookupEnv(envName))
 	if secret == "" {
-		return nil, nil
+		return nil, errCursorSecretNotConfigured
 	}
 	return NewCursorCodec(secret)
 }

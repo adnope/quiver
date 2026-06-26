@@ -27,11 +27,16 @@ func TestMigrationFilesExist(t *testing.T) {
 		"000006_add_retention_policy.down.sql",
 		"000007_add_columnstore_policy.up.sql",
 		"000007_add_columnstore_policy.down.sql",
+		"000008_create_flow_hourly_aggregates.up.sql",
+		"000008_create_flow_hourly_aggregates.down.sql",
+		"000009_create_system_metrics.up.sql",
+		"000009_create_system_metrics.down.sql",
 		"000010_create_system_metric_aggregates.up.sql",
 		"000010_create_system_metric_aggregates.down.sql",
+		"000011_update_flow_cagg_tiers.up.sql",
+		"000011_update_flow_cagg_tiers.down.sql",
 	}
 	for _, name := range expected {
-		name := name
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
@@ -99,6 +104,25 @@ func TestMigrationsMatchPhaseFiveStorageDecisions(t *testing.T) {
 	requireMigrationContains(t, columnstore, "'quiver.flow_records'")
 	requireMigrationContains(t, columnstore, "after => INTERVAL '1 day'")
 	requireMigrationContains(t, columnstore, "if_not_exists => TRUE")
+
+	hourlyAggregates := readMigration(t, "000008_create_flow_hourly_aggregates.up.sql")
+	requireMigrationContains(t, hourlyAggregates, "CREATE MATERIALIZED VIEW IF NOT EXISTS quiver.flow_hourly_talkers")
+	requireMigrationContains(t, hourlyAggregates, "CREATE MATERIALIZED VIEW IF NOT EXISTS quiver.flow_hourly_ports")
+	requireMigrationContains(t, hourlyAggregates, "time_bucket('1 hour', event_start_time)")
+	requireMigrationContains(t, hourlyAggregates, "GROUP BY bucket, src_ip, dst_ip, protocol_number, transport_protocol, source_type")
+	requireMigrationContains(t, hourlyAggregates, "GROUP BY bucket, src_port, dst_port, protocol_number, transport_protocol, source_type")
+
+	flowAggregateTiers := readMigration(t, "000011_update_flow_cagg_tiers.up.sql")
+	requireMigrationContains(t, flowAggregateTiers, "remove_continuous_aggregate_policy('quiver.flow_hourly_talkers'")
+	requireMigrationContains(t, flowAggregateTiers, "remove_continuous_aggregate_policy('quiver.flow_hourly_ports'")
+	requireMigrationContains(t, flowAggregateTiers, "ALTER MATERIALIZED VIEW quiver.flow_hourly_talkers SET (timescaledb.materialized_only = true)")
+	requireMigrationContains(t, flowAggregateTiers, "ALTER MATERIALIZED VIEW quiver.flow_hourly_ports SET (timescaledb.materialized_only = true)")
+	requireMigrationContains(t, flowAggregateTiers, "CREATE MATERIALIZED VIEW IF NOT EXISTS quiver.flow_5m_talkers")
+	requireMigrationContains(t, flowAggregateTiers, "CREATE MATERIALIZED VIEW IF NOT EXISTS quiver.flow_5m_ports")
+	requireMigrationContains(t, flowAggregateTiers, "time_bucket('5 minutes', event_start_time)")
+	requireMigrationContains(t, flowAggregateTiers, "WITH (timescaledb.continuous, timescaledb.materialized_only = true)")
+	requireMigrationContains(t, flowAggregateTiers, "GROUP BY bucket, src_ip, dst_ip, protocol_number, transport_protocol, source_type")
+	requireMigrationContains(t, flowAggregateTiers, "GROUP BY bucket, src_port, dst_port, protocol_number, transport_protocol, source_type")
 
 	metricAggregates := readMigration(t, "000010_create_system_metric_aggregates.up.sql")
 	requireMigrationContains(t, metricAggregates, "CREATE TABLE IF NOT EXISTS quiver.system_metric_aggregates")

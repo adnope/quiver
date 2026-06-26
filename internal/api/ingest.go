@@ -12,13 +12,14 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	"github.com/adnope/quiver/internal/config"
 	"github.com/adnope/quiver/internal/domain"
 	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
 	"github.com/adnope/quiver/internal/kafka"
 	"github.com/adnope/quiver/internal/validation"
-	"google.golang.org/protobuf/types/known/structpb"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type IngestHandler struct {
@@ -145,6 +146,7 @@ func (h *IngestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	results := make([]publishResult, len(request.Records))
 	sem := make(chan struct{}, 50)
 	var wg sync.WaitGroup
+	ctx := r.Context()
 
 	for index, record := range request.Records {
 		wg.Add(1)
@@ -154,13 +156,13 @@ func (h *IngestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			event, valErr := h.recordToEvent(r, principal.SourceHost, rec)
+			event, valErr := h.recordToEvent(r.WithContext(ctx), principal.SourceHost, rec)
 			if valErr != nil {
 				results[idx] = publishResult{valErr: valErr}
 				return
 			}
 
-			if err := h.publisher.PublishRaw(r.Context(), event); err != nil {
+			if err := h.publisher.PublishRaw(ctx, event); err != nil {
 				results[idx] = publishResult{pubErr: err}
 				return
 			}
@@ -294,8 +296,8 @@ func restRecordToProto(record IngestRecord) (*flowv1.RestFlowInput, *recordValid
 		EventStartTime: start,
 		EventEndTime:   end,
 		Tuple: &flowv1.NetworkTuple{
-			SrcIp:             ptr(record.SrcIP),
-			DstIp:             ptr(record.DstIP),
+			SrcIp:             new(record.SrcIP),
+			DstIp:             new(record.DstIP),
 			SrcPort:           record.SrcPort,
 			DstPort:           record.DstPort,
 			TransportProtocol: protoTransportProtocol(protocol),
@@ -308,10 +310,10 @@ func restRecordToProto(record IngestRecord) (*flowv1.RestFlowInput, *recordValid
 		Attributes: attributes,
 	}
 	if strings.TrimSpace(record.ExternalID) != "" {
-		input.ExternalId = ptr(record.ExternalID)
+		input.ExternalId = new(record.ExternalID)
 	}
 	if strings.TrimSpace(record.ApplicationProtocol) != "" {
-		input.ApplicationProtocol = ptr(record.ApplicationProtocol)
+		input.ApplicationProtocol = new(record.ApplicationProtocol)
 	}
 	input.TcpFlags = record.TCPFlags
 	input.SamplingRate = record.SamplingRate
@@ -336,6 +338,8 @@ func requiresPorts(protocol domain.TransportProtocol) bool {
 
 func protoTransportProtocol(protocol domain.TransportProtocol) flowv1.TransportProtocol {
 	switch protocol {
+	case domain.TransportProtocolUnknown:
+		return flowv1.TransportProtocol_TRANSPORT_PROTOCOL_UNKNOWN
 	case domain.TransportProtocolTCP:
 		return flowv1.TransportProtocol_TRANSPORT_PROTOCOL_TCP
 	case domain.TransportProtocolUDP:
@@ -362,8 +366,4 @@ func clientIP(r *http.Request) string {
 		return addr.String()
 	}
 	return ""
-}
-
-func ptr[T any](value T) *T {
-	return &value
 }

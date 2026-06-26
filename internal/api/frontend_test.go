@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -60,7 +61,7 @@ func TestFrontendHandlerServesIndexAndAssets(t *testing.T) {
 			t.Parallel()
 
 			recorder := httptest.NewRecorder()
-			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, tt.path, nil))
+			handler.ServeHTTP(recorder, httptest.NewRequestWithContext(context.Background(), http.MethodGet, tt.path, nil))
 			if recorder.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d body=%s", recorder.Code, tt.wantStatus, recorder.Body.String())
 			}
@@ -93,7 +94,7 @@ func TestServerPreservesBackendRoutePrecedence(t *testing.T) {
 	}
 
 	health := httptest.NewRecorder()
-	server.Handler().ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/health", nil))
+	server.Handler().ServeHTTP(health, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil))
 	if health.Code != http.StatusOK {
 		t.Fatalf("/health status = %d, want 200 body=%s", health.Code, health.Body.String())
 	}
@@ -102,7 +103,7 @@ func TestServerPreservesBackendRoutePrecedence(t *testing.T) {
 	}
 
 	api := httptest.NewRecorder()
-	server.Handler().ServeHTTP(api, httptest.NewRequest(http.MethodGet, "/api/v1/unknown", nil))
+	server.Handler().ServeHTTP(api, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/unknown", nil))
 	if api.Code != http.StatusNotFound {
 		t.Fatalf("/api unknown status = %d, want 404", api.Code)
 	}

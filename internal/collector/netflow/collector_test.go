@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/adnope/quiver/internal/config"
 	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
 	"github.com/adnope/quiver/internal/kafka"
 	"github.com/adnope/quiver/internal/observability"
@@ -121,8 +120,7 @@ func TestCollectorPropagatesNonQueuePublishError(t *testing.T) {
 func newTestCollector(t *testing.T, publisher *fakePublisher, metrics *observability.Registry) *Collector {
 	t.Helper()
 
-	collector, err := NewCollector(config.NetFlowV5CollectorConfig{
-		Enabled:           true,
+	collector, err := NewCollector(CollectorConfig{
 		CollectorID:       "netflow-test",
 		ListenAddr:        "127.0.0.1:2055",
 		ReadBufferBytes:   4096,
