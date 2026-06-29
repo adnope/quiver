@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/adnope/quiver/internal/collector"
@@ -42,6 +43,7 @@ type Collector struct {
 	metrics            *observability.Registry
 	logger             *slog.Logger
 	now                func() time.Time
+	sequenceMu         sync.Mutex
 	nextSequence       map[netip.Addr]uint32
 }
 
@@ -161,7 +163,12 @@ func (c *Collector) Run(ctx context.Context) error {
 			continue
 		}
 		packet := append([]byte(nil), buffer[:n]...)
-		if err := c.HandlePacket(ctx, source, "", packet); err != nil {
+		_, err = c.HandlePacket(ctx, collector.PacketInput{
+			SourceIP:   source,
+			ReceivedAt: c.now().UTC(),
+			Data:       packet,
+		})
+		if err != nil {
 			c.logger.WarnContext(ctx, "netflow packet handling failed", slog.Any("error", err))
 		}
 	}
@@ -186,51 +193,56 @@ func (c *Collector) Health(ctx context.Context) collector.CollectorHealth {
 	return collector.CollectorHealth{}
 }
 
-func (c *Collector) HandlePacket(ctx context.Context, sourceIP netip.Addr, sourceHost string, data []byte) error {
+func (c *Collector) HandlePacket(ctx context.Context, input collector.PacketInput) (collector.PacketResult, error) {
 	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("handle netflow packet: %w", err)
+		return collector.PacketResult{Status: collector.PacketRetryable, ErrorCode: "context_done"}, fmt.Errorf("handle netflow packet: %w", err)
 	}
 
+	sourceIP := input.SourceIP
+	sourceHost := input.SourceHost
 	if sourceHost == "" {
 		if c.cfg.AuthRequired {
 			c.metric("collector_dropped_packets_total", map[string]string{"reason": "auth_required", "source_host": "unknown"})
-			return nil
+			return collector.PacketResult{Status: collector.PacketRejected, ErrorCode: "auth_required"}, nil
 		}
 		sourceHost = "netflow-v5-" + sourceIP.String()
 	}
 
 	c.metric("collector_packets_received_total", map[string]string{"source_host": sourceHost})
-	packet, err := ParseV5Packet(data)
+	packet, err := ParseV5Packet(input.Data)
 	if err != nil {
 		code := "malformed_packet"
 		if errors.Is(err, ErrUnsupportedVersion) {
 			code = "unsupported_version"
 		}
 		c.metric("collector_parse_errors_total", map[string]string{"error_code": code, "source_host": sourceHost})
-		if dlqErr := c.publishPacketDLQ(ctx, sourceIP, sourceHost, data, code, err.Error()); dlqErr != nil {
-			return dlqErr
+		if dlqErr := c.publishPacketDLQ(ctx, sourceIP, sourceHost, input.Data, code, err.Error()); dlqErr != nil {
+			return collector.PacketResult{Status: collector.PacketRetryable, ErrorCode: "dlq_unavailable"}, dlqErr
 		}
-		return nil
+		return collector.PacketResult{Status: collector.PacketRejected, ErrorCode: code}, nil
 	}
 	c.trackSequence(sourceIP, sourceHost, packet.Sequence, len(packet.Records))
 	for _, record := range packet.Records {
-		event, err := c.rawEvent(sourceIP, sourceHost, record)
+		event, err := c.rawEvent(input, sourceHost, record)
 		if err != nil {
-			return err
+			return collector.PacketResult{Status: collector.PacketRetryable, ErrorCode: "internal_error"}, err
 		}
 		if err := c.publisher.PublishRaw(ctx, event); err != nil {
 			if errors.Is(err, kafka.ErrQueueFull) {
 				c.metric("collector_dropped_events_total", map[string]string{"reason": "queue_full", "source_host": sourceHost})
-				return nil
+				return collector.PacketResult{Status: collector.PacketRetryable, ErrorCode: "queue_full"}, nil
 			}
-			return fmt.Errorf("%w: publish raw: %w", ErrCollector, err)
+			return collector.PacketResult{Status: collector.PacketRetryable, ErrorCode: "publisher_unavailable"}, fmt.Errorf("%w: publish raw: %w", ErrCollector, err)
 		}
 		c.metric("collector_events_published_total", map[string]string{"source_host": sourceHost})
 	}
-	return nil
+	return collector.PacketResult{Status: collector.PacketAccepted}, nil
 }
 
 func (c *Collector) trackSequence(sourceIP netip.Addr, sourceHost string, packetSequence uint32, recordCount int) {
+	c.sequenceMu.Lock()
+	defer c.sequenceMu.Unlock()
+
 	next, found := c.nextSequence[sourceIP]
 	if found && packetSequence != next {
 		c.metric("netflow_sequence_gaps_total", map[string]string{"source_host": sourceHost})
@@ -256,27 +268,40 @@ func boundedRecordCount(recordCount int) uint32 {
 	return uint32(recordCount)
 }
 
-func (c *Collector) rawEvent(sourceIP netip.Addr, sourceHost string, flow *flowv1.NetFlowV5Flow) (*flowv1.RawFlowEventEnvelope, error) {
+func (c *Collector) rawEvent(input collector.PacketInput, sourceHost string, flow *flowv1.NetFlowV5Flow) (*flowv1.RawFlowEventEnvelope, error) {
 	eventID, err := domain.NewUUIDv7(c.now())
 	if err != nil {
 		return nil, fmt.Errorf("%w: generate event id: %w", ErrCollector, err)
 	}
-	sourceIPText := sourceIP.String()
+	sourceIPText := input.SourceIP.String()
 	source := &flowv1.SourceIdentity{
 		CollectorId: c.cfg.CollectorID,
 		SourceType:  flowv1.SourceType_SOURCE_TYPE_NETFLOW_V5,
 		SourceHost:  sourceHost,
 		SourceIp:    &sourceIPText,
 	}
+	receivedAt := input.ReceivedAt.UTC()
+	if receivedAt.IsZero() {
+		receivedAt = c.now().UTC()
+	}
 	event := &flowv1.RawFlowEventEnvelope{
 		EventId:       eventID,
 		SchemaVersion: domain.RawSchemaVersion,
 		Source:        source,
-		ReceivedAt:    timestamppb.New(c.now().UTC()),
+		ReceivedAt:    timestamppb.New(receivedAt),
 		PartitionKey:  validation.PartitionKey(source),
 		Payload: &flowv1.RawEventPayload{
 			Payload: &flowv1.RawEventPayload_NetflowV5{NetflowV5: flow},
 		},
+	}
+	if input.ProxyReceivedAt != nil {
+		metadata, metadataErr := structpb.NewStruct(map[string]any{
+			"proxy_received_at": input.ProxyReceivedAt.UTC().Format(time.RFC3339Nano),
+		})
+		if metadataErr != nil {
+			return nil, fmt.Errorf("%w: encode proxy metadata: %w", ErrCollector, metadataErr)
+		}
+		event.Metadata = metadata
 	}
 	if err := validation.ValidateRawEventEnvelope(event); err != nil {
 		return nil, fmt.Errorf("%w: validate raw event: %w", ErrCollector, err)

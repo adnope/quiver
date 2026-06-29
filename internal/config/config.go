@@ -160,12 +160,19 @@ type ZeekIngestConfig struct {
 }
 
 type QuiverClientGatewayConfig struct {
-	Name       string `yaml:"name"`
-	SourceHost string `yaml:"source_host"`
-	KeyEnv     string `yaml:"key_env"`
+	Name                string   `yaml:"name"`
+	SourceHost          string   `yaml:"source_host"`
+	KeyEnv              string   `yaml:"key_env"`
+	AllowedCollectorIDs []string `yaml:"allowed_collector_ids"`
 }
 
 type ProxyNetFlowConfig struct {
+	CollectorID string                    `yaml:"collector_id"`
+	Routes      []ProxyNetFlowRouteConfig `yaml:"routes"`
+}
+
+type ProxyNetFlowRouteConfig struct {
+	Version     uint16 `yaml:"version"`
 	CollectorID string `yaml:"collector_id"`
 }
 
@@ -416,9 +423,8 @@ func Default() Config {
 			},
 			Metrics: EndpointAuthConfig{AuthRequired: true},
 		},
-		RestIngest:   RESTIngestConfig{MaxBatchSize: DefaultMaxBatchSize},
-		ZeekIngest:   ZeekIngestConfig{MaxBatchSize: DefaultMaxBatchSize},
-		ProxyNetFlow: ProxyNetFlowConfig{CollectorID: "netflow-main"},
+		RestIngest: RESTIngestConfig{MaxBatchSize: DefaultMaxBatchSize},
+		ZeekIngest: ZeekIngestConfig{MaxBatchSize: DefaultMaxBatchSize},
 		Collectors: CollectorsConfig{
 			Restart: CollectorRestartConfig{
 				Policy:         "always",
@@ -461,10 +467,10 @@ func (c Config) Validate(lookupEnv func(string) string) error {
 	if err := c.validateZeekIngest(); err != nil {
 		return err
 	}
-	if err := c.validateQuiverClientGateways(lookupEnv); err != nil {
+	if err := c.validateProxyNetFlow(); err != nil {
 		return err
 	}
-	if err := c.validateProxyNetFlow(); err != nil {
+	if err := c.validateQuiverClientGateways(lookupEnv); err != nil {
 		return err
 	}
 	if err := c.validateCollectors(); err != nil {
@@ -486,6 +492,8 @@ func (c Config) Validate(lookupEnv func(string) string) error {
 }
 
 func (c Config) validateQuiverClientGateways(lookupEnv func(string) string) error {
+	routeCollectorIDs := c.proxyRouteCollectorIDs()
+	requiresAllowlist := len(c.ProxyNetFlow.Routes) > 0
 	for _, gateway := range c.QuiverClientGateways {
 		if strings.TrimSpace(gateway.Name) == "" || strings.TrimSpace(gateway.SourceHost) == "" ||
 			strings.TrimSpace(gateway.KeyEnv) == "" {
@@ -493,6 +501,23 @@ func (c Config) validateQuiverClientGateways(lookupEnv func(string) string) erro
 		}
 		if strings.TrimSpace(lookupEnv(gateway.KeyEnv)) == "" {
 			return fmt.Errorf("%w: quiver client gateway key env %q is missing", ErrInvalidConfig, gateway.KeyEnv)
+		}
+		if requiresAllowlist && len(gateway.AllowedCollectorIDs) == 0 {
+			return fmt.Errorf("%w: quiver client gateway %q allowed_collector_ids is required with proxy routes", ErrInvalidConfig, gateway.Name)
+		}
+		seen := map[string]struct{}{}
+		for _, rawCollectorID := range gateway.AllowedCollectorIDs {
+			collectorID := strings.TrimSpace(rawCollectorID)
+			if collectorID == "" {
+				return fmt.Errorf("%w: quiver client gateway %q allowed_collector_ids contains a blank id", ErrInvalidConfig, gateway.Name)
+			}
+			if _, duplicate := seen[collectorID]; duplicate {
+				return fmt.Errorf("%w: quiver client gateway %q has duplicate allowed collector %q", ErrInvalidConfig, gateway.Name, collectorID)
+			}
+			seen[collectorID] = struct{}{}
+			if _, configured := routeCollectorIDs[collectorID]; !configured {
+				return fmt.Errorf("%w: quiver client gateway %q allows unconfigured collector %q", ErrInvalidConfig, gateway.Name, collectorID)
+			}
 		}
 	}
 	return nil
@@ -633,13 +658,40 @@ func (c Config) validateZeekIngest() error {
 }
 
 func (c Config) validateProxyNetFlow() error {
-	if len(c.QuiverClientGateways) == 0 {
-		return nil
+	legacyCollectorID := strings.TrimSpace(c.ProxyNetFlow.CollectorID)
+	if legacyCollectorID != "" && len(c.ProxyNetFlow.Routes) > 0 {
+		return fmt.Errorf("%w: proxy_netflow.collector_id and proxy_netflow.routes are mutually exclusive", ErrInvalidConfig)
 	}
-	if strings.TrimSpace(c.ProxyNetFlow.CollectorID) == "" {
-		return fmt.Errorf("%w: proxy_netflow.collector_id is required when quiver_client_gateways are configured", ErrInvalidConfig)
+	if len(c.QuiverClientGateways) > 0 && legacyCollectorID == "" && len(c.ProxyNetFlow.Routes) == 0 {
+		return fmt.Errorf("%w: proxy_netflow collector_id or routes is required when quiver_client_gateways are configured", ErrInvalidConfig)
+	}
+	seenVersions := map[uint16]struct{}{}
+	for index, route := range c.ProxyNetFlow.Routes {
+		if route.Version != 5 && route.Version != 9 {
+			return fmt.Errorf("%w: proxy_netflow.routes[%d].version %d is unsupported", ErrInvalidConfig, index, route.Version)
+		}
+		if strings.TrimSpace(route.CollectorID) == "" {
+			return fmt.Errorf("%w: proxy_netflow.routes[%d].collector_id is required", ErrInvalidConfig, index)
+		}
+		if _, duplicate := seenVersions[route.Version]; duplicate {
+			return fmt.Errorf("%w: duplicate proxy_netflow route version %d", ErrInvalidConfig, route.Version)
+		}
+		seenVersions[route.Version] = struct{}{}
 	}
 	return nil
+}
+
+func (c Config) proxyRouteCollectorIDs() map[string]struct{} {
+	collectorIDs := map[string]struct{}{}
+	if collectorID := strings.TrimSpace(c.ProxyNetFlow.CollectorID); collectorID != "" {
+		collectorIDs[collectorID] = struct{}{}
+	}
+	for _, route := range c.ProxyNetFlow.Routes {
+		if collectorID := strings.TrimSpace(route.CollectorID); collectorID != "" {
+			collectorIDs[collectorID] = struct{}{}
+		}
+	}
+	return collectorIDs
 }
 
 func (c Config) validateCollectors() error {

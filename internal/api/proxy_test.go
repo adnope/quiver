@@ -15,30 +15,51 @@ import (
 	"testing"
 	"time"
 
+	"github.com/adnope/quiver/internal/collector"
 	"github.com/adnope/quiver/internal/config"
+	"github.com/adnope/quiver/internal/observability"
 )
 
 type mockCollector struct {
 	mu      sync.Mutex
 	packets []mockPacket
 	err     error
+	result  collector.PacketResult
+	results []collector.PacketResult
 }
 
 type mockPacket struct {
 	SourceIP   netip.Addr
 	SourceHost string
 	Data       []byte
+	ReceivedAt time.Time
+	ProxyTime  *time.Time
 }
 
-func (c *mockCollector) HandlePacket(ctx context.Context, sourceIP netip.Addr, sourceHost string, data []byte) error {
+func (c *mockCollector) HandlePacket(
+	_ context.Context,
+	_ map[string]struct{},
+	input collector.PacketInput,
+) (collector.PacketResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.packets = append(c.packets, mockPacket{
-		SourceIP:   sourceIP,
-		SourceHost: sourceHost,
-		Data:       data,
+		SourceIP:   input.SourceIP,
+		SourceHost: input.SourceHost,
+		Data:       input.Data,
+		ReceivedAt: input.ReceivedAt,
+		ProxyTime:  input.ProxyReceivedAt,
 	})
-	return c.err
+	if c.err != nil {
+		return collector.PacketResult{Status: collector.PacketRetryable, ErrorCode: "internal_error"}, c.err
+	}
+	if c.result.Status != "" {
+		return c.result, nil
+	}
+	if len(c.results) >= len(c.packets) {
+		return c.results[len(c.packets)-1], nil
+	}
+	return collector.PacketResult{Status: collector.PacketAccepted}, nil
 }
 
 func (c *mockCollector) getPackets() []mockPacket {
@@ -422,4 +443,147 @@ func TestProxyHandlerEnforcesBodyAndBatchLimits(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("oversized batch status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
+}
+
+func TestProxyHandlerV2ReturnsOrderedPerRecordResults(t *testing.T) {
+	t.Parallel()
+
+	router := &mockCollector{results: []collector.PacketResult{
+		{Status: collector.PacketAccepted},
+		{Status: collector.PacketRetryable, ErrorCode: "queue_full"},
+	}}
+	server := newProxyTestServer(t, router, nil)
+	body, err := json.Marshal(ProxyRequest{Records: []ProxyRecord{
+		{SourceIP: "192.0.2.1", PacketData: base64.StdEncoding.EncodeToString([]byte("accepted"))},
+		{SourceIP: "192.0.2.2", PacketData: "invalid-base64"},
+		{SourceIP: "192.0.2.3", PacketData: base64.StdEncoding.EncodeToString([]byte("retryable"))},
+	}})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader(body))
+	req.Header.Set(APIKeyHeader, "valid-gateway-key")
+	req.Header.Set(ProxyProtocolHeader, ProxyProtocolV2)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var response ProxyV2Response
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("json.Decode() error = %v", err)
+	}
+	if response.Accepted != 1 || response.Retryable != 1 || response.Rejected != 1 || len(response.Results) != 3 {
+		t.Fatalf("response = %+v", response)
+	}
+	wantStatuses := []collector.PacketStatus{collector.PacketAccepted, collector.PacketRejected, collector.PacketRetryable}
+	for index, result := range response.Results {
+		if result.Index != index || result.Status != wantStatuses[index] {
+			t.Fatalf("result[%d] = %+v", index, result)
+		}
+	}
+	if response.Results[1].ErrorCode != "invalid_base64" || response.Results[2].ErrorCode != "queue_full" {
+		t.Fatalf("unexpected error codes: %+v", response.Results)
+	}
+}
+
+func TestProxyHandlerLegacyResponseCountsRetryableAsRejected(t *testing.T) {
+	t.Parallel()
+
+	router := &mockCollector{result: collector.PacketResult{Status: collector.PacketRetryable, ErrorCode: "queue_full"}}
+	server := newProxyTestServer(t, router, nil)
+	body := []byte(`{"records":[{"source_ip":"192.0.2.1","packet_data":"AAU="}]}`)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader(body))
+	req.Header.Set(APIKeyHeader, "valid-gateway-key")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+
+	var response map[string]json.RawMessage
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("json.Decode() error = %v", err)
+	}
+	if string(response["accepted"]) != "0" || string(response["rejected"]) != "1" {
+		t.Fatalf("legacy response = %s", w.Body.String())
+	}
+	if _, exists := response["retryable"]; exists {
+		t.Fatalf("legacy response unexpectedly contains retryable: %s", w.Body.String())
+	}
+	if _, exists := response["results"]; exists {
+		t.Fatalf("legacy response unexpectedly contains results: %s", w.Body.String())
+	}
+}
+
+func TestProxyHandlerValidatesGatewayTimestampsWithoutRejectingPackets(t *testing.T) {
+	t.Parallel()
+
+	metrics := observability.NewRegistry()
+	router := &mockCollector{}
+	server := newProxyTestServer(t, router, metrics)
+	now := time.Now().UTC()
+	validTime := now.Add(-time.Minute).Format(time.RFC3339Nano)
+	futureTime := now.Add(10 * time.Minute).Format(time.RFC3339Nano)
+	body := []byte(`{"records":[` +
+		`{"source_ip":"192.0.2.1","packet_data":"AAU=","received_at":"` + validTime + `"},` +
+		`{"source_ip":"192.0.2.2","packet_data":"AAU=","received_at":"` + futureTime + `"},` +
+		`{"source_ip":"192.0.2.3","packet_data":"AAU=","received_at":"not-a-time"}` +
+		`]}`)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader(body))
+	req.Header.Set(APIKeyHeader, "valid-gateway-key")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+
+	packets := router.getPackets()
+	if len(packets) != 3 {
+		t.Fatalf("packet count = %d, want 3", len(packets))
+	}
+	if packets[0].ProxyTime == nil || !packets[0].ProxyTime.Equal(now.Add(-time.Minute)) {
+		t.Fatalf("valid proxy timestamp = %v", packets[0].ProxyTime)
+	}
+	if packets[1].ProxyTime != nil || packets[2].ProxyTime != nil {
+		t.Fatalf("invalid proxy timestamps were retained: %+v", packets)
+	}
+	metricsBody := string(metrics.WritePrometheus())
+	if !strings.Contains(metricsBody, `proxy_netflow_invalid_timestamps_total{reason="future"} 1`) ||
+		!strings.Contains(metricsBody, `proxy_netflow_invalid_timestamps_total{reason="invalid"} 1`) {
+		t.Fatalf("timestamp metrics missing:\n%s", metricsBody)
+	}
+}
+
+func newProxyTestServer(t *testing.T, router PacketRouter, metrics *observability.Registry) *Server {
+	t.Helper()
+
+	cfg := config.Config{
+		API: config.APIConfig{RateLimits: config.RateLimitsConfig{
+			Ingest: config.RateLimitConfig{RequestsPerMinute: 60},
+		}},
+		ProxyNetFlow: config.ProxyNetFlowConfig{CollectorID: "netflow-main"},
+		QuiverClientGateways: []config.QuiverClientGatewayConfig{{
+			Name:       "client-1",
+			SourceHost: "gateway-host-01",
+			KeyEnv:     "CLIENT_GATEWAY_KEY",
+		}},
+	}
+	server, err := NewServerWithCollectors(
+		cfg,
+		nil,
+		nil,
+		nil,
+		func(key string) string {
+			if key == "CLIENT_GATEWAY_KEY" {
+				return "valid-gateway-key"
+			}
+			return ""
+		},
+		metrics,
+		StaticHealthChecker{Value: HealthOK},
+		router,
+	)
+	if err != nil {
+		t.Fatalf("NewServerWithCollectors() error = %v", err)
+	}
+	return server
 }

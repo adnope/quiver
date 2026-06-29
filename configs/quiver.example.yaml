@@ -78,12 +78,18 @@ quiver_client_gateways:
   - name: "netflow-demo-gateway"
     source_host: "netflow-gateway-01"
     key_env: "NETFLOW_GATEWAY_DEMO_KEY"
+    allowed_collector_ids: ["netflow-main", "netflow-v9-main"]
   - name: "zeek-demo-shipper"
     source_host: "zeek-probe-01"
     key_env: "ZEEK_SHIPPER_DEMO_KEY"
+    allowed_collector_ids: ["netflow-main"]
 
 proxy_netflow:
-  collector_id: "netflow-main"
+  routes:
+    - version: 5
+      collector_id: "netflow-main"
+    - version: 9
+      collector_id: "netflow-v9-main"
 
 collectors:
   restart:
@@ -105,6 +111,34 @@ collectors:
         read_buffer_bytes: 4194304
         packet_buffer_bytes: 65535
         auth_required: true
+    - type: "netflow_v9"
+      collector_id: "netflow-v9-main"
+      enabled: true
+      restart:
+        policy: "always"
+        initial_backoff: "1s"
+        max_backoff: "30s"
+        max_restarts: 0
+      settings:
+        template_ttl: "30m"
+        cleanup_interval: "1m"
+        exporter_idle_timeout: "5m"
+        sampling_rate: 1
+        max_packet_bytes: 65535
+        max_exporters: 100
+        max_templates_per_exporter: 100
+        max_templates_total: 1000
+        max_fields_per_template: 100
+        max_record_bytes: 4096
+        max_unknown_field_bytes: 1024
+        max_attributes_bytes: 4096
+        worker_count: 4
+        queue_capacity: 1000
+        max_queue_bytes: 10485760
+        pending:
+          max_wait: "1m"
+          max_bytes_per_exporter: 1048576
+          max_bytes_total: 10485760
     - type: "zeek_conn_tcp"
       collector_id: "zeek-conn-tcp-main"
       enabled: false

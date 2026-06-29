@@ -15,8 +15,11 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -30,6 +33,7 @@ type ClientConfig struct {
 	ListenAddr         string `yaml:"listen_addr"`
 	BatchIntervalMS    int    `yaml:"batch_interval_ms"`
 	MaxBatchSize       int    `yaml:"max_batch_size"`
+	MaxPacketBytes     int    `yaml:"max_packet_bytes"`
 	InsecureSkipVerify bool   `yaml:"insecure_skip_verify"`
 	CACertPath         string `yaml:"ca_cert_path"`
 }
@@ -44,10 +48,49 @@ type ProxyRequest struct {
 	Records []PacketRecord `json:"records"`
 }
 
+type ProxyRecordResult struct {
+	Index     int    `json:"index"`
+	Status    string `json:"status"`
+	ErrorCode string `json:"error_code,omitempty"`
+}
+
+type ProxyV2Response struct {
+	Accepted  int                 `json:"accepted"`
+	Retryable int                 `json:"retryable"`
+	Rejected  int                 `json:"rejected"`
+	Results   []ProxyRecordResult `json:"results"`
+}
+
 type QueueItem struct {
 	sourceIP   string
 	packetData []byte
 	receivedAt time.Time
+}
+
+func (c ClientConfig) Validate() error {
+	backendURL, err := url.ParseRequestURI(strings.TrimSpace(c.BackendURL))
+	if err != nil || backendURL.Host == "" || (backendURL.Scheme != "http" && backendURL.Scheme != "https") {
+		return errors.New("backend_url must be an absolute http or https URL")
+	}
+	if backendURL.User != nil {
+		return errors.New("backend_url must not contain credentials")
+	}
+	if strings.TrimSpace(c.APIKey) == "" {
+		return errors.New("api_key is required")
+	}
+	if _, _, err := net.SplitHostPort(c.ListenAddr); err != nil {
+		return fmt.Errorf("listen_addr must be host:port: %w", err)
+	}
+	if c.BatchIntervalMS <= 0 || c.BatchIntervalMS > 60_000 {
+		return errors.New("batch_interval_ms must be within 1..60000")
+	}
+	if c.MaxBatchSize <= 0 || c.MaxBatchSize > 1000 {
+		return errors.New("max_batch_size must be within 1..1000")
+	}
+	if c.MaxPacketBytes <= 0 || c.MaxPacketBytes > 65535 {
+		return errors.New("max_packet_bytes must be within 1..65535")
+	}
+	return nil
 }
 
 func main() {
@@ -58,23 +101,35 @@ func main() {
 	caCertPath := flag.String("ca-cert", "", "Path to custom CA certificate PEM file")
 	insecure := flag.Bool("insecure-skip-verify", false, "Skip TLS verification")
 	flag.Parse()
+	configFlagSet := false
+	flag.Visit(func(current *flag.Flag) {
+		if current.Name == "config" {
+			configFlagSet = true
+		}
+	})
 
-	// Load configuration
 	cfg := ClientConfig{
 		ListenAddr:      "127.0.0.1:2055",
 		BatchIntervalMS: 1000,
 		MaxBatchSize:    100,
+		MaxPacketBytes:  65535,
 	}
 
 	if *configPath != "" {
-		if data, err := os.ReadFile(*configPath); err == nil {
-			if err := yaml.Unmarshal(data, &cfg); err != nil {
-				log.Fatalf("Error parsing config file: %v", err)
+		data, err := os.ReadFile(*configPath)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) || configFlagSet {
+				log.Fatalf("read config file: %v", err)
+			}
+		} else {
+			decoder := yaml.NewDecoder(bytes.NewReader(data))
+			decoder.KnownFields(true)
+			if err := decoder.Decode(&cfg); err != nil {
+				log.Fatalf("parse config file: %v", err)
 			}
 		}
 	}
 
-	// Override config with CLI flags
 	if *backendURL != "" {
 		cfg.BackendURL = *backendURL
 	}
@@ -91,16 +146,13 @@ func main() {
 		cfg.InsecureSkipVerify = true
 	}
 
-	if cfg.BackendURL == "" {
-		log.Fatal("Backend URL is required (specify in config or via --backend-url)")
-	}
-	if cfg.APIKey == "" {
-		log.Fatal("API key is required (specify in config or via --api-key)")
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("invalid configuration: %v", err)
 	}
 
-	// Setup HTTP client with custom TLS settings
 	tlsConfig := &tls.Config{
 		InsecureSkipVerify: cfg.InsecureSkipVerify, //nolint:gosec
+		MinVersion:         tls.VersionTLS12,
 	}
 	if cfg.CACertPath != "" {
 		caCert, err := os.ReadFile(cfg.CACertPath)
@@ -108,46 +160,55 @@ func main() {
 			log.Fatalf("Error reading CA cert: %v", err)
 		}
 		caCertPool := x509.NewCertPool()
-		caCertPool.AppendCertsFromPEM(caCert)
+		if !caCertPool.AppendCertsFromPEM(caCert) {
+			log.Fatal("CA certificate file does not contain a valid PEM certificate")
+		}
 		tlsConfig.RootCAs = caCertPool
 	}
 
 	httpClient := &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig: tlsConfig,
+			TLSClientConfig:       tlsConfig,
+			MaxIdleConns:          10,
+			MaxIdleConnsPerHost:   2,
+			IdleConnTimeout:       30 * time.Second,
+			TLSHandshakeTimeout:   5 * time.Second,
+			ResponseHeaderTimeout: 10 * time.Second,
 		},
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Setup listening socket
 	listenConfig := net.ListenConfig{}
 	packetConn, err := listenConfig.ListenPacket(ctx, "udp", cfg.ListenAddr)
 	if err != nil {
 		log.Fatalf("Failed to listen on UDP %s: %v", cfg.ListenAddr, err)
 	}
 	defer func() { _ = packetConn.Close() }()
+	udpConn, ok := packetConn.(*net.UDPConn)
+	if !ok {
+		log.Fatal("UDP listener did not return a UDP connection")
+	}
 
 	log.Printf("quiver-client listening on UDP %s", cfg.ListenAddr)
 
 	queue := make(chan QueueItem, 10000)
 	var wg sync.WaitGroup
 
-	// Start UDP receiver goroutine
 	wg.Go(func() {
-		buf := make([]byte, 2048)
+		buf := make([]byte, cfg.MaxPacketBytes)
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			default:
 				_ = packetConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-				n, addr, err := packetConn.ReadFrom(buf)
+				n, _, flags, addr, err := udpConn.ReadMsgUDP(buf, nil)
 				if err != nil {
 					var netErr net.Error
-					if errors.As(err, &netErr) {
+					if errors.As(err, &netErr) && netErr.Timeout() {
 						continue
 					}
 					select {
@@ -159,30 +220,28 @@ func main() {
 					}
 				}
 
-				udpAddr, ok := addr.(*net.UDPAddr)
-				if !ok {
+				if flags&syscall.MSG_TRUNC != 0 || n > len(buf) {
+					log.Printf("dropped truncated UDP packet source=%s max_packet_bytes=%d", addr.IP.String(), cfg.MaxPacketBytes)
 					continue
 				}
 
-				packetCopy := make([]byte, n)
-				copy(packetCopy, buf[:n])
+				packetCopy := append([]byte(nil), buf[:n]...)
 
 				select {
 				case queue <- QueueItem{
-					sourceIP:   udpAddr.IP.String(),
+					sourceIP:   addr.IP.String(),
 					packetData: packetCopy,
 					receivedAt: time.Now().UTC(),
 				}:
 				default:
-					// Queue is full, drop packet (to prevent memory leaks under backpressure)
+					log.Printf("dropped UDP packet because queue is full source=%s", addr.IP.String())
 				}
 			}
 		}
 	})
 
-	// Start single-worker sender goroutine
 	wg.Go(func() {
-		var batch []QueueItem
+		batch := make([]QueueItem, 0, cfg.MaxBatchSize)
 		ticker := time.NewTicker(time.Duration(cfg.BatchIntervalMS) * time.Millisecond)
 		defer ticker.Stop()
 
@@ -191,13 +250,12 @@ func main() {
 				return
 			}
 			sendBatchWithRetry(ctx, httpClient, cfg, batch)
-			batch = nil
+			batch = make([]QueueItem, 0, cfg.MaxBatchSize)
 		}
 
 		for {
 			select {
 			case <-ctx.Done():
-				// Flush final batch on context cancellation
 				flush()
 				return
 			case item := <-queue:
@@ -212,16 +270,61 @@ func main() {
 	})
 
 	<-ctx.Done()
-	log.Println("Shutting down quiver-client...")
+	log.Println("shutting down quiver-client")
 	_ = packetConn.Close()
 	wg.Wait()
-	log.Println("quiver-client stopped cleanly.")
+	log.Println("quiver-client stopped cleanly")
 }
 
 func sendBatchWithRetry(ctx context.Context, client *http.Client, cfg ClientConfig, items []QueueItem) {
-	reqBody := ProxyRequest{
-		Records: make([]PacketRecord, 0, len(items)),
+	const maxAttempts = 5
+	const maxBackoff = 5 * time.Second
+
+	pending := append([]QueueItem(nil), items...)
+	backoff := 100 * time.Millisecond
+	for attempt := range maxAttempts {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+
+		response, statusCode, err := postBatch(ctx, client, cfg, pending)
+		if err == nil && statusCode == http.StatusAccepted {
+			retryable, validationErr := retryableSubset(pending, response)
+			if validationErr == nil {
+				logRejectedResults(response.Results)
+				if len(retryable) == 0 {
+					return
+				}
+				pending = retryable
+			} else {
+				log.Printf("proxy response invalid attempt=%d records=%d code=malformed_v2_response", attempt+1, len(pending))
+			}
+		} else if err == nil && statusCode >= 400 && statusCode < 500 && statusCode != http.StatusTooManyRequests {
+			log.Printf("proxy batch permanently rejected status=%d records=%d", statusCode, len(pending))
+			return
+		} else {
+			log.Printf("proxy batch retryable attempt=%d records=%d status=%d", attempt+1, len(pending), statusCode)
+		}
+
+		if attempt == maxAttempts-1 || !sleepWithContext(ctx, backoff) {
+			break
+		}
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
 	}
+
+	log.Printf("dropped proxy packets after retry exhaustion records=%d attempts=%d", len(pending), maxAttempts)
+}
+
+func postBatch(
+	ctx context.Context,
+	client *http.Client,
+	cfg ClientConfig,
+	items []QueueItem,
+) (ProxyV2Response, int, error) {
+	reqBody := ProxyRequest{Records: make([]PacketRecord, 0, len(items))}
 	for _, item := range items {
 		reqBody.Records = append(reqBody.Records, PacketRecord{
 			SourceIP:   item.sourceIP,
@@ -229,75 +332,121 @@ func sendBatchWithRetry(ctx context.Context, client *http.Client, cfg ClientConf
 			ReceivedAt: item.receivedAt,
 		})
 	}
-
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
-		log.Printf("Failed to marshal JSON payload: %v", err)
-		return
+		return ProxyV2Response{}, 0, fmt.Errorf("marshal proxy request: %w", err)
 	}
 
-	var buf bytes.Buffer
-	gzipWriter := gzip.NewWriter(&buf)
+	var body bytes.Buffer
+	gzipWriter := gzip.NewWriter(&body)
 	if _, err := gzipWriter.Write(jsonData); err != nil {
-		log.Printf("Failed to compress payload: %v", err)
+		_ = gzipWriter.Close()
+		return ProxyV2Response{}, 0, fmt.Errorf("compress proxy request: %w", err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		return ProxyV2Response{}, 0, fmt.Errorf("finish proxy request compression: %w", err)
+	}
+
+	endpoint := strings.TrimRight(cfg.BackendURL, "/") + "/api/v1/ingest/proxy-netflow"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body.Bytes()))
+	if err != nil {
+		return ProxyV2Response{}, 0, fmt.Errorf("create proxy request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("X-API-Key", cfg.APIKey)
+	req.Header.Set("X-Quiver-Proxy-Protocol", "2")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return ProxyV2Response{}, 0, fmt.Errorf("send proxy request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusAccepted {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		return ProxyV2Response{}, resp.StatusCode, nil
+	}
+
+	var response ProxyV2Response
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&response); err != nil {
+		return ProxyV2Response{}, resp.StatusCode, fmt.Errorf("decode proxy response: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return ProxyV2Response{}, resp.StatusCode, errors.New("proxy response must contain one json object")
+	}
+	return response, resp.StatusCode, nil
+}
+
+func retryableSubset(items []QueueItem, response ProxyV2Response) ([]QueueItem, error) {
+	if len(response.Results) != len(items) {
+		return nil, fmt.Errorf("result count %d does not match request count %d", len(response.Results), len(items))
+	}
+	seen := make([]bool, len(items))
+	retryable := make([]QueueItem, 0, response.Retryable)
+	var accepted int
+	var rejected int
+	for _, result := range response.Results {
+		if result.Index < 0 || result.Index >= len(items) || seen[result.Index] {
+			return nil, fmt.Errorf("invalid or duplicate result index %d", result.Index)
+		}
+		seen[result.Index] = true
+		switch result.Status {
+		case "accepted":
+			if result.ErrorCode != "" {
+				return nil, fmt.Errorf("accepted result %d contains an error code", result.Index)
+			}
+			accepted++
+		case "retryable":
+			if strings.TrimSpace(result.ErrorCode) == "" {
+				return nil, fmt.Errorf("retryable result %d is missing an error code", result.Index)
+			}
+			retryable = append(retryable, items[result.Index])
+		case "rejected":
+			if strings.TrimSpace(result.ErrorCode) == "" {
+				return nil, fmt.Errorf("rejected result %d is missing an error code", result.Index)
+			}
+			rejected++
+		default:
+			return nil, fmt.Errorf("result %d has unknown status %q", result.Index, result.Status)
+		}
+	}
+	if response.Accepted != accepted || response.Retryable != len(retryable) || response.Rejected != rejected {
+		return nil, errors.New("proxy response counts do not match results")
+	}
+	return retryable, nil
+}
+
+func logRejectedResults(results []ProxyRecordResult) {
+	codes := map[string]int{}
+	for _, result := range results {
+		if result.Status == "rejected" {
+			codes[result.ErrorCode]++
+		}
+	}
+	if len(codes) == 0 {
 		return
 	}
-	_ = gzipWriter.Close()
-
-	url := fmt.Sprintf("%s/api/v1/ingest/proxy-netflow", cfg.BackendURL)
-
-	backoff := 100 * time.Millisecond
-	maxBackoff := 5 * time.Second
-	maxRetries := 5
-
-	for retry := range maxRetries {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(buf.Bytes()))
-		if err != nil {
-			log.Printf("Failed to create request: %v", err)
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Content-Encoding", "gzip")
-		req.Header.Set("X-API-Key", cfg.APIKey)
-
-		resp, err := client.Do(req)
-		if err != nil {
-			log.Printf("HTTP POST failed (retry %d/%d): %v", retry+1, maxRetries, err)
-			time.Sleep(backoff)
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
-			}
-			continue
-		}
-
-		respBody, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-
-		if resp.StatusCode == http.StatusAccepted {
-			// Success
-			return
-		}
-
-		log.Printf("Backend rejected batch (status=%d): %s", resp.StatusCode, string(respBody))
-		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
-			// Client error (e.g. invalid auth, bad JSON), do not retry
-			return
-		}
-
-		// Server error or rate limit, retry with backoff
-		time.Sleep(backoff)
-		backoff *= 2
-		if backoff > maxBackoff {
-			backoff = maxBackoff
-		}
+	keys := make([]string, 0, len(codes))
+	for code := range codes {
+		keys = append(keys, code)
 	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, code := range keys {
+		parts = append(parts, fmt.Sprintf("%s:%d", code, codes[code]))
+	}
+	log.Printf("proxy packets permanently rejected codes=%s", strings.Join(parts, ","))
+}
 
-	log.Printf("Dropped batch of %d records after %d failed retries", len(items), maxRetries)
+func sleepWithContext(ctx context.Context, duration time.Duration) bool {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }

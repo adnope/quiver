@@ -1,13 +1,17 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/adnope/quiver/internal/collector"
+	"github.com/adnope/quiver/internal/config"
 	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
 	"github.com/adnope/quiver/internal/observability"
 )
@@ -250,4 +254,64 @@ func snapshotStatus(snapshots []collector.StatusSnapshot, id string) collector.S
 		}
 	}
 	return ""
+}
+
+func TestProxyNetflowV9Metrics(t *testing.T) {
+	t.Parallel()
+
+	cfg := validAPICfg()
+	cfg.API.Metrics.AuthRequired = true
+	cfg.QuiverClientGateways = []config.QuiverClientGatewayConfig{
+		{
+			Name:       "client-1",
+			SourceHost: "gateway-host-01",
+			KeyEnv:     "CLIENT_GATEWAY_KEY",
+		},
+	}
+
+	env := func(key string) string {
+		if key == "CLIENT_GATEWAY_KEY" {
+			return "valid-gateway-key"
+		}
+		return envLookup()(key)
+	}
+
+	metrics := observability.NewRegistry()
+	router := &mockCollector{}
+	server, err := NewServerWithCollectors(cfg, newImmediatePublisher(), nil, nil, env, metrics, StaticHealthChecker{Value: HealthOK}, router)
+	if err != nil {
+		t.Fatalf("NewServerWithCollectors() error = %v", err)
+	}
+
+	v9Packet := []byte{0x00, 0x09, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00}
+	bodyBytes, _ := json.Marshal(ProxyRequest{
+		Records: []ProxyRecord{
+			{
+				SourceIP:   "10.0.0.1",
+				PacketData: base64.StdEncoding.EncodeToString(v9Packet),
+			},
+		},
+	})
+	proxyReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/ingest/proxy-netflow", bytes.NewReader(bodyBytes))
+	proxyReq.Header.Set("Content-Type", "application/json")
+	proxyReq.Header.Set(APIKeyHeader, "valid-gateway-key")
+
+	proxyRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(proxyRec, proxyReq)
+	if proxyRec.Code != http.StatusAccepted {
+		t.Fatalf("proxy status = %d, want 202 body=%s", proxyRec.Code, proxyRec.Body.String())
+	}
+
+	metricsReq := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/metrics", nil)
+	metricsReq.Header.Set(APIKeyHeader, "metrics-key")
+	metricsRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(metricsRec, metricsReq)
+
+	if metricsRec.Code != http.StatusOK {
+		t.Fatalf("metrics status = %d, want 200", metricsRec.Code)
+	}
+	metricsBody := metricsRec.Body.String()
+	if !strings.Contains(metricsBody, `proxy_netflow_packets_total{reason="none",status="accepted",version="9"} 1`) {
+		t.Fatalf("metrics body missing proxy_netflow_packets_total for v9:\n%s", metricsBody)
+	}
 }

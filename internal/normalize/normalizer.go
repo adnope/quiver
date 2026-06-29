@@ -62,6 +62,8 @@ func (n normalizer) normalize(event *flowv1.RawFlowEventEnvelope) (domain.Normal
 		nativeIdentity, err = n.applyZeek(&record, payload.ZeekConn)
 	case *flowv1.RawEventPayload_NetflowV5:
 		nativeIdentity, err = n.applyNetFlowV5(&record, event, payload.NetflowV5)
+	case *flowv1.RawEventPayload_NetflowV9:
+		nativeIdentity, err = n.applyNetFlowV9(&record, event, payload.NetflowV9)
 	default:
 		err = fmt.Errorf("%w: unsupported raw payload", ErrNormalize)
 	}

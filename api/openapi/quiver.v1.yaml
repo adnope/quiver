@@ -1,5 +1,15 @@
 basePath: /
 definitions:
+  github_com_adnope_quiver_internal_collector.PacketStatus:
+    enum:
+    - accepted
+    - retryable
+    - rejected
+    type: string
+    x-enum-varnames:
+    - PacketAccepted
+    - PacketRetryable
+    - PacketRejected
   github_com_adnope_quiver_internal_observability.MetricSnapshot:
     properties:
       labels:
@@ -275,6 +285,44 @@ definitions:
         type: string
       to:
         type: string
+    type: object
+  internal_api.ProxyRecord:
+    properties:
+      packet_data:
+        type: string
+      received_at:
+        type: string
+      source_ip:
+        type: string
+    type: object
+  internal_api.ProxyRecordResult:
+    properties:
+      error_code:
+        type: string
+      index:
+        type: integer
+      status:
+        $ref: '#/definitions/github_com_adnope_quiver_internal_collector.PacketStatus'
+    type: object
+  internal_api.ProxyRequest:
+    properties:
+      records:
+        items:
+          $ref: '#/definitions/internal_api.ProxyRecord'
+        type: array
+    type: object
+  internal_api.ProxyV2Response:
+    properties:
+      accepted:
+        type: integer
+      rejected:
+        type: integer
+      results:
+        items:
+          $ref: '#/definitions/internal_api.ProxyRecordResult'
+        type: array
+      retryable:
+        type: integer
     type: object
   internal_api.TopPortResponse:
     properties:
@@ -849,6 +897,57 @@ paths:
       security:
       - ApiKeyAuth: []
       summary: Ingest normalized-like flow records
+      tags:
+      - ingest
+  /api/v1/ingest/proxy-netflow:
+    post:
+      consumes:
+      - application/json
+      description: Accepts gzip or plain JSON batches. Set X-Quiver-Proxy-Protocol
+        to 2 for per-record results.
+      parameters:
+      - description: Response protocol version
+        enum:
+        - "2"
+        in: header
+        name: X-Quiver-Proxy-Protocol
+        type: string
+      - description: NetFlow packet batch
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.ProxyRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/internal_api.ProxyV2Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "413":
+          description: Request Entity Too Large
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Proxy NetFlow packets
       tags:
       - ingest
   /api/v1/ingest/zeek/conn:

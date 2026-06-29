@@ -115,6 +115,7 @@ services:
         condition: service_started
 
   quiver-client:
+    # NetFlow v5 and v9 proxy configuration
     build:
       context: .
       dockerfile: Dockerfile.client

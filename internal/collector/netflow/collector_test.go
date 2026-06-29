@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	quivercollector "github.com/adnope/quiver/internal/collector"
 	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
 	"github.com/adnope/quiver/internal/kafka"
 	"github.com/adnope/quiver/internal/observability"
@@ -25,10 +26,10 @@ func TestCollectorPublishesAllowedPacketAndTracksSequenceGap(t *testing.T) {
 	collector := newTestCollector(t, publisher, metrics)
 	sourceIP := netip.MustParseAddr("10.10.0.1")
 
-	if err := collector.HandlePacket(context.Background(), sourceIP, "", validV5Packet(10, 1)); err != nil {
+	if _, err := handleTestPacket(collector, sourceIP, "", validV5Packet(10, 1)); err != nil {
 		t.Fatalf("HandlePacket(first) error = %v", err)
 	}
-	if err := collector.HandlePacket(context.Background(), sourceIP, "", validV5Packet(12, 1)); err != nil {
+	if _, err := handleTestPacket(collector, sourceIP, "", validV5Packet(12, 1)); err != nil {
 		t.Fatalf("HandlePacket(gap) error = %v", err)
 	}
 	if len(publisher.raw) != 2 {
@@ -53,8 +54,12 @@ func TestCollectorDropsUnauthenticatedPacketWhenAuthRequired(t *testing.T) {
 	collector.cfg.AuthRequired = true // Enable authentication requirement
 
 	// Call HandlePacket with empty sourceHost (unauthenticated/direct)
-	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), "", validV5Packet(10, 1)); err != nil {
+	result, err := handleTestPacket(collector, netip.MustParseAddr("10.10.0.1"), "", validV5Packet(10, 1))
+	if err != nil {
 		t.Fatalf("HandlePacket() error = %v", err)
+	}
+	if result.Status != quivercollector.PacketRejected || result.ErrorCode != "auth_required" {
+		t.Fatalf("HandlePacket() result = %+v", result)
 	}
 	if len(publisher.raw) != 0 || len(publisher.deadLetters) != 0 {
 		t.Fatalf("raw=%d dlq=%d, want packet drop only", len(publisher.raw), len(publisher.deadLetters))
@@ -72,8 +77,12 @@ func TestCollectorPublishesDLQForUnsupportedVersion(t *testing.T) {
 	packet := bytes.Repeat([]byte{0xab}, 64)
 	binary.BigEndian.PutUint16(packet[0:2], 9)
 
-	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), "", packet); err != nil {
+	result, err := handleTestPacket(collector, netip.MustParseAddr("10.10.0.1"), "", packet)
+	if err != nil {
 		t.Fatalf("HandlePacket() error = %v", err)
+	}
+	if result.Status != quivercollector.PacketRejected || result.ErrorCode != "unsupported_version" {
+		t.Fatalf("HandlePacket() result = %+v", result)
 	}
 	if len(publisher.deadLetters) != 1 {
 		t.Fatalf("dead letters = %d, want 1", len(publisher.deadLetters))
@@ -94,8 +103,12 @@ func TestCollectorQueueFullDropsUDPRecordWithoutDLQ(t *testing.T) {
 	metrics := observability.NewRegistry()
 	collector := newTestCollector(t, publisher, metrics)
 
-	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), "", validV5Packet(10, 1)); err != nil {
+	result, err := handleTestPacket(collector, netip.MustParseAddr("10.10.0.1"), "", validV5Packet(10, 1))
+	if err != nil {
 		t.Fatalf("HandlePacket() error = %v", err)
+	}
+	if result.Status != quivercollector.PacketRetryable || result.ErrorCode != "queue_full" {
+		t.Fatalf("HandlePacket() result = %+v", result)
 	}
 	if len(publisher.deadLetters) != 0 {
 		t.Fatalf("dead letters = %d, want 0", len(publisher.deadLetters))
@@ -111,9 +124,38 @@ func TestCollectorPropagatesNonQueuePublishError(t *testing.T) {
 	publisher := &fakePublisher{publishErr: errors.New("broker unavailable")}
 	collector := newTestCollector(t, publisher, nil)
 
-	err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), "", validV5Packet(10, 1))
+	result, err := handleTestPacket(collector, netip.MustParseAddr("10.10.0.1"), "", validV5Packet(10, 1))
 	if err == nil {
 		t.Fatal("expected publish error")
+	}
+	if result.Status != quivercollector.PacketRetryable {
+		t.Fatalf("HandlePacket() result = %+v", result)
+	}
+}
+
+func TestCollectorPreservesValidatedProxyTimestampAsMetadata(t *testing.T) {
+	t.Parallel()
+
+	publisher := &fakePublisher{}
+	collector := newTestCollector(t, publisher, nil)
+	backendReceivedAt := time.Date(2026, 6, 28, 1, 0, 0, 0, time.UTC)
+	proxyReceivedAt := backendReceivedAt.Add(-time.Minute)
+	result, err := collector.HandlePacket(context.Background(), quivercollector.PacketInput{
+		SourceIP:        netip.MustParseAddr("192.0.2.10"),
+		SourceHost:      "gateway-1",
+		ReceivedAt:      backendReceivedAt,
+		ProxyReceivedAt: &proxyReceivedAt,
+		Data:            validV5Packet(10, 1),
+	})
+	if err != nil || result.Status != quivercollector.PacketAccepted {
+		t.Fatalf("HandlePacket() result=%+v err=%v", result, err)
+	}
+	event := publisher.raw[0]
+	if got := event.GetReceivedAt().AsTime(); !got.Equal(backendReceivedAt) {
+		t.Fatalf("received_at = %s, want %s", got, backendReceivedAt)
+	}
+	if got := event.GetMetadata().GetFields()["proxy_received_at"].GetStringValue(); got != proxyReceivedAt.Format(time.RFC3339Nano) {
+		t.Fatalf("proxy_received_at = %q", got)
 	}
 }
 
@@ -171,7 +213,7 @@ func TestCollectorPublishesDLQForShortPacket(t *testing.T) {
 	collector := newTestCollector(t, publisher, nil)
 	packet := []byte{0x00, 0x05, 0x00, 0x01} // too short
 
-	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), "", packet); err != nil {
+	if _, err := handleTestPacket(collector, netip.MustParseAddr("10.10.0.1"), "", packet); err != nil {
 		t.Fatalf("HandlePacket() error = %v", err)
 	}
 	if len(publisher.deadLetters) != 1 {
@@ -193,20 +235,20 @@ func TestCollectorPublishesDLQForBadRecordCount(t *testing.T) {
 
 	// Case 1: Count is 0
 	p1 := validV5Packet(1, 0)
-	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), "", p1); err != nil {
+	if _, err := handleTestPacket(collector, netip.MustParseAddr("10.10.0.1"), "", p1); err != nil {
 		t.Fatalf("HandlePacket(0) error = %v", err)
 	}
 
 	// Case 2: Count is 31
 	p2 := validV5Packet(1, 31)
-	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), "", p2); err != nil {
+	if _, err := handleTestPacket(collector, netip.MustParseAddr("10.10.0.1"), "", p2); err != nil {
 		t.Fatalf("HandlePacket(31) error = %v", err)
 	}
 
 	// Case 3: Count/length mismatch
 	p3 := validV5Packet(1, 2)
 	p3 = p3[:len(p3)-10]
-	if err := collector.HandlePacket(context.Background(), netip.MustParseAddr("10.10.0.1"), "", p3); err != nil {
+	if _, err := handleTestPacket(collector, netip.MustParseAddr("10.10.0.1"), "", p3); err != nil {
 		t.Fatalf("HandlePacket(mismatch) error = %v", err)
 	}
 
@@ -218,4 +260,18 @@ func TestCollectorPublishesDLQForBadRecordCount(t *testing.T) {
 			t.Fatalf("idx %d error code = %q", i, dlq.GetError().GetErrorCode())
 		}
 	}
+}
+
+func handleTestPacket(
+	c *Collector,
+	sourceIP netip.Addr,
+	sourceHost string,
+	data []byte,
+) (quivercollector.PacketResult, error) {
+	return c.HandlePacket(context.Background(), quivercollector.PacketInput{
+		SourceIP:   sourceIP,
+		SourceHost: sourceHost,
+		ReceivedAt: c.now().UTC(),
+		Data:       data,
+	})
 }
