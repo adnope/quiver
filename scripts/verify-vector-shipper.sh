@@ -30,6 +30,7 @@ cleanup() {
     wait "${server_pid}" >/dev/null 2>&1 || true
   fi
 
+  docker volume rm -f vector-config-vol >/dev/null 2>&1 || true
   rm -rf "${tmpdir}"
 }
 trap cleanup EXIT
@@ -167,18 +168,22 @@ echo "  endpoint: ${endpoint}"
 echo "  production config: ${repo_root}/vector.yaml"
 echo "  verification config: ${vector_config}"
 
+docker volume create vector-config-vol >/dev/null
+docker run --rm -v vector-config-vol:/data -i alpine sh -c 'cat > /data/vector-prod.yaml' < "${repo_root}/vector.yaml"
+docker run --rm -v vector-config-vol:/data -i alpine sh -c 'cat > /data/vector.yaml' < "${vector_config}"
+
 docker run --rm \
   -e ZEEK_SHIPPER_API_KEY=test-vector-key \
   -e QUIVER_ZEEK_INGEST_URL="${endpoint}" \
   -e VECTOR_ZEEK_LOG_PATH=/tmp/conn.log \
-  -v "${repo_root}/vector.yaml:/etc/vector/vector.yaml:ro" \
+  -v "vector-config-vol:/etc/vector:ro" \
   "${vector_image}" \
-  --config /etc/vector/vector.yaml validate >/dev/null
+  --config /etc/vector/vector-prod.yaml validate >/dev/null
 
 docker run --rm --network host \
   -e ZEEK_SHIPPER_API_KEY=test-vector-key \
   -e QUIVER_ZEEK_INGEST_URL="${endpoint}" \
-  -v "${vector_config}:/etc/vector/vector.yaml:ro" \
+  -v "vector-config-vol:/etc/vector:ro" \
   "${vector_image}" \
   --graceful-shutdown-limit-secs 1 \
   --config /etc/vector/vector.yaml >"${vector_log}" 2>&1 &

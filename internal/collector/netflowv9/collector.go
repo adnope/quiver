@@ -215,7 +215,7 @@ func (c *Collector) HandlePacket(ctx context.Context, input collector.PacketInpu
 	}
 	if len(input.Data) < 20 {
 		if c.metrics != nil {
-			c.metrics.DroppedPacket(input.SourceHost, "malformed_packet")
+			c.metrics.ParseError(input.SourceHost, "malformed_packet")
 			c.metrics.RecordError(fmt.Errorf("%w: packet size %d is too small for header", ErrCollector, len(input.Data)))
 		}
 		pktContext := PacketContext{
