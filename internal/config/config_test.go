@@ -26,6 +26,110 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
+func TestProxyNetFlowRouteValidation(t *testing.T) {
+	t.Parallel()
+
+	env := envLookup(map[string]string{
+		cursorEnv:                     "cursor-key",
+		"QUIVER_DEMO_ADMIN_API_KEY":   "admin-key",
+		"REST_INGEST_DEMO_CLIENT_KEY": "ingest-key",
+		"NETFLOW_GATEWAY_DEMO_KEY":    "netflow-key",
+		"ZEEK_SHIPPER_DEMO_KEY":       "zeek-key",
+	})
+
+	t.Run("legacy route", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := validConfig()
+		if err := cfg.Validate(env); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+	})
+
+	t.Run("version routes", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := validConfig()
+		cfg.ProxyNetFlow = ProxyNetFlowConfig{Routes: []ProxyNetFlowRouteConfig{
+			{Version: 5, CollectorID: "netflow-main"},
+			{Version: 9, CollectorID: "netflow-v9-main"},
+		}}
+		for index := range cfg.QuiverClientGateways {
+			cfg.QuiverClientGateways[index].AllowedCollectorIDs = []string{"netflow-main", "netflow-v9-main"}
+		}
+		if err := cfg.Validate(env); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+	})
+
+	tests := []struct {
+		name     string
+		mutate   func(*Config)
+		expected string
+	}{
+		{
+			name: "both route forms",
+			mutate: func(cfg *Config) {
+				cfg.ProxyNetFlow.Routes = []ProxyNetFlowRouteConfig{{Version: 5, CollectorID: "netflow-main"}}
+			},
+			expected: "mutually exclusive",
+		},
+		{
+			name: "duplicate route version",
+			mutate: func(cfg *Config) {
+				cfg.ProxyNetFlow.CollectorID = ""
+				cfg.ProxyNetFlow.Routes = []ProxyNetFlowRouteConfig{{Version: 5, CollectorID: "a"}, {Version: 5, CollectorID: "b"}}
+				for index := range cfg.QuiverClientGateways {
+					cfg.QuiverClientGateways[index].AllowedCollectorIDs = []string{"a"}
+				}
+			},
+			expected: "duplicate",
+		},
+		{
+			name: "unsupported route version",
+			mutate: func(cfg *Config) {
+				cfg.ProxyNetFlow.CollectorID = ""
+				cfg.ProxyNetFlow.Routes = []ProxyNetFlowRouteConfig{{Version: 10, CollectorID: "ipfix"}}
+				for index := range cfg.QuiverClientGateways {
+					cfg.QuiverClientGateways[index].AllowedCollectorIDs = []string{"ipfix"}
+				}
+			},
+			expected: "unsupported",
+		},
+		{
+			name: "missing multi-route allowlist",
+			mutate: func(cfg *Config) {
+				cfg.ProxyNetFlow.CollectorID = ""
+				cfg.ProxyNetFlow.Routes = []ProxyNetFlowRouteConfig{{Version: 5, CollectorID: "netflow-main"}, {Version: 9, CollectorID: "netflow-v9-main"}}
+			},
+			expected: "allowed_collector_ids is required",
+		},
+		{
+			name: "allowlist references unknown route",
+			mutate: func(cfg *Config) {
+				cfg.ProxyNetFlow.CollectorID = ""
+				cfg.ProxyNetFlow.Routes = []ProxyNetFlowRouteConfig{{Version: 5, CollectorID: "netflow-main"}, {Version: 9, CollectorID: "netflow-v9-main"}}
+				for index := range cfg.QuiverClientGateways {
+					cfg.QuiverClientGateways[index].AllowedCollectorIDs = []string{"missing"}
+				}
+			},
+			expected: "unconfigured collector",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := validConfig()
+			tt.mutate(&cfg)
+			err := cfg.Validate(env)
+			if err == nil || !strings.Contains(err.Error(), tt.expected) {
+				t.Fatalf("Validate() error = %v, want %q", err, tt.expected)
+			}
+		})
+	}
+}
+
 func TestConfigValidateFailures(t *testing.T) {
 	t.Parallel()
 

@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/adnope/quiver/internal/config"
@@ -26,9 +27,10 @@ const (
 )
 
 type Principal struct {
-	Name       string
-	Scopes     map[Scope]struct{}
-	SourceHost string
+	Name                string
+	Scopes              map[Scope]struct{}
+	SourceHost          string
+	AllowedCollectorIDs map[string]struct{}
 }
 
 type APIKeyAuthenticator interface {
@@ -97,6 +99,18 @@ func NewAuthenticator(cfg config.Config, lookupEnv func(string) string) (*Authen
 		}
 		key.principal.Scopes[ScopeIngest] = struct{}{}
 		key.principal.SourceHost = item.SourceHost
+		if key.principal.AllowedCollectorIDs == nil {
+			key.principal.AllowedCollectorIDs = map[string]struct{}{}
+		}
+		allowedCollectorIDs := item.AllowedCollectorIDs
+		if len(allowedCollectorIDs) == 0 && strings.TrimSpace(cfg.ProxyNetFlow.CollectorID) != "" {
+			allowedCollectorIDs = []string{cfg.ProxyNetFlow.CollectorID}
+		}
+		for _, collectorID := range allowedCollectorIDs {
+			if normalized := strings.TrimSpace(collectorID); normalized != "" {
+				key.principal.AllowedCollectorIDs[normalized] = struct{}{}
+			}
+		}
 		merged[value] = key
 	}
 
@@ -117,10 +131,21 @@ func (a *Authenticator) Authenticate(value string) (Principal, error) {
 	}
 	for _, key := range a.keys {
 		if subtle.ConstantTimeCompare([]byte(value), []byte(key.value)) == 1 {
-			return key.principal, nil
+			principal := key.principal
+			principal.Scopes = maps.Clone(key.principal.Scopes)
+			principal.AllowedCollectorIDs = maps.Clone(key.principal.AllowedCollectorIDs)
+			return principal, nil
 		}
 	}
 	return Principal{}, ErrInvalidAPIKey
+}
+
+func (p Principal) AllowsCollector(collectorID string) bool {
+	if p.AllowedCollectorIDs == nil {
+		return false
+	}
+	_, ok := p.AllowedCollectorIDs[strings.TrimSpace(collectorID)]
+	return ok
 }
 
 func (p Principal) HasScope(scope Scope) bool {

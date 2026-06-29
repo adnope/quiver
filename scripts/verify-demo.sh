@@ -104,9 +104,14 @@ echo "=================================================="
 echo "Sending NetFlow v5 packets..."
 go run tools/netflowgen/main.go -target "localhost:${NETFLOW_PORT}" -count 3 -seq 1
 
-# Send two malformed NetFlow packets. These are expected to reach Kafka DLQ.
-go run tools/netflowgen/main.go -target "localhost:${NETFLOW_PORT}" -count 1 -seq 4 -malformed version
-go run tools/netflowgen/main.go -target "localhost:${NETFLOW_PORT}" -count 1 -seq 5 -malformed version
+# Send two malformed v5 packets. Unsupported protocol versions are rejected by
+# the generic router and intentionally do not amplify into the collector DLQ.
+go run tools/netflowgen/main.go -target "localhost:${NETFLOW_PORT}" -count 1 -seq 4 -malformed mismatch
+go run tools/netflowgen/main.go -target "localhost:${NETFLOW_PORT}" -count 1 -seq 5 -malformed mismatch
+
+echo "=================================================="
+echo "Sending NetFlow v9 packets..."
+go run tools/netflowv9gen/main.go -target "localhost:${NETFLOW_PORT}" -count 3 -seq 1
 
 echo "Waiting 10 seconds for processing pipelines to complete..."
 sleep 10
@@ -132,6 +137,10 @@ if ! echo "$RESPONSE" | grep -q '"source_type":"zeek_conn_json"'; then
 fi
 if ! echo "$RESPONSE" | grep -q '"source_type":"netflow_v5"'; then
   echo "ERROR: Missing source_type 'netflow_v5' in flows query."
+  exit 1
+fi
+if ! echo "$RESPONSE" | grep -q '"source_type":"netflow_v9"'; then
+  echo "ERROR: Missing source_type 'netflow_v9' in flows query."
   exit 1
 fi
 echo "Ingest verification PASS!"
@@ -184,8 +193,8 @@ if ! echo "$METRICS_RESP" | grep -Fq "collector_packets_received_total{collector
   echo "ERROR: Missing NetFlow packet receive metric for ${NETFLOW_COLLECTOR_ID}/${NETFLOW_GATEWAY_SOURCE_HOST}."
   exit 1
 fi
-if ! echo "$METRICS_RESP" | grep -Fq "collector_parse_errors_total{collector_id=\"${NETFLOW_COLLECTOR_ID}\",error_code=\"unsupported_version\",source_host=\"${NETFLOW_GATEWAY_SOURCE_HOST}\",source_type=\"netflow_v5\"} 2"; then
-  echo "ERROR: Missing expected NetFlow unsupported_version parse error metric."
+if ! echo "$METRICS_RESP" | grep -Fq "collector_parse_errors_total{collector_id=\"${NETFLOW_COLLECTOR_ID}\",error_code=\"malformed_packet\",source_host=\"${NETFLOW_GATEWAY_SOURCE_HOST}\",source_type=\"netflow_v5\"} 2"; then
+  echo "ERROR: Missing expected NetFlow malformed_packet parse error metric."
   exit 1
 fi
 echo "Metrics verification PASS!"

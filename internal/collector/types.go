@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/netip"
+	"time"
 
 	quiverauth "github.com/adnope/quiver/internal/auth"
 	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
@@ -29,7 +30,28 @@ type RuntimeCollector interface {
 
 type PacketCollector interface {
 	RuntimeCollector
-	HandlePacket(ctx context.Context, sourceIP netip.Addr, sourceHost string, data []byte) error
+	HandlePacket(ctx context.Context, input PacketInput) (PacketResult, error)
+}
+
+type PacketInput struct {
+	SourceIP        netip.Addr
+	SourceHost      string
+	ReceivedAt      time.Time
+	ProxyReceivedAt *time.Time
+	Data            []byte
+}
+
+type PacketStatus string
+
+const (
+	PacketAccepted  PacketStatus = "accepted"
+	PacketRetryable PacketStatus = "retryable"
+	PacketRejected  PacketStatus = "rejected"
+)
+
+type PacketResult struct {
+	Status    PacketStatus
+	ErrorCode string
 }
 
 type CollectorHealth struct {

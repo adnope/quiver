@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -133,16 +132,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	var proxyTarget api.InjectableCollector
+	var proxyRouter api.PacketRouter
 	if len(cfg.QuiverClientGateways) > 0 {
-		targetID := cfg.ProxyNetFlow.CollectorID
-		target, ok := collectorManager.PacketCollector(targetID)
-		if !ok {
-			err := proxyTargetError(collectorManager, targetID)
-			logger.ErrorContext(ctx, "secure proxy target unavailable", slog.String("component", "cmd"), slog.String("collector_id", targetID), slog.Any("error", err))
+		resolvedRouter, routerErr := collector.NewPacketRouter(collectorManager, cfg.ProxyNetFlow)
+		if routerErr != nil {
+			logger.ErrorContext(ctx, "secure proxy routes unavailable", slog.String("component", "cmd"), slog.Any("error", routerErr))
 			os.Exit(1)
 		}
-		proxyTarget = target
+		proxyRouter = resolvedRouter
 	}
 
 	healthChecker := &api.CompositeHealthChecker{
@@ -159,7 +156,7 @@ func main() {
 		os.Getenv,
 		metrics,
 		healthChecker,
-		proxyTarget,
+		proxyRouter,
 	)
 	if err != nil {
 		logger.ErrorContext(ctx, "create api server failed", slog.String("component", "cmd"), slog.Any("error", err))
@@ -200,11 +197,4 @@ func main() {
 		logger.Warn("http shutdown failed", slog.String("component", "cmd"), slog.Any("error", err))
 	}
 	logger.Info("quiver stopped", slog.String("component", "cmd"))
-}
-
-func proxyTargetError(manager *collector.Manager, collectorID string) error {
-	if manager.CollectorExists(collectorID) {
-		return fmt.Errorf("collector %q does not implement packet collector", collectorID)
-	}
-	return fmt.Errorf("collector %q does not exist", collectorID)
 }

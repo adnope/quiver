@@ -34,7 +34,6 @@ linters:
   settings:
     revive:
       rules:
-        # Initial Quiver internal package APIs are still being shaped across phases.
         - name: exported
           disabled: true
         - name: package-comments

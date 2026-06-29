@@ -25,7 +25,7 @@ OPENAPI_FILE ?= $(OPENAPI_DIR)/quiver.v1.yaml
 TEST_DATABASE_DSN ?= postgres://postgres:postgres@localhost:5434/quiver?sslmode=disable
 TEST_KAFKA_BROKERS ?= localhost:9096
 
-.PHONY: build build-quiver build-client frontend-install frontend-typecheck frontend-test frontend-build fmt lint lint-go lint-frontend test test-unit test-up test-down test-integration test-all test-race coverage proto proto-check swagger swagger-check openapi openapi-check migrate-up dev-up dev-down dev-demo load-smoke dev-load-smoke verify-demo verify-demo-down verify-vector-shipper verify-zeek-conn-tcp
+.PHONY: build build-quiver build-client frontend-install frontend-typecheck frontend-test frontend-build fmt lint lint-go lint-frontend test test-unit test-up test-down test-integration test-all test-race coverage proto proto-check swagger swagger-check openapi openapi-check migrate-up dev-up dev-down dev-demo load-smoke dev-load-smoke verify-demo verify-demo-down verify-vector-shipper verify-zeek-conn-tcp verify-netflow-v9
 
 build: build-quiver build-client
 
@@ -180,6 +180,7 @@ dev-demo:
 	$(GO) run tools/restgen/main.go -target http://localhost:$(QUIVER_HOST_PORT) -key $(REST_INGEST_DEMO_CLIENT_KEY) -count 10
 	$(GO) run tools/zeekloggen/main.go -target http://localhost:$(QUIVER_HOST_PORT) -key $(ZEEK_SHIPPER_DEMO_KEY) -count 10
 	$(GO) run tools/netflowgen/main.go -target localhost:$(NETFLOW_PORT) -count 5 -seq 10
+	$(GO) run tools/netflowv9gen/main.go -target localhost:$(NETFLOW_PORT) -count 5 -seq 10
 
 verify-demo:
 	COMPOSE_PROJECT_NAME="$(VERIFY_PROJECT)" \
@@ -200,6 +201,13 @@ verify-zeek-conn-tcp:
 	VERIFY_HOST_PORT="8237" \
 	VERIFY_ZEEK_TCP_PORT="4771" \
 	./scripts/verify-zeek-conn-tcp.sh
+
+verify-netflow-v9:
+	COMPOSE_PROJECT_NAME="$(VERIFY_PROJECT)-v9" \
+	VERIFY_COMPOSE_FILE="docker-compose.verify.yml" \
+	VERIFY_HOST_PORT="8237" \
+	VERIFY_NETFLOW_PORT="2056" \
+	./scripts/verify-netflow-v9.sh
 
 load-smoke:
 	$(GO) run tools/loadsmoke/main.go \

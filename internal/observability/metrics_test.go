@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 )
@@ -190,4 +191,20 @@ func findAggregate(aggregates []MetricAggregate, name string) *MetricAggregate {
 		}
 	}
 	return nil
+}
+
+func TestRegistryPreservesNetFlowV9Labels(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	registry.Add("collector_packets_received_total", map[string]string{"collector_id": "v9-main", "source_type": "netflow_v9"}, 5)
+
+	if got := snapshotValue(registry.Snapshot(), "collector_packets_received_total", map[string]string{"collector_id": "v9-main", "source_type": "netflow_v9"}); got != 5 {
+		t.Fatalf("snapshot value = %d, want 5", got)
+	}
+
+	body := string(registry.WritePrometheus())
+	if !strings.Contains(body, `collector_packets_received_total{collector_id="v9-main",source_type="netflow_v9"} 5`) {
+		t.Fatalf("metrics body missing netflow_v9 source_type label:\n%s", body)
+	}
 }

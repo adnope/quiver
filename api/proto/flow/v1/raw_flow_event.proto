@@ -111,6 +111,26 @@ message NetFlowV9Flow {
   uint32 template_id = 2;
   uint32 record_index = 3;
   google.protobuf.Struct fields = 4;
+
+  uint32 packet_sequence = 5;
+  uint32 exporter_uptime_ms = 6;
+  google.protobuf.Timestamp exporter_unix_time = 7;
+  uint32 flowset_id = 8;
+  uint32 flowset_index = 9;
+  repeated NetFlowV9DecodedField decoded_fields = 10;
+}
+
+message NetFlowV9DecodedField {
+  uint32 field_id = 1;
+  uint32 field_length = 2;
+  optional uint32 enterprise_number = 3;
+  optional string name = 4;
+
+  oneof value {
+    uint64 unsigned_value = 5;
+    string string_value = 6;
+    bytes bytes_value = 7;
+  }
 }
 
 message SyslogFlow {

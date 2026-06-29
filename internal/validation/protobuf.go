@@ -3,7 +3,9 @@ package validation
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/adnope/quiver/internal/domain"
 	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
@@ -42,6 +44,75 @@ func ValidateRawEventEnvelope(event *flowv1.RawFlowEventEnvelope) error {
 	}
 	if err := validatePayloadMatchesSource(event.GetSource().GetSourceType(), event.GetPayload()); err != nil {
 		return err
+	}
+	if flow := event.GetPayload().GetNetflowV9(); flow != nil {
+		if err := validateNetFlowV9(flow); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateNetFlowV9(flow *flowv1.NetFlowV9Flow) error {
+	for index, field := range flow.GetDecodedFields() {
+		if field == nil {
+			return fmt.Errorf("%w: netflow_v9.decoded_fields[%d] is nil", ErrInvalidProtobufEvent, index)
+		}
+		if field.GetFieldId() == 0 || field.GetFieldId() > 65535 {
+			return fmt.Errorf("%w: netflow_v9.decoded_fields[%d].field_id must be within 1..65535", ErrInvalidProtobufEvent, index)
+		}
+		length := field.GetFieldLength()
+		if length == 0 || length > 65535 {
+			return fmt.Errorf("%w: netflow_v9.decoded_fields[%d].field_length must be within 1..65535", ErrInvalidProtobufEvent, index)
+		}
+		if field.Name != nil && strings.TrimSpace(field.GetName()) == "" {
+			return fmt.Errorf("%w: netflow_v9.decoded_fields[%d].name must not be blank", ErrInvalidProtobufEvent, index)
+		}
+
+		switch value := field.GetValue().(type) {
+		case *flowv1.NetFlowV9DecodedField_UnsignedValue:
+			if length > 8 {
+				return fmt.Errorf("%w: netflow_v9.decoded_fields[%d] unsigned field length exceeds 8", ErrInvalidProtobufEvent, index)
+			}
+			if length < 8 && value.UnsignedValue >= uint64(1)<<(length*8) {
+				return fmt.Errorf("%w: netflow_v9.decoded_fields[%d] unsigned value exceeds field length", ErrInvalidProtobufEvent, index)
+			}
+		case *flowv1.NetFlowV9DecodedField_StringValue:
+			if !utf8.ValidString(value.StringValue) {
+				return fmt.Errorf("%w: netflow_v9.decoded_fields[%d] string value is not valid utf-8", ErrInvalidProtobufEvent, index)
+			}
+			if err := validateNetFlowV9StringField(field.GetFieldId(), length, value.StringValue); err != nil {
+				return fmt.Errorf("%w: netflow_v9.decoded_fields[%d]: %w", ErrInvalidProtobufEvent, index, err)
+			}
+		case *flowv1.NetFlowV9DecodedField_BytesValue:
+			if len(value.BytesValue) != int(length) {
+				return fmt.Errorf("%w: netflow_v9.decoded_fields[%d] bytes value length mismatch", ErrInvalidProtobufEvent, index)
+			}
+		case nil:
+			return fmt.Errorf("%w: netflow_v9.decoded_fields[%d] has unknown or missing value", ErrInvalidProtobufEvent, index)
+		default:
+			return fmt.Errorf("%w: netflow_v9.decoded_fields[%d] has unsupported value", ErrInvalidProtobufEvent, index)
+		}
+	}
+	return nil
+}
+
+func validateNetFlowV9StringField(fieldID uint32, length uint32, value string) error {
+	switch fieldID {
+	case 8, 12, 15, 18, 44, 45, 47:
+		address, err := netip.ParseAddr(value)
+		if err != nil || !address.Is4() || length != 4 {
+			return fmt.Errorf("ipv4 value requires a four-byte field")
+		}
+	case 27, 28, 62, 63:
+		address, err := netip.ParseAddr(value)
+		if err != nil || !address.Is6() || length != 16 {
+			return fmt.Errorf("ipv6 value requires a sixteen-byte field")
+		}
+	default:
+		if len(value) > int(length) {
+			return fmt.Errorf("string value exceeds field length")
+		}
 	}
 	return nil
 }
