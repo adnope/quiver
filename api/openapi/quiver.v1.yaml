@@ -218,6 +218,10 @@ definitions:
         type: number
       p99:
         type: number
+      rate_avg:
+        type: number
+      rate_peak:
+        type: number
       sample_count:
         type: integer
       sum:

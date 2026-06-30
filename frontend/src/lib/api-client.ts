@@ -86,7 +86,7 @@ function shouldUseViteProxy(baseUrl: string) {
   const parsed = new URL(validateApiBaseUrl(baseUrl))
   return (
     (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') &&
-    parsed.port === '8236'
+    (parsed.port === '8236' || parsed.port === '8118')
   )
 }
 
@@ -101,10 +101,7 @@ export function toQueryString(params: object) {
       }
       continue
     }
-    if (
-      (typeof value === 'string' && value !== '') ||
-      typeof value === 'number'
-    ) {
+    if ((typeof value === 'string' && value !== '') || typeof value === 'number') {
       search.set(key, String(value))
     }
   }
@@ -129,10 +126,7 @@ async function parseError(response: Response): Promise<ApiClientError> {
   })
 }
 
-async function requestText(
-  path: string,
-  options: ApiClientOptions = {},
-): Promise<string> {
+async function requestText(path: string, options: ApiClientOptions = {}): Promise<string> {
   const headers = new Headers({ Accept: 'text/plain' })
   if (options.apiKey && options.apiKey.trim() !== '') {
     headers.set('X-API-Key', options.apiKey.trim())
@@ -155,10 +149,7 @@ async function requestText(
   return response.text()
 }
 
-export async function requestJson<T>(
-  path: string,
-  options: ApiClientOptions = {},
-): Promise<T> {
+export async function requestJson<T>(path: string, options: ApiClientOptions = {}): Promise<T> {
   const headers = new Headers({ Accept: 'application/json' })
   if (options.apiKey && options.apiKey.trim() !== '') {
     headers.set('X-API-Key', options.apiKey.trim())
@@ -192,7 +183,7 @@ export function getLiveMetrics(options?: ApiClientOptions) {
         return getPrometheusLiveMetrics(options)
       }
       throw error
-    },
+    }
   )
 }
 
@@ -201,10 +192,7 @@ export async function getPrometheusLiveMetrics(options?: ApiClientOptions) {
   return { metrics: parsePrometheusMetrics(body) } satisfies LiveMetricsResponse
 }
 
-export async function validateBackendSettings(options: {
-  baseUrl: string
-  apiKey: string
-}) {
+export async function validateBackendSettings(options: { baseUrl: string; apiKey: string }) {
   const baseUrl = validateApiBaseUrl(options.baseUrl)
   const apiKey = options.apiKey.trim()
   if (apiKey === '') {
@@ -238,30 +226,23 @@ function normalizeValidationError(error: unknown, fallback: string) {
   }
   if (error instanceof TypeError) {
     return new Error(
-      `${fallback} In local dev, use http://localhost:8236 and keep the Vite dev server proxy running.`,
+      `${fallback} In local dev, use http://localhost:8118 (or http://localhost:8236) and keep the Vite dev server proxy running.`
     )
   }
   return error instanceof Error ? error : new Error(fallback)
 }
 
-
-export function getMetricAggregates(
-  params: MetricAggregatesParams,
-  options?: ApiClientOptions,
-) {
+export function getMetricAggregates(params: MetricAggregatesParams, options?: ApiClientOptions) {
   return requestJson<MetricAggregatesResponse>(
     `/api/v1/metrics/aggregates${toQueryString(params)}`,
-    options,
+    options
   )
 }
 
-export function getMetricsHistory(
-  range: string,
-  options?: ApiClientOptions,
-) {
+export function getMetricsHistory(range: string, options?: ApiClientOptions) {
   return requestJson<MetricHistoryResponse>(
     `/api/v1/metrics/history${toQueryString({ range })}`,
-    options,
+    options
   ).catch(async (error: unknown) => {
     if (isNotFound(error)) {
       return liveMetricsToCurrentHistory(await getPrometheusLiveMetrics(options))
@@ -270,9 +251,7 @@ export function getMetricsHistory(
   })
 }
 
-function liveMetricsToCurrentHistory(
-  liveMetrics: LiveMetricsResponse,
-): MetricHistoryResponse {
+function liveMetricsToCurrentHistory(liveMetrics: LiveMetricsResponse): MetricHistoryResponse {
   const timestamp = new Date().toISOString()
   return {
     points: liveMetrics.metrics.map((metric) => ({
@@ -289,57 +268,61 @@ function isNotFound(error: unknown) {
   return error instanceof ApiClientError && error.status === 404
 }
 
-export function searchFlows(
-  params: FlowSearchParams,
-  options?: ApiClientOptions,
-) {
-  return requestJson<FlowSearchResponse>(
-    `/api/v1/flows${toQueryString(params)}`,
-    options,
-  )
+export function searchFlows(params: FlowSearchParams, options?: ApiClientOptions) {
+  return requestJson<FlowSearchResponse>(`/api/v1/flows${toQueryString(params)}`, options)
 }
 
 export function getFlowById(
   id: string,
   startTime: string | undefined,
   includeAttributes: boolean,
-  options?: ApiClientOptions,
+  options?: ApiClientOptions
 ) {
   return requestJson<FlowResponse>(
     `/api/v1/flows/${encodeURIComponent(id)}${toQueryString({
       start_time: startTime,
       include: includeAttributes ? 'attributes' : undefined,
     })}`,
-    options,
+    options
   )
 }
 
-export function getTopTalkers(
-  params: DirectedAggregationParams,
-  options?: ApiClientOptions,
-) {
+export function getTopTalkers(params: DirectedAggregationParams, options?: ApiClientOptions) {
   return requestJson<TopTalkersResponse>(
     `/api/v1/aggregations/top-talkers${toQueryString(params)}`,
-    options,
+    options
   )
 }
 
-export function getTopPorts(
-  params: DirectedAggregationParams,
-  options?: ApiClientOptions,
-) {
+export function getTopPorts(params: DirectedAggregationParams, options?: ApiClientOptions) {
   return requestJson<TopPortsResponse>(
     `/api/v1/aggregations/top-ports${toQueryString(params)}`,
-    options,
+    options
   )
 }
 
-export function getProtocols(
-  params: AggregationParams,
-  options?: ApiClientOptions,
-) {
+export function getProtocols(params: AggregationParams, options?: ApiClientOptions) {
   return requestJson<ProtocolsResponse>(
     `/api/v1/aggregations/protocols${toQueryString(params)}`,
-    options,
+    options
   )
+}
+
+export interface SystemLogLine {
+  timestamp: string
+  level: string
+  message: string
+  attributes: Record<string, unknown>
+}
+
+export interface SystemLogsParams {
+  limit?: number
+  level?: string | undefined
+  search?: string | undefined
+  from?: string | undefined
+  to?: string | undefined
+}
+
+export function getSystemLogs(params: SystemLogsParams, options?: ApiClientOptions) {
+  return requestJson<SystemLogLine[]>(`/api/v1/admin/logs${toQueryString(params)}`, options)
 }

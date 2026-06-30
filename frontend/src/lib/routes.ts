@@ -5,6 +5,7 @@ const ROUTES: Record<ActiveTab, string> = {
   history: '/history',
   explorer: '/flows',
   analytics: '/analytics',
+  logs: '/logs',
 }
 
 export function routeForTab(tab: ActiveTab) {
@@ -20,6 +21,8 @@ export function tabFromPath(pathname: string): ActiveTab {
       return 'explorer'
     case '/analytics':
       return 'analytics'
+    case '/logs':
+      return 'logs'
     case '/dashboard':
     case '/':
     default:

@@ -17,9 +17,7 @@ import type {
   MetricWidget,
 } from '@/lib/metrics-parser'
 
-const EMPTY_CHART_DATA: ChartDatum[] = [
-  { timestamp: new Date().toISOString(), total: 0 },
-]
+const EMPTY_CHART_DATA: ChartDatum[] = [{ timestamp: new Date().toISOString(), total: 0 }]
 
 interface MetricAreaChartProps {
   widget: MetricWidget
@@ -30,6 +28,7 @@ interface MetricAreaChartProps {
   error?: string
   onRetry: () => void
   scrollable?: boolean
+  heightClass?: string
 }
 
 export function MetricAreaChart({
@@ -41,6 +40,7 @@ export function MetricAreaChart({
   error,
   onRetry,
   scrollable = false,
+  heightClass = 'h-44',
 }: MetricAreaChartProps) {
   const visibleData = data.length > 0 ? data : EMPTY_CHART_DATA
   const chartWidth = scrollable ? Math.max(1_800, visibleData.length * 4) : undefined
@@ -55,7 +55,7 @@ export function MetricAreaChart({
   }, [scrollable, data.length])
 
   if (isLoading) {
-    return <ChartSkeleton />
+    return <ChartSkeleton heightClass={heightClass} />
   }
 
   if (error) {
@@ -73,76 +73,90 @@ export function MetricAreaChart({
       ref={scrollRef}
       className={
         scrollable
-          ? 'relative h-44 overflow-x-auto overflow-y-visible pb-2'
-          : 'relative h-44 overflow-visible'
+          ? `relative ${heightClass} overflow-x-auto overflow-y-visible pb-2`
+          : `relative ${heightClass} overflow-visible`
       }
     >
       <div className="h-full" style={chartWidth ? { width: chartWidth } : undefined}>
-      <ResponsiveContainer width="100%" height="100%">
-        <AreaChart data={visibleData} margin={{ top: 10, right: 8, left: -18, bottom: 0 }}>
-          <defs>
-            {series.map((item) => (
-              <linearGradient key={item.key} id={gradientId(widget, item.key)} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor={item.color} stopOpacity={0.15} />
-                <stop offset="95%" stopColor={item.color} stopOpacity={0} />
-              </linearGradient>
-            ))}
-          </defs>
-          <CartesianGrid
-            vertical={false}
-            stroke="var(--chart-grid)"
-            strokeDasharray="3 3"
-          />
-          <XAxis
-            dataKey="timestamp"
-            minTickGap={32}
-            tickLine={false}
-            axisLine={false}
-            tick={{ fill: 'var(--text-secondary)', fontSize: 11 }}
-            tickFormatter={(value: string) => formatTimestamp(value, range)}
-          />
-          <YAxis
-            tickLine={false}
-            axisLine={false}
-            width={54}
-            tick={{ fill: 'var(--text-secondary)', fontSize: 11 }}
-            tickFormatter={(value: number) => formatShortAxis(value)}
-          />
-          <Tooltip
-            content={<MetricTooltip widget={widget} range={range} series={series} />}
-            cursor={{ stroke: 'var(--border)', strokeDasharray: '3 3' }}
-            allowEscapeViewBox={{ x: false, y: false }}
-            wrapperStyle={{ zIndex: 20 }}
-            position={{ y: 0 }}
-          />
-          {series.length > 0 ? (
-            series.map((item) => (
-              <Area
-                key={item.key}
-                type="monotone"
-                dataKey={item.key}
-                stroke={item.color}
-                strokeWidth={1.5}
-                fill={`url(#${gradientId(widget, item.key)})`}
-                isAnimationActive
-                animationDuration={300}
-                dot={false}
-                activeDot={{ r: 3, strokeWidth: 0 }}
-              />
-            ))
-          ) : (
-            <Area
-              type="monotone"
-              dataKey="total"
-              stroke="var(--border)"
-              strokeWidth={1.5}
-              fill="transparent"
-              dot={false}
-              isAnimationActive={false}
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={visibleData} margin={{ top: 10, right: 8, left: -18, bottom: 0 }}>
+            <defs>
+              {series.map((item) => (
+                <linearGradient
+                  key={item.key}
+                  id={gradientId(widget, item.key)}
+                  x1="0"
+                  y1="0"
+                  x2="0"
+                  y2="1"
+                >
+                  <stop offset="5%" stopColor={item.color} stopOpacity={0.15} />
+                  <stop offset="95%" stopColor={item.color} stopOpacity={0} />
+                </linearGradient>
+              ))}
+            </defs>
+            <CartesianGrid vertical={false} stroke="var(--chart-grid)" strokeDasharray="3 3" />
+            <XAxis
+              dataKey="timestamp"
+              minTickGap={32}
+              tickLine={false}
+              axisLine={false}
+              tick={{ fill: 'var(--text-secondary)', fontSize: 11 }}
+              tickFormatter={(value: string) => formatTimestamp(value, range)}
             />
-          )}
-        </AreaChart>
-      </ResponsiveContainer>
+            <YAxis
+              tickLine={false}
+              axisLine={false}
+              width={54}
+              tick={{ fill: 'var(--text-secondary)', fontSize: 11 }}
+              tickFormatter={(value: number) => formatShortAxis(value)}
+            />
+            <Tooltip
+              content={<MetricTooltip widget={widget} range={range} series={series} />}
+              cursor={{ stroke: 'var(--border)', strokeDasharray: '3 3' }}
+              allowEscapeViewBox={{ x: false, y: false }}
+              wrapperStyle={{ zIndex: 20 }}
+              /* eslint-disable @typescript-eslint/no-explicit-any */
+              position={
+                ((point: any, _: any, __: any, viewBox: any) => {
+                  const tooltipWidth = widget === 'dbLatency' ? 240 : 200
+                  let x = point.x + 12
+                  if (viewBox && point.x > viewBox.width - tooltipWidth - 20) {
+                    x = Math.max(0, point.x - tooltipWidth - 12)
+                  }
+                  return { x, y: 0 }
+                }) as any
+              }
+              /* eslint-enable @typescript-eslint/no-explicit-any */
+            />
+            {series.length > 0 ? (
+              series.map((item) => (
+                <Area
+                  key={item.key}
+                  type="monotone"
+                  dataKey={item.key}
+                  stroke={item.color}
+                  strokeWidth={1.5}
+                  fill={`url(#${gradientId(widget, item.key)})`}
+                  isAnimationActive
+                  animationDuration={300}
+                  dot={false}
+                  activeDot={{ r: 3, strokeWidth: 0 }}
+                />
+              ))
+            ) : (
+              <Area
+                type="monotone"
+                dataKey="total"
+                stroke="var(--border)"
+                strokeWidth={1.5}
+                fill="transparent"
+                dot={false}
+                isAnimationActive={false}
+              />
+            )}
+          </AreaChart>
+        </ResponsiveContainer>
       </div>
     </div>
   )
@@ -163,22 +177,16 @@ interface MetricTooltipProps {
   series: ChartSeries[]
 }
 
-function MetricTooltip({
-  active,
-  payload,
-  label,
-  widget,
-  range,
-  series,
-}: MetricTooltipProps) {
+function MetricTooltip({ active, payload, label, widget, range, series }: MetricTooltipProps) {
   if (!active || !payload || payload.length === 0) {
     return null
   }
 
   const byKey = new Map(series.map((item) => [item.key, item]))
   const rows = payload
-    .filter((item): item is MetricTooltipPayload & { dataKey: string | number } =>
-      Boolean(item.dataKey) && item.dataKey !== 'total',
+    .filter(
+      (item): item is MetricTooltipPayload & { dataKey: string | number } =>
+        Boolean(item.dataKey) && item.dataKey !== 'total'
     )
     .map((item) => {
       const key = String(item.dataKey)
@@ -248,9 +256,8 @@ function MetricTooltip({
   )
 }
 
-
 function firstStats(
-  rows: ReadonlyArray<{ stats: AggregateTooltipStats | undefined }>,
+  rows: ReadonlyArray<{ stats: AggregateTooltipStats | undefined }>
 ): AggregateTooltipStats | undefined {
   return rows.find((row) => row.stats)?.stats
 }
@@ -274,8 +281,14 @@ function tooltipStatRows(stats: AggregateTooltipStats, widget: MetricWidget) {
   }
 
   if (widget === 'ingestion' || widget === 'deadLetter') {
+    if (stats.rateAvg !== undefined) {
+      rows.push({ label: 'Avg', value: formatMetricValue(widget, stats.rateAvg) })
+    }
+    if (stats.ratePeak !== undefined) {
+      rows.push({ label: 'Peak', value: formatMetricValue(widget, stats.ratePeak) })
+    }
     if (stats.delta !== undefined) {
-      rows.push({ label: 'delta', value: formatNumber(stats.delta) })
+      rows.push({ label: 'Total', value: formatNumber(stats.delta) })
     }
     return rows
   }
@@ -305,12 +318,14 @@ function tooltipStatRows(stats: AggregateTooltipStats, widget: MetricWidget) {
   return rows
 }
 
-function ChartSkeleton() {
+function ChartSkeleton({ heightClass = 'h-44' }: { heightClass?: string }) {
   return (
-    <div className="h-44 animate-pulse rounded-md border border-[var(--border)] bg-[var(--chart-surface)]">
-      <div className="mt-8 h-px bg-[var(--border)]" />
-      <div className="mt-10 h-px bg-[var(--border)]" />
-      <div className="mt-10 h-px bg-[var(--border)]" />
+    <div
+      className={`${heightClass} animate-pulse rounded-md border border-[var(--border)] bg-[var(--chart-surface)] flex flex-col justify-around py-4`}
+    >
+      <div className="h-px bg-[var(--border)]" />
+      <div className="h-px bg-[var(--border)]" />
+      <div className="h-px bg-[var(--border)]" />
     </div>
   )
 }

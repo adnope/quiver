@@ -22,6 +22,8 @@ export interface AggregateTooltipStats {
   first?: number
   last?: number
   delta?: number
+  rateAvg?: number
+  ratePeak?: number
 }
 
 export type ChartDatum = {
@@ -109,6 +111,10 @@ const SOURCE_TYPE_LABELS: Record<string, string> = {
   source_type_netflow_v5: 'NetFlow v5',
   netflow_v5: 'NetFlow v5',
 
+  SOURCE_TYPE_NETFLOW_V9: 'NetFlow v9',
+  source_type_netflow_v9: 'NetFlow v9',
+  netflow_v9: 'NetFlow v9',
+
   SOURCE_TYPE_REST_JSON: 'REST',
   source_type_rest_json: 'REST',
   rest_json: 'REST',
@@ -135,7 +141,7 @@ export function rangeConfig(range: MetricRange): RangeConfig {
 
 export function metricAggregateParamsForRange(
   range: MetricRange,
-  now = new Date(),
+  now = new Date()
 ): MetricAggregatesParams {
   const config = RANGE_CONFIG[range]
   const to = now
@@ -293,16 +299,14 @@ function parsePrometheusNumber(value: string) {
 export function labelForMetric(
   widget: MetricWidget,
   labels: Record<string, string> | null | undefined,
-  name?: string,
+  name?: string
 ) {
   switch (widget) {
     case 'ingestion':
       if (name === 'flow_records_stored_total') {
         return 'Persisted'
       }
-      return labels?.source_type
-        ? sourceTypeLabel(labels.source_type)
-        : 'unknown_source'
+      return labels?.source_type ? sourceTypeLabel(labels.source_type) : 'unknown_source'
     case 'deadLetter':
       if (name === 'rate_limit_rejections_total') {
         return 'Rate Limited'
@@ -344,23 +348,18 @@ export function buildHistoryChart(
   points: ReadonlyArray<MetricHistoryPoint>,
   widget: MetricWidget,
   range: MetricRange,
-  now = new Date(),
+  now = new Date()
 ): WidgetChartData {
   const config = RANGE_CONFIG[range]
   const seriesPoints =
     widget === 'dbLatency'
       ? buildHistoricalLatencyPoints(points, config.bucketMs)
-      : buildHistoricalWidgetPoints(
-          points,
-          widget,
-          config.bucketSeconds,
-          config.bucketMs,
-        )
+      : buildHistoricalWidgetPoints(points, widget, config.bucketSeconds, config.bucketMs)
 
   return pivotSeriesPoints(
     fillMissingBuckets(seriesPoints, range, now),
     widget,
-    expectedBuckets(range, now),
+    expectedBuckets(range, now)
   )
 }
 
@@ -368,7 +367,7 @@ export function buildAggregateChart(
   points: ReadonlyArray<MetricAggregatePoint>,
   widget: MetricWidget,
   range: MetricRange,
-  now = new Date(),
+  now = new Date()
 ): WidgetChartData {
   const config = RANGE_CONFIG[range]
   return buildAggregateChartForWindow(points, widget, {
@@ -381,41 +380,28 @@ export function buildAggregateChart(
 export function buildAggregateChartForWindow(
   points: ReadonlyArray<MetricAggregatePoint>,
   widget: MetricWidget,
-  window: MetricWindowConfig,
+  window: MetricWindowConfig
 ): WidgetChartData {
   const normalized = normalizeMetricWindow(window)
   const bucketMs = normalized.bucketSeconds * 1000
   const seriesPoints = buildAggregateWidgetPoints(points, widget, bucketMs)
-  const buckets = expectedWindowBuckets(
-    normalized.from,
-    normalized.to,
-    bucketMs,
-  )
+  const buckets = expectedWindowBuckets(normalized.from, normalized.to, bucketMs)
 
-  return pivotSeriesPoints(
-    fillMissingWindowBuckets(seriesPoints, buckets),
-    widget,
-    buckets,
-  )
+  return pivotSeriesPoints(fillMissingWindowBuckets(seriesPoints, buckets), widget, buckets)
 }
 
 export function summarizeMetricAggregates(
   points: ReadonlyArray<MetricAggregatePoint>,
   from: string | Date,
-  to: string | Date,
+  to: string | Date
 ): MetricWindowSummary {
-  const windowSeconds = Math.max(
-    1,
-    (dateValue(to).getTime() - dateValue(from).getTime()) / 1000,
-  )
+  const windowSeconds = Math.max(1, (dateValue(to).getTime() - dateValue(from).getTime()) / 1000)
   const ingested = sumMetricDelta(points, 'flow_records_normalized_total')
   const persisted = sumMetricDelta(points, 'flow_records_stored_total')
   const failed = sumMetricDelta(points, 'flow_records_failed_total')
   const rateLimited = sumMetricDelta(points, 'rate_limit_rejections_total')
   const lagPoints = points.filter((point) => point.metric_name === 'kafka_consumer_lag')
-  const latencyPoints = points.filter(
-    (point) => point.metric_name === 'storage_insert_duration',
-  )
+  const latencyPoints = points.filter((point) => point.metric_name === 'storage_insert_duration')
   const latencyStats = weightedLatencyStats(latencyPoints)
 
   return {
@@ -440,20 +426,14 @@ export function buildLiveWidgetSnapshot(
   previous: ReadonlyArray<MetricSnapshot>,
   widget: MetricWidget,
   pollSeconds = 1,
-  timestamp = new Date(),
+  timestamp = new Date()
 ): WidgetChartData {
   const currentByKey = mapSnapshots(current)
   const previousByKey = mapSnapshots(previous)
   const points =
     widget === 'dbLatency'
       ? buildLiveLatencyPoints(currentByKey, previousByKey, timestamp)
-      : buildLiveWidgetPoints(
-          currentByKey,
-          previousByKey,
-          widget,
-          pollSeconds,
-          timestamp,
-        )
+      : buildLiveWidgetPoints(currentByKey, previousByKey, widget, pollSeconds, timestamp)
 
   return pivotSeriesPoints(points, widget, [
     alignTimestamp(timestamp.getTime(), RANGE_CONFIG['1m'].bucketMs),
@@ -463,7 +443,7 @@ export function buildLiveWidgetSnapshot(
 export function liveSnapshotsToHistoryPoints(
   current: ReadonlyArray<MetricSnapshot>,
   previous: ReadonlyArray<MetricSnapshot>,
-  timestamp = new Date(),
+  timestamp = new Date()
 ): MetricHistoryPoint[] {
   const previousByKey = mapSnapshots(previous)
   return current.map((snapshot) => {
@@ -473,10 +453,7 @@ export function liveSnapshotsToHistoryPoints(
       name: snapshot.name,
       labels: snapshot.labels ?? null,
       value: snapshot.value,
-      delta: Math.max(
-        0,
-        snapshot.value - (previousSnapshot?.value ?? snapshot.value),
-      ),
+      delta: Math.max(0, snapshot.value - (previousSnapshot?.value ?? snapshot.value)),
     }
   })
 }
@@ -484,7 +461,7 @@ export function liveSnapshotsToHistoryPoints(
 function buildAggregateWidgetPoints(
   points: ReadonlyArray<MetricAggregatePoint>,
   widget: MetricWidget,
-  bucketMs: number,
+  bucketMs: number
 ): SeriesPoint[] {
   return points.flatMap((point) => {
     if (metricWidgetForName(point.metric_name) !== widget) {
@@ -508,10 +485,7 @@ function buildAggregateWidgetPoints(
   })
 }
 
-function aggregateLatencyPoints(
-  point: MetricAggregatePoint,
-  timestamp: string,
-): SeriesPoint[] {
+function aggregateLatencyPoints(point: MetricAggregatePoint, timestamp: string): SeriesPoint[] {
   const labels = point.labels ?? null
   const stats = aggregateTooltipStats(point)
   const points: SeriesPoint[] = []
@@ -585,9 +559,14 @@ function aggregateTooltipStats(point: MetricAggregatePoint): AggregateTooltipSta
   if (point.delta != null) {
     stats.delta = point.delta
   }
+  if (point.rate_avg != null) {
+    stats.rateAvg = point.rate_avg
+  }
+  if (point.rate_peak != null) {
+    stats.ratePeak = point.rate_peak
+  }
   return stats
 }
-
 
 function normalizeMetricWindow(window: MetricWindowConfig) {
   const from = dateValue(window.from)
@@ -601,10 +580,7 @@ function dateValue(value: string | Date) {
   return Number.isFinite(date.getTime()) ? date : new Date(0)
 }
 
-function sumMetricDelta(
-  points: ReadonlyArray<MetricAggregatePoint>,
-  metricName: string,
-) {
+function sumMetricDelta(points: ReadonlyArray<MetricAggregatePoint>, metricName: string) {
   return points
     .filter((point) => point.metric_name === metricName)
     .reduce((sum, point) => sum + Math.max(0, point.delta ?? 0), 0)
@@ -613,7 +589,7 @@ function sumMetricDelta(
 function maxMetricValue(points: ReadonlyArray<MetricAggregatePoint>) {
   return points.reduce(
     (max, point) => Math.max(max, safeNumber(point.max ?? point.last ?? point.avg ?? 0)),
-    0,
+    0
   )
 }
 
@@ -663,7 +639,7 @@ function buildHistoricalWidgetPoints(
   points: ReadonlyArray<MetricHistoryPoint>,
   widget: MetricWidget,
   bucketSeconds: number,
-  bucketMs: number,
+  bucketMs: number
 ): SeriesPoint[] {
   return points.flatMap((point) => {
     if (metricWidgetForName(point.name) !== widget) {
@@ -684,7 +660,7 @@ function buildHistoricalWidgetPoints(
 
 function buildHistoricalLatencyPoints(
   points: ReadonlyArray<MetricHistoryPoint>,
-  bucketMs: number,
+  bucketMs: number
 ): SeriesPoint[] {
   const direct: SeriesPoint[] = []
   const totals = new Map<string, MetricHistoryPoint>()
@@ -733,11 +709,7 @@ function buildHistoricalLatencyPoints(
           : 0
     derived.push({
       timestamp,
-      seriesKey: labelForMetric(
-        'dbLatency',
-        total.labels,
-        'storage_insert_duration_milliseconds',
-      ),
+      seriesKey: labelForMetric('dbLatency', total.labels, 'storage_insert_duration_milliseconds'),
       value,
     })
   }
@@ -749,7 +721,7 @@ function buildLiveWidgetPoints(
   previousByKey: Map<string, MetricSnapshot>,
   widget: MetricWidget,
   pollSeconds: number,
-  timestamp: Date,
+  timestamp: Date
 ): SeriesPoint[] {
   const points: SeriesPoint[] = []
   for (const [key, current] of currentByKey) {
@@ -772,7 +744,7 @@ function buildLiveWidgetPoints(
 function buildLiveLatencyPoints(
   currentByKey: Map<string, MetricSnapshot>,
   previousByKey: Map<string, MetricSnapshot>,
-  timestamp: Date,
+  timestamp: Date
 ): SeriesPoint[] {
   const direct: SeriesPoint[] = []
   const pointTimestamp = alignTimestamp(timestamp.getTime(), RANGE_CONFIG['1m'].bucketMs)
@@ -796,7 +768,7 @@ function buildLiveLatencyPoints(
   const counts = snapshotsByMetric(currentByKey, 'storage_insert_duration_count')
   const previousTotals = snapshotsByMetric(
     previousByKey,
-    'storage_insert_duration_milliseconds_total',
+    'storage_insert_duration_milliseconds_total'
   )
   const previousCounts = snapshotsByMetric(previousByKey, 'storage_insert_duration_count')
 
@@ -808,19 +780,15 @@ function buildLiveLatencyPoints(
     }
     const totalDelta = Math.max(
       0,
-      total.value - (previousTotals.get(labelKey)?.value ?? total.value),
+      total.value - (previousTotals.get(labelKey)?.value ?? total.value)
     )
     const countDelta = Math.max(
       0,
-      count.value - (previousCounts.get(labelKey)?.value ?? count.value),
+      count.value - (previousCounts.get(labelKey)?.value ?? count.value)
     )
     points.push({
       timestamp: pointTimestamp,
-      seriesKey: labelForMetric(
-        'dbLatency',
-        total.labels,
-        'storage_insert_duration_milliseconds',
-      ),
+      seriesKey: labelForMetric('dbLatency', total.labels, 'storage_insert_duration_milliseconds'),
       value: countDelta > 0 ? totalDelta / countDelta : 0,
     })
   }
@@ -830,7 +798,7 @@ function buildLiveLatencyPoints(
 function fillMissingBuckets(
   points: ReadonlyArray<SeriesPoint>,
   range: MetricRange,
-  now: Date,
+  now: Date
 ): SeriesPoint[] {
   const buckets = expectedBuckets(range, now)
   return fillMissingWindowBuckets(points, buckets)
@@ -838,12 +806,10 @@ function fillMissingBuckets(
 
 function fillMissingWindowBuckets(
   points: ReadonlyArray<SeriesPoint>,
-  buckets: ReadonlyArray<string>,
+  buckets: ReadonlyArray<string>
 ): SeriesPoint[] {
   const seriesKeys = new Set(points.map((point) => point.seriesKey))
-  const existing = new Set(
-    points.map((point) => `${point.timestamp}|${point.seriesKey}`),
-  )
+  const existing = new Set(points.map((point) => `${point.timestamp}|${point.seriesKey}`))
   const filled = [...points]
 
   for (const bucket of buckets) {
@@ -859,18 +825,10 @@ function fillMissingWindowBuckets(
 
 function expectedBuckets(range: MetricRange, now: Date): string[] {
   const config = RANGE_CONFIG[range]
-  return expectedWindowBuckets(
-    new Date(now.getTime() - config.windowMs),
-    now,
-    config.bucketMs,
-  )
+  return expectedWindowBuckets(new Date(now.getTime() - config.windowMs), now, config.bucketMs)
 }
 
-function expectedWindowBuckets(
-  from: Date,
-  to: Date,
-  bucketMs: number,
-): string[] {
+function expectedWindowBuckets(from: Date, to: Date, bucketMs: number): string[] {
   const end = alignTimestamp(to.getTime(), bucketMs)
   const start = alignTimestamp(from.getTime(), bucketMs)
   const buckets: string[] = []
@@ -883,11 +841,11 @@ function expectedWindowBuckets(
 function pivotSeriesPoints(
   points: ReadonlyArray<SeriesPoint>,
   widget: MetricWidget,
-  orderedBuckets?: ReadonlyArray<string>,
+  orderedBuckets?: ReadonlyArray<string>
 ): WidgetChartData {
   const bucketMap = new Map<string, ChartDatum>()
   const seriesKeys = Array.from(new Set(points.map((point) => point.seriesKey))).sort(
-    (left, right) => compareSeriesKeys(widget, left, right),
+    (left, right) => compareSeriesKeys(widget, left, right)
   )
 
   for (const bucket of orderedBuckets ?? []) {
@@ -930,7 +888,6 @@ function pivotSeriesPoints(
   }
 }
 
-
 function compareSeriesKeys(widget: MetricWidget, left: string, right: string) {
   const leftRank = seriesRank(widget, left)
   const rightRank = seriesRank(widget, right)
@@ -969,10 +926,7 @@ function mapSnapshots(snapshots: ReadonlyArray<MetricSnapshot>) {
   return mapped
 }
 
-function snapshotsByMetric(
-  snapshots: ReadonlyMap<string, MetricSnapshot>,
-  metricName: string,
-) {
+function snapshotsByMetric(snapshots: ReadonlyMap<string, MetricSnapshot>, metricName: string) {
   const mapped = new Map<string, MetricSnapshot>()
   for (const snapshot of snapshots.values()) {
     if (snapshot.name === metricName) {

@@ -14,7 +14,10 @@ import type {
   FlowSearchParams,
 } from '@/types/api'
 
-export function useFlows(params: Omit<FlowSearchParams, 'cursor'>, options?: { enabled?: boolean }) {
+export function useFlows(
+  params: Omit<FlowSearchParams, 'cursor'>,
+  options?: { enabled?: boolean }
+) {
   const apiBaseUrl = useAppStore((state) => state.apiBaseUrl)
   const apiKey = useAppStore((state) => state.apiKey)
   const setLastApiLatency = useAppStore((state) => state.setLastApiLatency)
@@ -24,9 +27,7 @@ export function useFlows(params: Omit<FlowSearchParams, 'cursor'>, options?: { e
     initialPageParam: undefined as string | undefined,
     enabled: options?.enabled !== false,
     queryFn: async ({ pageParam, signal }) => {
-      const queryParams: FlowSearchParams = pageParam
-        ? { ...params, cursor: pageParam }
-        : params
+      const queryParams: FlowSearchParams = pageParam ? { ...params, cursor: pageParam } : params
       const startTime = performance.now()
       try {
         const res = await searchFlows(queryParams, { baseUrl: apiBaseUrl, apiKey, signal })
@@ -44,7 +45,11 @@ export function useFlows(params: Omit<FlowSearchParams, 'cursor'>, options?: { e
   })
 }
 
-export function useFlowById(id: string | undefined, startTime: string | undefined, includeAttributes = true) {
+export function useFlowById(
+  id: string | undefined,
+  startTime: string | undefined,
+  includeAttributes = true
+) {
   const apiBaseUrl = useAppStore((state) => state.apiBaseUrl)
   const apiKey = useAppStore((state) => state.apiKey)
   const setLastApiLatency = useAppStore((state) => state.setLastApiLatency)
@@ -153,4 +158,3 @@ export function useAggregations(params: {
 
   return { topTalkers, topPorts, protocols }
 }
-

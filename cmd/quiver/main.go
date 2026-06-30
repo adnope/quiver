@@ -31,7 +31,9 @@ import (
 // @name X-API-Key
 // @description API key with endpoint-specific scope. Ingest endpoints require ingest, query and aggregation endpoints require query, and metrics endpoints require metrics.
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	stdoutHandler := slog.NewJSONHandler(os.Stdout, nil)
+	dbLogHandler := observability.NewDbLogHandler(stdoutHandler)
+	logger := slog.New(dbLogHandler)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -54,6 +56,7 @@ func main() {
 		logger.ErrorContext(ctx, "open database failed", slog.String("component", "cmd"), slog.Any("error", err))
 		os.Exit(1)
 	}
+	dbLogHandler.SetDB(db)
 	defer func() {
 		if err := db.Close(); err != nil {
 			logger.Warn("close database failed", slog.String("component", "cmd"), slog.Any("error", err))

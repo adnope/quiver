@@ -135,6 +135,7 @@ type Config struct {
 	AdminKey   string
 	ClientKey  string
 	ZeekKey    string
+	UDPVersion string
 
 	DurationSec  int
 	RPS          int
@@ -169,6 +170,7 @@ func main() {
 	flag.StringVar(&cfg.AdminKey, "admin-key", "demoadminkey123", "Admin API Key for metrics/query")
 	flag.StringVar(&cfg.ClientKey, "client-key", "democlientkey123", "Client API Key for REST ingest")
 	flag.StringVar(&cfg.ZeekKey, "zeek-key", "zeekshipperkey123", "Zeek Shipper API Key")
+	flag.StringVar(&cfg.UDPVersion, "udp-version", "mix", "NetFlow UDP version to send: '5', '9', or 'mix'")
 	flag.IntVar(&cfg.DurationSec, "duration", 30, "Duration of the fixed load test in seconds")
 	flag.IntVar(&cfg.RPS, "rps", 1000, "Target records per second for fixed mode")
 
@@ -551,6 +553,9 @@ func normalizeConfig(cfg *Config) {
 	if cfg.MixZeek > 0 && cfg.ZeekWorkers == 0 {
 		cfg.ZeekWorkers = 1
 	}
+	if cfg.UDPVersion == "" {
+		cfg.UDPVersion = "mix"
+	}
 }
 
 func splitSourceRPS(totalRPS int, cfg Config) (int, int, int) {
@@ -830,47 +835,145 @@ func runUDPWorker(ctx context.Context, cfg Config, workerID int, targetRPS *atom
 		case <-ticker.C:
 			recordAttempt(&udpCounters, int64(batchSize))
 
-			packet := make([]byte, 24+batchSize*48)
-			binary.BigEndian.PutUint16(packet[0:2], 5)
-			binary.BigEndian.PutUint16(packet[2:4], uint16(batchSize))
-			binary.BigEndian.PutUint32(packet[4:8], 10000)
-			binary.BigEndian.PutUint32(packet[8:12], uint32(time.Now().Unix()))
-			binary.BigEndian.PutUint32(packet[12:16], 125000000)
-			binary.BigEndian.PutUint32(packet[16:20], seq)
-			packet[20] = 1
-			packet[21] = 2
-			binary.BigEndian.PutUint16(packet[22:24], uint16(workerID+1))
+			sendV9 := false
+			if cfg.UDPVersion == "9" {
+				sendV9 = true
+			} else if cfg.UDPVersion == "mix" && r.Intn(2) == 0 {
+				sendV9 = true
+			}
 
-			for i := range batchSize {
-				offset := 24 + i*48
-				record := packet[offset : offset+48]
+			var packet []byte
+			if sendV9 {
+				// Generate v9 packet
+				recordCount := batchSize
+				recordLen := 30
+				dataFlowSetLen := 4 + recordCount*recordLen
+				padding := (4 - (dataFlowSetLen % 4)) % 4
+				dataFlowSetLenAligned := dataFlowSetLen + padding
+				templateFlowSetLen := 48
 
-				srcIP := internalIPs[r.Intn(len(internalIPs))]
-				copy(record[0:4], net.ParseIP(srcIP).To4())
+				packet = make([]byte, 20+templateFlowSetLen+dataFlowSetLenAligned)
 
-				dstIP := publicIPs[r.Intn(len(publicIPs))]
-				copy(record[4:8], net.ParseIP(dstIP).To4())
+				// Header (20 bytes)
+				binary.BigEndian.PutUint16(packet[0:2], 9)
+				binary.BigEndian.PutUint16(packet[2:4], uint16(batchSize+1)) // 1 template + batchSize records
+				binary.BigEndian.PutUint32(packet[4:8], 10000)
+				binary.BigEndian.PutUint32(packet[8:12], uint32(time.Now().Unix()))
+				binary.BigEndian.PutUint32(packet[12:16], seq)
+				binary.BigEndian.PutUint32(packet[16:20], uint32(workerID+1)) // Source ID
 
-				pkts := uint32(1 + r.Intn(100))
-				binary.BigEndian.PutUint32(record[16:20], pkts)
-				binary.BigEndian.PutUint32(record[20:24], pkts*uint32(250))
+				// Template FlowSet (48 bytes)
+				tmplOffset := 20
+				binary.BigEndian.PutUint16(packet[tmplOffset:tmplOffset+2], 0) // Template FlowSet ID
+				binary.BigEndian.PutUint16(packet[tmplOffset+2:tmplOffset+4], uint16(templateFlowSetLen))
+				binary.BigEndian.PutUint16(packet[tmplOffset+4:tmplOffset+6], 256) // Template ID
+				binary.BigEndian.PutUint16(packet[tmplOffset+6:tmplOffset+8], 10)  // Field Count
 
-				srcPort := uint16(15000 + r.Intn(40000))
-				dstPort := uint16(80)
-				if r.Intn(2) == 0 {
-					dstPort = 443
-				} else if r.Intn(5) == 0 {
-					dstPort = 53
+				fields := []struct {
+					id  uint16
+					len uint16
+				}{
+					{8, 4},  // sourceIPv4Address
+					{12, 4}, // destinationIPv4Address
+					{7, 2},  // sourceTransportPort
+					{11, 2}, // destinationTransportPort
+					{4, 1},  // protocolIdentifier
+					{1, 4},  // octetDeltaCount
+					{2, 4},  // packetDeltaCount
+					{6, 1},  // tcpControlBits
+					{22, 4}, // flowStartSysUpTime
+					{21, 4}, // flowEndSysUpTime
 				}
 
-				binary.BigEndian.PutUint16(record[32:34], srcPort)
-				binary.BigEndian.PutUint16(record[34:36], dstPort)
-
-				prot := uint8(6)
-				if dstPort == 53 {
-					prot = 17
+				for idx, f := range fields {
+					off := tmplOffset + 8 + idx*4
+					binary.BigEndian.PutUint16(packet[off:off+2], f.id)
+					binary.BigEndian.PutUint16(packet[off+2:off+4], f.len)
 				}
-				record[38] = prot
+
+				// Data FlowSet
+				dataOffset := tmplOffset + templateFlowSetLen
+				binary.BigEndian.PutUint16(packet[dataOffset:dataOffset+2], 256) // Matches Template ID
+				binary.BigEndian.PutUint16(packet[dataOffset+2:dataOffset+4], uint16(dataFlowSetLenAligned))
+
+				for idx := range recordCount {
+					off := dataOffset + 4 + idx*recordLen
+
+					srcIP := internalIPs[r.Intn(len(internalIPs))]
+					copy(packet[off:off+4], net.ParseIP(srcIP).To4())
+
+					dstIP := publicIPs[r.Intn(len(publicIPs))]
+					copy(packet[off+4:off+8], net.ParseIP(dstIP).To4())
+
+					srcPort := uint16(15000 + r.Intn(40000))
+					dstPort := uint16(80)
+					if r.Intn(2) == 0 {
+						dstPort = 443
+					} else if r.Intn(5) == 0 {
+						dstPort = 53
+					}
+					binary.BigEndian.PutUint16(packet[off+8:off+10], srcPort)
+					binary.BigEndian.PutUint16(packet[off+10:off+12], dstPort)
+
+					prot := uint8(6)
+					if dstPort == 53 {
+						prot = 17
+					}
+					packet[off+12] = prot
+
+					pkts := uint32(1 + r.Intn(100))
+					binary.BigEndian.PutUint32(packet[off+13:off+17], pkts*250) // octets
+					binary.BigEndian.PutUint32(packet[off+17:off+21], pkts)     // packets
+
+					packet[off+21] = 0x10 // TCP flags (ACK)
+
+					binary.BigEndian.PutUint32(packet[off+22:off+26], 1000) // start sysUpTime
+					binary.BigEndian.PutUint32(packet[off+26:off+30], 2000) // end sysUpTime
+				}
+			} else {
+				// Generate v5 packet
+				packet = make([]byte, 24+batchSize*48)
+				binary.BigEndian.PutUint16(packet[0:2], 5)
+				binary.BigEndian.PutUint16(packet[2:4], uint16(batchSize))
+				binary.BigEndian.PutUint32(packet[4:8], 10000)
+				binary.BigEndian.PutUint32(packet[8:12], uint32(time.Now().Unix()))
+				binary.BigEndian.PutUint32(packet[12:16], 125000000)
+				binary.BigEndian.PutUint32(packet[16:20], seq)
+				packet[20] = 1
+				packet[21] = 2
+				binary.BigEndian.PutUint16(packet[22:24], uint16(workerID+1))
+
+				for i := range batchSize {
+					offset := 24 + i*48
+					record := packet[offset : offset+48]
+
+					srcIP := internalIPs[r.Intn(len(internalIPs))]
+					copy(record[0:4], net.ParseIP(srcIP).To4())
+
+					dstIP := publicIPs[r.Intn(len(publicIPs))]
+					copy(record[4:8], net.ParseIP(dstIP).To4())
+
+					pkts := uint32(1 + r.Intn(100))
+					binary.BigEndian.PutUint32(record[16:20], pkts)
+					binary.BigEndian.PutUint32(record[20:24], pkts*uint32(250))
+
+					srcPort := uint16(15000 + r.Intn(40000))
+					dstPort := uint16(80)
+					if r.Intn(2) == 0 {
+						dstPort = 443
+					} else if r.Intn(5) == 0 {
+						dstPort = 53
+					}
+
+					binary.BigEndian.PutUint16(record[32:34], srcPort)
+					binary.BigEndian.PutUint16(record[34:36], dstPort)
+
+					prot := uint8(6)
+					if dstPort == 53 {
+						prot = 17
+					}
+					record[38] = prot
+				}
 			}
 
 			seq += uint32(batchSize)

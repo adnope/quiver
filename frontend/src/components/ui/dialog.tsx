@@ -6,15 +6,11 @@ export function Dialog(props: React.ComponentProps<typeof DialogPrimitive.Root>)
   return <DialogPrimitive.Root {...props} />
 }
 
-export function DialogTrigger(
-  props: React.ComponentProps<typeof DialogPrimitive.Trigger>,
-) {
+export function DialogTrigger(props: React.ComponentProps<typeof DialogPrimitive.Trigger>) {
   return <DialogPrimitive.Trigger {...props} />
 }
 
-export function DialogClose(
-  props: React.ComponentProps<typeof DialogPrimitive.Close>,
-) {
+export function DialogClose(props: React.ComponentProps<typeof DialogPrimitive.Close>) {
   return <DialogPrimitive.Close {...props} />
 }
 
@@ -29,7 +25,7 @@ export function DialogContent({
       <DialogPrimitive.Content
         className={cn(
           'fixed left-1/2 top-1/2 z-50 w-[min(92vw,420px)] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-[var(--border)] bg-[var(--panel)] p-5 text-[var(--text-primary)] shadow-xl focus:outline-none',
-          className,
+          className
         )}
         {...props}
       >
@@ -39,10 +35,7 @@ export function DialogContent({
   )
 }
 
-export function DialogHeader({
-  className,
-  ...props
-}: React.HTMLAttributes<HTMLDivElement>) {
+export function DialogHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return <div className={cn('mb-4 space-y-1', className)} {...props} />
 }
 

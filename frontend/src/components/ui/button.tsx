@@ -14,8 +14,7 @@ const buttonVariants = cva(
           'border border-[var(--border)] bg-[var(--panel)] text-[var(--text-primary)] hover:border-sky-500/60 hover:bg-[var(--panel-hover)]',
         ghost:
           'text-[var(--text-secondary)] hover:bg-[var(--panel-hover)] hover:text-[var(--text-primary)]',
-        danger:
-          'border border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20',
+        danger: 'border border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20',
       },
       size: {
         sm: 'h-8 px-2.5 text-xs',
@@ -27,12 +26,11 @@ const buttonVariants = cva(
       variant: 'secondary',
       size: 'md',
     },
-  },
+  }
 )
 
 export interface ButtonProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
-    VariantProps<typeof buttonVariants> {
+  extends React.ButtonHTMLAttributes<HTMLButtonElement>, VariantProps<typeof buttonVariants> {
   asChild?: boolean
 }
 
@@ -46,7 +44,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
         {...props}
       />
     )
-  },
+  }
 )
 
 Button.displayName = 'Button'

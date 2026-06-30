@@ -11,22 +11,27 @@ import type { ActiveTab } from '@/types/api'
 const DashboardView = lazy(() =>
   import('@/components/dashboard/DashboardView').then((module) => ({
     default: module.DashboardView,
-  })),
+  }))
 )
 const ExplorerView = lazy(() =>
   import('@/components/explorer/ExplorerView').then((module) => ({
     default: module.ExplorerView,
-  })),
+  }))
 )
 const HistoryView = lazy(() =>
   import('@/components/history/HistoryView').then((module) => ({
     default: module.HistoryView,
-  })),
+  }))
 )
 const AnalyticsView = lazy(() =>
   import('@/components/analytics/AnalyticsView').then((module) => ({
     default: module.AnalyticsView,
-  })),
+  }))
+)
+const LogsView = lazy(() =>
+  import('@/components/logs/LogsView').then((module) => ({
+    default: module.LogsView,
+  }))
 )
 
 export function AppShell() {
@@ -54,7 +59,7 @@ export function AppShell() {
         window.history.replaceState(
           null,
           '',
-          `${routeForTab(legacyTab)}${query ? `?${query}` : ''}${window.location.hash}`,
+          `${routeForTab(legacyTab)}${query ? `?${query}` : ''}${window.location.hash}`
         )
         setActiveTab(legacyTab)
         return
@@ -65,7 +70,7 @@ export function AppShell() {
         window.history.replaceState(
           null,
           '',
-          `${routeForTab(nextTab)}${window.location.search}${window.location.hash}`,
+          `${routeForTab(nextTab)}${window.location.search}${window.location.hash}`
         )
       }
       setActiveTab(nextTab)
@@ -86,39 +91,43 @@ export function AppShell() {
     if (activeTab === 'analytics') {
       return <AnalyticsView />
     }
+    if (activeTab === 'logs') {
+      return <LogsView />
+    }
     return <ExplorerView />
   }, [activeTab])
 
   return (
     <div className="min-h-svh bg-[var(--app-bg)] text-[var(--text-primary)]">
-      <TopNav
-        health={health}
-        onOpenSettings={() => setSettingsOpen(true)}
-      />
+      <TopNav health={health} onOpenSettings={() => setSettingsOpen(true)} />
       <DisconnectedBanner
         visible={health.isError}
         onRetry={() => void queryClient.invalidateQueries({ queryKey: ['health'] })}
       />
 
       <main className="mx-auto w-full max-w-[1440px] px-4 pb-6 pt-[72px] md:px-6">
-        {activeTab === 'dashboard' || activeTab === 'history' ? (
+        {activeTab === 'dashboard' || activeTab === 'history' || activeTab === 'logs' ? (
           <div className="mb-4 flex items-end justify-between gap-4">
             <div>
               <h1 className="text-lg font-semibold tracking-normal text-[var(--text-primary)]">
-                {activeTab === 'history' ? 'History' : 'Dashboard'}
+                {activeTab === 'history'
+                  ? 'History'
+                  : activeTab === 'logs'
+                    ? 'System Logs'
+                    : 'Dashboard'}
               </h1>
               <p className="mt-1 text-sm text-[var(--text-secondary)]">
                 {activeTab === 'history'
                   ? 'Aggregate metrics explorer for arbitrary time windows'
-                  : 'Real-time operational telemetry'}
+                  : activeTab === 'logs'
+                    ? 'See Quiver logs as structured JSON lines'
+                    : 'Real-time operational telemetry'}
               </p>
             </div>
           </div>
         ) : null}
 
-        <Suspense fallback={<ViewSkeleton />}>
-          {mainContent}
-        </Suspense>
+        <Suspense fallback={<ViewSkeleton />}>{mainContent}</Suspense>
       </main>
 
       <ApiSettingsDialog

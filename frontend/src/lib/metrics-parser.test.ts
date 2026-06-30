@@ -16,9 +16,7 @@ describe('metrics parser', () => {
     expect(metricWidgetForName('flow_records_stored_total')).toBe('ingestion')
     expect(metricWidgetForName('flow_records_failed_total')).toBe('deadLetter')
     expect(metricWidgetForName('rate_limit_rejections_total')).toBe('deadLetter')
-    expect(metricWidgetForName('storage_insert_duration_milliseconds_total')).toBe(
-      'dbLatency',
-    )
+    expect(metricWidgetForName('storage_insert_duration_milliseconds_total')).toBe('dbLatency')
     expect(metricWidgetForName('storage_insert_duration_p90')).toBe('dbLatency')
     expect(metricWidgetForName('storage_insert_duration_p95')).toBe('dbLatency')
     expect(metricWidgetForName('storage_insert_duration_p99')).toBe('dbLatency')
@@ -28,32 +26,23 @@ describe('metrics parser', () => {
 
   it('uses stable fallback labels when expected labels are missing', () => {
     expect(labelForMetric('ingestion', null)).toBe('unknown_source')
-    expect(labelForMetric('ingestion', null, 'flow_records_stored_total')).toBe(
-      'Persisted',
-    )
+    expect(labelForMetric('ingestion', null, 'flow_records_stored_total')).toBe('Persisted')
     expect(labelForMetric('deadLetter', {})).toBe('unknown_reason')
-    expect(labelForMetric('deadLetter', {}, 'rate_limit_rejections_total')).toBe(
-      'Rate Limited',
-    )
+    expect(labelForMetric('deadLetter', {}, 'rate_limit_rejections_total')).toBe('Rate Limited')
     expect(labelForMetric('dbLatency', {})).toBe('storage')
-    expect(labelForMetric('dbLatency', {}, 'storage_insert_duration_milliseconds')).toBe(
-      'Average',
-    )
+    expect(labelForMetric('dbLatency', {}, 'storage_insert_duration_milliseconds')).toBe('Average')
     expect(labelForMetric('dbLatency', {}, 'storage_insert_duration_p90')).toBe('p90')
     expect(labelForMetric('dbLatency', {}, 'storage_insert_duration_p95')).toBe('p95')
     expect(labelForMetric('dbLatency', {}, 'storage_insert_duration_p99')).toBe('p99')
-    expect(labelForMetric('kafkaLag', { topic: 'flow.raw', partition: '2' })).toBe(
-      'flow.raw:2',
-    )
+    expect(labelForMetric('kafkaLag', { topic: 'flow.raw', partition: '2' })).toBe('flow.raw:2')
     expect(labelForMetric('ingestion', { source_type: 'SOURCE_TYPE_NETFLOW_V5' })).toBe(
-      'NetFlow v5',
+      'NetFlow v5'
     )
-    expect(labelForMetric('ingestion', { source_type: 'SOURCE_TYPE_REST_JSON' })).toBe(
-      'REST',
+    expect(labelForMetric('ingestion', { source_type: 'SOURCE_TYPE_NETFLOW_V9' })).toBe(
+      'NetFlow v9'
     )
-    expect(labelForMetric('ingestion', { source_type: 'SOURCE_TYPE_ZEEK_CONN_JSON' })).toBe(
-      'Zeek',
-    )
+    expect(labelForMetric('ingestion', { source_type: 'SOURCE_TYPE_REST_JSON' })).toBe('REST')
+    expect(labelForMetric('ingestion', { source_type: 'SOURCE_TYPE_ZEEK_CONN_JSON' })).toBe('Zeek')
   })
 
   it('parses Prometheus text exposition samples', () => {
@@ -115,7 +104,7 @@ ignored_bucket{le="+Inf"} +Inf
       previous,
       'ingestion',
       1,
-      new Date('2026-06-20T15:00:01.900Z'),
+      new Date('2026-06-20T15:00:01.900Z')
     )
 
     expect(chart.data).toHaveLength(1)
@@ -150,11 +139,7 @@ ignored_bucket{le="+Inf"} +Inf
       },
     ]
 
-    const points = liveSnapshotsToHistoryPoints(
-      current,
-      previous,
-      new Date('2026-06-22T10:00:01Z'),
-    )
+    const points = liveSnapshotsToHistoryPoints(current, previous, new Date('2026-06-22T10:00:01Z'))
 
     expect(points.map((point) => point.delta)).toEqual([12, 0])
     expect(points.every((point) => point.timestamp === '2026-06-22T10:00:01.000Z')).toBe(true)
@@ -191,7 +176,7 @@ ignored_bucket{le="+Inf"} +Inf
       previous,
       'dbLatency',
       1,
-      new Date('2026-06-20T15:00:00Z'),
+      new Date('2026-06-20T15:00:00Z')
     )
 
     expect(chart.data[0]?.Average).toBe(30)
@@ -254,21 +239,14 @@ ignored_bucket{le="+Inf"} +Inf
 
     const chart = buildHistoryChart(points, 'ingestion', '1m', now)
 
-    const first = chart.data.find(
-      (datum) => datum.timestamp === '2026-06-20T15:00:00.000Z',
-    )
-    const missing = chart.data.find(
-      (datum) => datum.timestamp === '2026-06-20T15:01:00.000Z',
-    )
-    const last = chart.data.find(
-      (datum) => datum.timestamp === '2026-06-20T15:02:00.000Z',
-    )
+    const first = chart.data.find((datum) => datum.timestamp === '2026-06-20T15:00:00.000Z')
+    const missing = chart.data.find((datum) => datum.timestamp === '2026-06-20T15:01:00.000Z')
+    const last = chart.data.find((datum) => datum.timestamp === '2026-06-20T15:02:00.000Z')
 
     expect(first?.REST).toBe(12)
     expect(missing?.REST).toBe(0)
     expect(last?.REST).toBe(24)
   })
-
 
   it('builds aggregate charts with rollup stats for tooltips', () => {
     const now = new Date('2026-06-24T10:00:20Z')
@@ -295,14 +273,47 @@ ignored_bucket{le="+Inf"} +Inf
     ]
 
     const chart = buildAggregateChart(points, 'dbLatency', '1h', now)
-    const datum = chart.data.find(
-      (item) => item.timestamp === '2026-06-24T10:00:00.000Z',
-    )
+    const datum = chart.data.find((item) => item.timestamp === '2026-06-24T10:00:00.000Z')
 
     expect(datum?.Average).toBe(25)
     expect(datum?.p90).toBe(40)
     expect(datum?.aggregateStats?.Average?.count).toBe(4)
     expect(datum?.aggregateStats?.Average?.p95).toBe(40)
+  })
+
+  it('builds aggregate counter charts with peak and average rate stats', () => {
+    const now = new Date('2026-06-24T10:00:20Z')
+    const points: MetricAggregatePoint[] = [
+      {
+        bucket_start: '2026-06-24T10:00:00Z',
+        bucket_width_seconds: 20,
+        metric_name: 'flow_records_normalized_total',
+        labels: { source_type: 'rest_json' },
+        metric_kind: 'counter',
+        sample_count: 4,
+        count: 4,
+        sum: 30000,
+        avg: 7500,
+        min: 0,
+        max: 30000,
+        p90: null,
+        p95: null,
+        p99: null,
+        first: 0,
+        last: 30000,
+        delta: 30000,
+        rate_avg: 1500,
+        rate_peak: 6000,
+      },
+    ]
+
+    const chart = buildAggregateChart(points, 'ingestion', '1h', now)
+    const datum = chart.data.find((item) => item.timestamp === '2026-06-24T10:00:00.000Z')
+
+    expect(datum?.REST).toBe(1500)
+    expect(datum?.aggregateStats?.REST?.delta).toBe(30000)
+    expect(datum?.aggregateStats?.REST?.rateAvg).toBe(1500)
+    expect(datum?.aggregateStats?.REST?.ratePeak).toBe(6000)
   })
 
   it('returns an empty zero timeline when no series are present', () => {
