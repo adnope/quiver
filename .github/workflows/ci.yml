@@ -42,7 +42,7 @@ jobs:
         run: npm --prefix frontend run test
 
       - name: Run frontend lint
-        run: npm --prefix frontend run lint
+        run: make lint-frontend
       
       - name: Run frontend typecheck
         run: npm --prefix frontend run typecheck

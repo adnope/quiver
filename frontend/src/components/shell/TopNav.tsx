@@ -15,6 +15,7 @@ const tabs = [
   { id: 'history', label: 'History' },
   { id: 'explorer', label: 'Flow Explorer' },
   { id: 'analytics', label: 'Analytics' },
+  { id: 'logs', label: 'Logs' },
 ] as const
 
 export function TopNav({ health, onOpenSettings }: TopNavProps) {
@@ -33,11 +34,7 @@ export function TopNav({ health, onOpenSettings }: TopNavProps) {
 
   const healthStatus = health.data?.status ?? (health.isError ? 'fail' : 'degraded')
   const statusLabel =
-    healthStatus === 'ok'
-      ? 'Healthy'
-      : healthStatus === 'degraded'
-        ? 'Degraded'
-        : 'Error'
+    healthStatus === 'ok' ? 'Healthy' : healthStatus === 'degraded' ? 'Degraded' : 'Error'
 
   return (
     <header className="fixed left-0 right-0 top-0 z-40 h-14 border-b border-[var(--border)] bg-[var(--nav)] backdrop-blur">
@@ -68,9 +65,7 @@ export function TopNav({ health, onOpenSettings }: TopNavProps) {
         <div className="flex shrink-0 items-center gap-2">
           <div className="hidden h-9 items-center gap-2 px-3 text-[11px] uppercase tracking-normal text-[var(--text-secondary)] sm:flex">
             <span className={healthClass(healthStatus)} />
-            <span className="font-mono normal-case tracking-normal">
-              API: {statusLabel}
-            </span>
+            <span className="font-mono normal-case tracking-normal">API: {statusLabel}</span>
           </div>
 
           <Button

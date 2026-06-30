@@ -143,7 +143,7 @@ func main() {
 	dsn := flag.String("dsn", "", "PostgreSQL database DSN")
 	totalRecords := flag.Int("records", 1000000, "Total number of records to seed (default 1M for safety, can set to 10M)")
 	daysRange := flag.Int("days", 30, "Number of days to span records over")
-	concurrency := flag.Int("concurrency", 8, "Number of concurrent DB insert workers")
+	concurrency := flag.Int("concurrency", 16, "Number of concurrent DB insert workers")
 	flag.Parse()
 
 	dbDSN := *dsn
@@ -280,7 +280,7 @@ func main() {
 			bytesVal := packetsVal * uint64(tpl.avgBytes+r.Int63n(100))
 
 			// Sources mapping
-			sourceIndex := r.Intn(3)
+			sourceIndex := r.Intn(4)
 			var sourceType, collectorID, sourceHost string
 			var sourceIPStr *string
 			var attributesJson string
@@ -296,13 +296,23 @@ func main() {
 				collectorID = "zeek-sensor-eth0"
 				sourceHost = sourceHosts[r.Intn(len(sourceHosts))]
 				attributesJson = fmt.Sprintf(`{"conn_state": "SF", "uid": "C%x", "service": "%s"}`, r.Uint64(), tpl.app)
-			default:
+			case 2:
 				sourceType = "netflow_v5"
 				collectorID = "netflow-v5-gateway-router"
 				sourceHost = "router-edge-01"
 				sip := "172.20.0.1"
 				sourceIPStr = &sip
 				attributesJson = `{"engine_type": 1, "engine_id": 2, "snmp_input": 10, "snmp_output": 11}`
+			default:
+				sourceType = "netflow_v9"
+				collectorID = "netflow-v9-main"
+				sourceHost = "router-edge-02"
+				sip := "172.20.0.2"
+				sourceIPStr = &sip
+				attributesJson = fmt.Sprintf(
+					`{"DIRECTION": "0", "FIRST_SWITCHED": "5000", "INPUT_SNMP": "2", "IN_BYTES": "%d", "IN_PKTS": "%d", "IPV4_DST_ADDR": "%s", "IPV4_SRC_ADDR": "%s", "L4_DST_PORT": "%d", "L4_SRC_PORT": "%d", "LAST_SWITCHED": "5100", "OUTPUT_SNMP": "3", "PROTOCOL": "%d"}`,
+					bytesVal, packetsVal, dstIP, srcIP, dstPortVal, srcPortVal, tpl.protocolNumber,
+				)
 			}
 
 			// Generate aligned UUIDv7

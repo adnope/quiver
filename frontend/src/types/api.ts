@@ -1,4 +1,4 @@
-export type ActiveTab = 'dashboard' | 'history' | 'explorer' | 'analytics'
+export type ActiveTab = 'dashboard' | 'history' | 'explorer' | 'analytics' | 'logs'
 
 export type ThemePreference = 'dark' | 'light' | 'system'
 
@@ -54,6 +54,8 @@ export interface MetricAggregatePoint {
   first: number | null
   last: number | null
   delta: number | null
+  rate_avg?: number | null
+  rate_peak?: number | null
 }
 
 export interface MetricAggregatesResponse {
@@ -79,21 +81,9 @@ export type SourceType =
   | 'syslog_cef'
   | 'syslog_leef'
 
-export type TransportProtocol =
-  | 'unknown'
-  | 'tcp'
-  | 'udp'
-  | 'icmp'
-  | 'gre'
-  | 'esp'
-  | 'other'
+export type TransportProtocol = 'unknown' | 'tcp' | 'udp' | 'icmp' | 'gre' | 'esp' | 'other'
 
-export type FlowDirection =
-  | 'unknown'
-  | 'inbound'
-  | 'outbound'
-  | 'internal'
-  | 'external'
+export type FlowDirection = 'unknown' | 'inbound' | 'outbound' | 'internal' | 'external'
 
 export interface FlowResponse {
   id: string

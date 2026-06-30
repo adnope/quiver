@@ -78,13 +78,10 @@ export function HistoryView() {
   const [windowState, setWindowState] = useState(createInitialWindow)
   const [draftFrom, setDraftFrom] = useState(windowState.fromInput)
   const [draftTo, setDraftTo] = useState(windowState.toInput)
-  const timeError = useMemo(
-    () => getTimeError(draftFrom, draftTo),
-    [draftFrom, draftTo],
-  )
+  const timeError = useMemo(() => getTimeError(draftFrom, draftTo), [draftFrom, draftTo])
   const bucketSeconds = useMemo(
     () => resolveBucketSeconds(windowState.from, windowState.to),
-    [windowState.from, windowState.to],
+    [windowState.from, windowState.to]
   )
   const query = useMetricAggregateWindow({
     from: windowState.from,
@@ -100,7 +97,7 @@ export function HistoryView() {
   const points = useMemo(() => query.data?.points ?? [], [query.data?.points])
   const summary = useMemo(
     () => summarizeMetricAggregates(points, windowState.from, windowState.to),
-    [points, windowState.from, windowState.to],
+    [points, windowState.from, windowState.to]
   )
   const charts = useMemo(
     () =>
@@ -112,9 +109,9 @@ export function HistoryView() {
             to: windowState.to,
             bucketSeconds,
           }),
-        ]),
+        ])
       ) as Record<MetricWidget, ReturnType<typeof buildAggregateChartForWindow>>,
-    [bucketSeconds, points, windowState.from, windowState.to],
+    [bucketSeconds, points, windowState.from, windowState.to]
   )
 
   function applyWindow() {
@@ -133,10 +130,7 @@ export function HistoryView() {
   }
 
   function refreshWindow() {
-    const durationMs = Math.max(
-      60_000,
-      Date.parse(windowState.to) - Date.parse(windowState.from),
-    )
+    const durationMs = Math.max(60_000, Date.parse(windowState.to) - Date.parse(windowState.from))
     const next = createWindow(durationMs, windowState.presetLabel)
     setDraftFrom(next.fromInput)
     setDraftTo(next.toInput)
@@ -155,7 +149,8 @@ export function HistoryView() {
               Metrics History Explorer
             </div>
             <p className="mt-1 text-xs text-[var(--text-secondary)]">
-              Select any window, inspect aggregate charts, then hover sampled points for bucket details.
+              Select any window, inspect aggregate charts, then hover sampled points for bucket
+              details.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -216,9 +211,7 @@ export function HistoryView() {
               </Button>
             </div>
           </div>
-          {timeError ? (
-            <p className="text-xs font-medium text-red-400">{timeError}</p>
-          ) : null}
+          {timeError ? <p className="text-xs font-medium text-red-400">{timeError}</p> : null}
         </div>
 
         <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -260,16 +253,16 @@ export function HistoryView() {
             return (
               <article
                 key={card.widget}
-                className="min-h-[318px] rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4 shadow-sm transition-all duration-200 ease-in-out hover:border-sky-500/40"
+                className={`rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4 shadow-sm transition-all duration-200 ease-in-out hover:border-sky-500/40 ${
+                  card.widget === 'ingestion' ? 'min-h-[434px]' : 'min-h-[318px]'
+                }`}
               >
                 <div className="mb-4 flex items-start justify-between gap-4">
                   <div className="min-w-0">
                     <h2 className="text-sm font-semibold tracking-normal text-[var(--text-primary)]">
                       {card.title}
                     </h2>
-                    <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                      {card.description}
-                    </p>
+                    <p className="mt-1 text-xs text-[var(--text-secondary)]">{card.description}</p>
                   </div>
                   <div
                     className="grid size-9 place-items-center rounded-md border"
@@ -285,9 +278,8 @@ export function HistoryView() {
                   series={chart.series}
                   isLoading={query.isLoading}
                   onRetry={() => void query.refetch()}
-                  {...(query.isError
-                    ? { error: 'Metric aggregates unavailable. Try again.' }
-                    : {})}
+                  heightClass={card.widget === 'ingestion' ? 'h-72' : 'h-44'}
+                  {...(query.isError ? { error: 'Metric aggregates unavailable. Try again.' } : {})}
                 />
                 <div className="mt-3 flex flex-wrap gap-2">
                   {chart.series.map((series) => (
@@ -319,9 +311,7 @@ export function HistoryView() {
             presetLabel={windowState.presetLabel}
           />
           <article className="rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4 shadow-sm">
-            <h2 className="text-sm font-semibold text-[var(--text-primary)]">
-              Overall metrics
-            </h2>
+            <h2 className="text-sm font-semibold text-[var(--text-primary)]">Overall metrics</h2>
             <dl className="mt-3 space-y-3 text-xs">
               <DetailRow
                 label="Avg ingest"
@@ -347,7 +337,8 @@ export function HistoryView() {
           </article>
           {isEmpty ? (
             <article className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-200 shadow-sm">
-              No aggregate samples were returned for this window. Check that the metrics saver has run and the selected window overlaps collected telemetry.
+              No aggregate samples were returned for this window. Check that the metrics saver has
+              run and the selected window overlaps collected telemetry.
             </article>
           ) : null}
         </aside>
@@ -370,12 +361,8 @@ function SummaryCard({ icon, label, value, detail, accent }: SummaryCardProps) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-xs text-[var(--text-secondary)]">{label}</p>
-          <p className="mt-1 truncate text-lg font-semibold text-[var(--text-primary)]">
-            {value}
-          </p>
-          <p className="mt-1 truncate text-xs text-[var(--text-secondary)]">
-            {detail}
-          </p>
+          <p className="mt-1 truncate text-lg font-semibold text-[var(--text-primary)]">{value}</p>
+          <p className="mt-1 truncate text-xs text-[var(--text-secondary)]">{detail}</p>
         </div>
         <div
           className="grid size-8 shrink-0 place-items-center rounded-md border"
@@ -410,15 +397,11 @@ function WindowDetails({
   return (
     <article className="rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4 shadow-sm">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold text-[var(--text-primary)]">
-          Query window
-        </h2>
+        <h2 className="text-sm font-semibold text-[var(--text-primary)]">Query window</h2>
         <span className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)]">
           <span
             className={
-              isFetching
-                ? 'size-2 rounded-full bg-sky-400'
-                : 'size-2 rounded-full bg-emerald-400'
+              isFetching ? 'size-2 rounded-full bg-sky-400' : 'size-2 rounded-full bg-emerald-400'
             }
           />
           {isFetching ? 'Fetching' : presetLabel ? `Last ${presetLabel}` : 'Custom window'}
@@ -453,7 +436,7 @@ function createInitialWindow(): HistoryWindow {
   if (fromParam && toParam) {
     const parsed = parseWindowInputs(
       toLocalInputValue(new Date(fromParam)),
-      toLocalInputValue(new Date(toParam)),
+      toLocalInputValue(new Date(toParam))
     )
     if (parsed) {
       return parsed
@@ -474,10 +457,7 @@ function createWindow(durationMs: number, presetLabel?: string): HistoryWindow {
   }
 }
 
-function parseWindowInputs(
-  fromInput: string,
-  toInput: string,
-): HistoryWindow | undefined {
+function parseWindowInputs(fromInput: string, toInput: string): HistoryWindow | undefined {
   const from = new Date(fromInput)
   const to = new Date(toInput)
   if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime())) {
@@ -513,19 +493,7 @@ function resolveBucketSeconds(from: string, to: string) {
   const durationSeconds = Math.max(1, (Date.parse(to) - Date.parse(from)) / 1000)
   const targetPoints = 90
   const raw = durationSeconds / targetPoints
-  const candidates = [
-    5,
-    10,
-    20,
-    30,
-    60,
-    300,
-    600,
-    1200,
-    3600,
-    8 * 3600,
-    24 * 3600,
-  ]
+  const candidates = [5, 10, 20, 30, 60, 300, 600, 1200, 3600, 8 * 3600, 24 * 3600]
   return candidates.find((candidate) => candidate >= raw) ?? candidates.at(-1) ?? 3600
 }
 

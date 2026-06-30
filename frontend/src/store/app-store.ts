@@ -41,8 +41,8 @@ export const useAppStore = create<AppState>()(
         apiBaseUrl: state.apiBaseUrl,
         apiKey: state.apiKey,
       }),
-    },
-  ),
+    }
+  )
 )
 
 export function applyThemePreference(theme: ThemePreference) {

@@ -34,6 +34,8 @@ type MetricAggregatePoint struct {
 	First              *float64          `json:"first"`
 	Last               *float64          `json:"last"`
 	Delta              *float64          `json:"delta"`
+	RateAvg            *float64          `json:"rate_avg"`
+	RatePeak           *float64          `json:"rate_peak"`
 }
 
 type MetricAggregatesResponse struct {
@@ -82,6 +84,8 @@ type aggregateRollup struct {
 	p99                float64
 	histogramByBucket  map[int]uint64
 	hasHistogramCounts bool
+	hasRates           bool
+	peakRate           float64
 }
 
 // MetricsAggregatesHandler godoc
@@ -393,20 +397,48 @@ const metricHistogramBucketsByMetricQuery = `
 	  AND metric_name = ANY($4::text[])
 	ORDER BY bucket_start ASC, metric_name ASC, labels ASC, bucket_index ASC`
 
-func queryBaseMetricAggregateRows(ctx context.Context, db *sql.DB, query metricAggregatesQuery) (*sql.Rows, error) {
-	args := []any{query.From, query.To, int(query.BaseBucketWidth.Seconds())}
-	if len(query.Metrics) == 0 {
-		return db.QueryContext(ctx, baseMetricAggregatesQuery, args...)
+func selectMetricAggregatesTableAndWidth(from, to time.Time) (string, int) {
+	duration := to.Sub(from)
+	if duration <= 6*time.Hour {
+		return "quiver.system_metric_aggregates", 5
 	}
-	return db.QueryContext(ctx, baseMetricAggregatesByMetricQuery, append(args, pq.Array(query.Metrics))...)
+	if duration <= 7*24*time.Hour {
+		return "quiver.system_metric_5m_aggregates", 300
+	}
+	return "quiver.system_metric_1h_aggregates", 3600
+}
+
+func selectMetricHistogramsTableAndWidth(from, to time.Time) (string, int) {
+	duration := to.Sub(from)
+	if duration <= 6*time.Hour {
+		return "quiver.system_metric_histogram_buckets", 5
+	}
+	if duration <= 7*24*time.Hour {
+		return "quiver.system_metric_5m_histogram_buckets", 300
+	}
+	return "quiver.system_metric_1h_histogram_buckets", 3600
+}
+
+func queryBaseMetricAggregateRows(ctx context.Context, db *sql.DB, query metricAggregatesQuery) (*sql.Rows, error) {
+	tableName, bucketWidth := selectMetricAggregatesTableAndWidth(query.From, query.To)
+	args := []any{query.From, query.To, bucketWidth}
+	if len(query.Metrics) == 0 {
+		sqlStr := strings.ReplaceAll(baseMetricAggregatesQuery, "quiver.system_metric_aggregates", tableName)
+		return db.QueryContext(ctx, sqlStr, args...)
+	}
+	sqlStr := strings.ReplaceAll(baseMetricAggregatesByMetricQuery, "quiver.system_metric_aggregates", tableName)
+	return db.QueryContext(ctx, sqlStr, append(args, pq.Array(query.Metrics))...)
 }
 
 func queryMetricHistogramBucketRows(ctx context.Context, db *sql.DB, query metricAggregatesQuery) (*sql.Rows, error) {
-	args := []any{query.From, query.To, int(query.BaseBucketWidth.Seconds())}
+	tableName, bucketWidth := selectMetricHistogramsTableAndWidth(query.From, query.To)
+	args := []any{query.From, query.To, bucketWidth}
 	if len(query.Metrics) == 0 {
-		return db.QueryContext(ctx, metricHistogramBucketsQuery, args...)
+		sqlStr := strings.ReplaceAll(metricHistogramBucketsQuery, "quiver.system_metric_histogram_buckets", tableName)
+		return db.QueryContext(ctx, sqlStr, args...)
 	}
-	return db.QueryContext(ctx, metricHistogramBucketsByMetricQuery, append(args, pq.Array(query.Metrics))...)
+	sqlStr := strings.ReplaceAll(metricHistogramBucketsByMetricQuery, "quiver.system_metric_histogram_buckets", tableName)
+	return db.QueryContext(ctx, sqlStr, append(args, pq.Array(query.Metrics))...)
 }
 
 func scanMetricAggregateRow(rows *sql.Rows) (MetricAggregatePoint, error) {
@@ -585,6 +617,13 @@ func (r *aggregateRollup) addRow(row MetricAggregatePoint) {
 		r.hasP99 = true
 		r.p99 = *row.P99
 	}
+	if row.MetricKind == "counter" && row.Delta != nil && row.BucketWidthSeconds > 0 {
+		baseRate := *row.Delta / float64(row.BucketWidthSeconds)
+		if !r.hasRates || baseRate > r.peakRate {
+			r.peakRate = baseRate
+			r.hasRates = true
+		}
+	}
 }
 
 func (r *aggregateRollup) toPoint() MetricAggregatePoint {
@@ -626,6 +665,18 @@ func (r *aggregateRollup) toPoint() MetricAggregatePoint {
 	}
 	if r.hasP99 {
 		r.point.P99 = new(r.p99)
+	}
+	if r.point.MetricKind == "counter" && r.hasDelta {
+		if r.point.BucketWidthSeconds > 0 {
+			avgRate := r.delta / float64(r.point.BucketWidthSeconds)
+			r.point.RateAvg = &avgRate
+		}
+		if r.hasRates {
+			peakRate := r.peakRate
+			r.point.RatePeak = &peakRate
+		} else if r.point.RateAvg != nil {
+			r.point.RatePeak = r.point.RateAvg
+		}
 	}
 	return r.point
 }

@@ -169,3 +169,59 @@ type apiErrorDriver struct{}
 func (apiErrorDriver) Open(string) (driver.Conn, error) {
 	return nil, errors.New("expected test driver failure")
 }
+
+func TestMetricAggregateRollupCounterRates(t *testing.T) {
+	t.Parallel()
+
+	from := time.Date(2026, 6, 24, 9, 0, 0, 0, time.UTC)
+	query := metricAggregatesQuery{From: from, Step: 20 * time.Second}
+	labels := map[string]string{"source_type": "rest_json"}
+	key := rollupKeyFor(from.Add(5*time.Second), "flow_records_normalized_total", labels, from, query.Step)
+
+	rollup := newAggregateRollup(key, MetricAggregatePoint{
+		BucketStart:        from,
+		BucketWidthSeconds: 5,
+		MetricName:         "flow_records_normalized_total",
+		Labels:             labels,
+		MetricKind:         "counter",
+	}, query.Step)
+
+	// Add first base bucket: 5 seconds, delta 30000 (rate = 6000)
+	rollup.addRow(MetricAggregatePoint{
+		BucketStart:        from,
+		BucketWidthSeconds: 5,
+		MetricName:         "flow_records_normalized_total",
+		Labels:             labels,
+		MetricKind:         "counter",
+		Delta:              newFloat(30000),
+	})
+
+	// Add second base bucket: 5 seconds, delta 0 (rate = 0)
+	rollup.addRow(MetricAggregatePoint{
+		BucketStart:        from.Add(5 * time.Second),
+		BucketWidthSeconds: 5,
+		MetricName:         "flow_records_normalized_total",
+		Labels:             labels,
+		MetricKind:         "counter",
+		Delta:              newFloat(0),
+	})
+
+	point := rollup.toPoint()
+	if point.BucketWidthSeconds != 20 {
+		t.Fatalf("unexpected bucket width: %d", point.BucketWidthSeconds)
+	}
+	if valueOrZero(point.Delta) != 30000 {
+		t.Fatalf("unexpected total delta: %v, want 30000", valueOrZero(point.Delta))
+	}
+	if valueOrZero(point.RateAvg) != 1500 {
+		t.Fatalf("unexpected average rate: %v, want 1500", valueOrZero(point.RateAvg))
+	}
+	if valueOrZero(point.RatePeak) != 6000 {
+		t.Fatalf("unexpected peak rate: %v, want 6000", valueOrZero(point.RatePeak))
+	}
+}
+
+//nolint:modernize
+func newFloat(val float64) *float64 {
+	return &val
+}

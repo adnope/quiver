@@ -11,11 +11,7 @@ import {
   type MetricRange,
   type MetricWidget,
 } from '@/lib/metrics-parser'
-import type {
-  MetricAggregatePoint,
-  MetricHistoryPoint,
-  MetricSnapshot,
-} from '@/types/api'
+import type { MetricAggregatePoint, MetricHistoryPoint, MetricSnapshot } from '@/types/api'
 
 const LIVE_RANGE: MetricRange = '10m'
 const LIVE_WINDOW_MS = 10 * 60_000
@@ -76,7 +72,7 @@ export function DashboardView() {
       step: `${LIVE_BUCKET_SECONDS}s`,
       metric: DASHBOARD_HISTORY_METRICS,
     }),
-    [initialHistoryWindow],
+    [initialHistoryWindow]
   )
   const live = useLiveMetrics()
   const history = useMetricAggregateWindow(historyParams, true)
@@ -106,11 +102,7 @@ export function DashboardView() {
     }
 
     const now = new Date()
-    const nextPoints = liveSnapshotsToHistoryPoints(
-      metrics,
-      previousLiveMetrics.current,
-      now,
-    )
+    const nextPoints = liveSnapshotsToHistoryPoints(metrics, previousLiveMetrics.current, now)
     previousLiveMetrics.current = metrics
     const cutoff = now.getTime() - LIVE_WINDOW_MS
     setLivePoints((current) => [
@@ -122,16 +114,13 @@ export function DashboardView() {
   const charts = useMemo(
     () =>
       Object.fromEntries(
-        cards.map((card) => [
-          card.widget,
-          buildHistoryChart(livePoints, card.widget, LIVE_RANGE),
-        ]),
+        cards.map((card) => [card.widget, buildHistoryChart(livePoints, card.widget, LIVE_RANGE)])
       ) as Record<MetricWidget, DashboardChart>,
-    [livePoints],
+    [livePoints]
   )
   const liveStats = useMemo(
     () => deriveLiveStats(live.data?.metrics ?? [], livePoints),
-    [live.data?.metrics, livePoints],
+    [live.data?.metrics, livePoints]
   )
 
   return (
@@ -143,7 +132,9 @@ export function DashboardView() {
           return (
             <article
               key={card.title}
-              className="min-h-[300px] rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4 shadow-sm transition-all duration-200 ease-in-out hover:border-sky-500/40"
+              className={`rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4 shadow-sm transition-all duration-200 ease-in-out hover:border-sky-500/40 ${
+                card.widget === 'ingestion' ? 'min-h-[416px]' : 'min-h-[300px]'
+              }`}
             >
               <div className="mb-4 flex items-start justify-between gap-4">
                 <div className="min-w-0">
@@ -151,15 +142,10 @@ export function DashboardView() {
                     {card.title}
                   </h2>
                   <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                    {formatMetricValue(
-                      card.widget,
-                      primaryCardMetricValue(card.widget, chart),
-                    )}
+                    {formatMetricValue(card.widget, primaryCardMetricValue(card.widget, chart))}
                   </p>
                   {extraMetric ? (
-                    <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                      {extraMetric}
-                    </p>
+                    <p className="mt-1 text-xs text-[var(--text-secondary)]">{extraMetric}</p>
                   ) : null}
                 </div>
                 <div className="flex items-center gap-2">
@@ -189,11 +175,9 @@ export function DashboardView() {
                 range={LIVE_RANGE}
                 data={chart.data}
                 series={chart.series}
-                isLoading={
-                  (live.isLoading || history.isLoading) && livePoints.length === 0
-                }
+                isLoading={(live.isLoading || history.isLoading) && livePoints.length === 0}
                 onRetry={() => void live.refetch()}
-                scrollable
+                heightClass={card.widget === 'ingestion' ? 'h-72' : 'h-44'}
                 {...(live.isError && livePoints.length === 0
                   ? { error: 'Metrics unavailable. Try again.' }
                   : {})}
@@ -230,7 +214,7 @@ function createInitialHistoryWindow() {
 }
 
 function aggregatePointsToHistoryPoints(
-  points: ReadonlyArray<MetricAggregatePoint>,
+  points: ReadonlyArray<MetricAggregatePoint>
 ): MetricHistoryPoint[] {
   return points.flatMap((point) => {
     if (point.metric_name === 'storage_insert_duration') {
@@ -254,33 +238,21 @@ function aggregatePointsToHistoryPoints(
   })
 }
 
-function aggregateLatencyHistoryPoints(
-  point: MetricAggregatePoint,
-): MetricHistoryPoint[] {
+function aggregateLatencyHistoryPoints(point: MetricAggregatePoint): MetricHistoryPoint[] {
   const points: MetricHistoryPoint[] = []
   if (point.avg != null) {
     points.push(
-      metricAggregateHistoryPoint(
-        point,
-        'storage_insert_duration_milliseconds',
-        point.avg,
-      ),
+      metricAggregateHistoryPoint(point, 'storage_insert_duration_milliseconds', point.avg)
     )
   }
   if (point.p90 != null) {
-    points.push(
-      metricAggregateHistoryPoint(point, 'storage_insert_duration_p90', point.p90),
-    )
+    points.push(metricAggregateHistoryPoint(point, 'storage_insert_duration_p90', point.p90))
   }
   if (point.p95 != null) {
-    points.push(
-      metricAggregateHistoryPoint(point, 'storage_insert_duration_p95', point.p95),
-    )
+    points.push(metricAggregateHistoryPoint(point, 'storage_insert_duration_p95', point.p95))
   }
   if (point.p99 != null) {
-    points.push(
-      metricAggregateHistoryPoint(point, 'storage_insert_duration_p99', point.p99),
-    )
+    points.push(metricAggregateHistoryPoint(point, 'storage_insert_duration_p99', point.p99))
   }
   return points
 }
@@ -288,7 +260,7 @@ function aggregateLatencyHistoryPoints(
 function metricAggregateHistoryPoint(
   source: MetricAggregatePoint,
   name: string,
-  value: number,
+  value: number
 ): MetricHistoryPoint {
   return {
     timestamp: source.bucket_start,
@@ -341,7 +313,7 @@ function primaryCardMetricValue(widget: MetricWidget, chart: DashboardChart) {
 
 function deriveLiveStats(
   metrics: ReadonlyArray<MetricSnapshot>,
-  livePoints: ReadonlyArray<MetricHistoryPoint>,
+  livePoints: ReadonlyArray<MetricHistoryPoint>
 ): LiveDashboardStats {
   const dbConnectionsMaxOpen = metricValue(metrics, 'db_connections_max_open')
   const dbConnectionsInUse = metricValue(metrics, 'db_connections_in_use')
@@ -352,9 +324,7 @@ function deriveLiveStats(
   const durablePersistRate =
     latestDeltaRate(livePoints, 'flow_records_stored_total') / LIVE_BUCKET_SECONDS
   const drainSeconds =
-    kafkaLag > 0 && durablePersistRate > 0
-      ? kafkaLag / durablePersistRate
-      : undefined
+    kafkaLag > 0 && durablePersistRate > 0 ? kafkaLag / durablePersistRate : undefined
 
   const stats: LiveDashboardStats = {
     kafkaLag,
@@ -402,10 +372,7 @@ function metricValue(metrics: ReadonlyArray<MetricSnapshot>, name: string) {
   return metrics.find((metric) => metric.name === name)?.value
 }
 
-function latestDeltaRate(
-  livePoints: ReadonlyArray<MetricHistoryPoint>,
-  metricName: string,
-) {
+function latestDeltaRate(livePoints: ReadonlyArray<MetricHistoryPoint>, metricName: string) {
   const latestTimestamp = livePoints
     .filter((point) => point.name === metricName)
     .map((point) => Date.parse(point.timestamp))
@@ -415,9 +382,6 @@ function latestDeltaRate(
     return 0
   }
   return livePoints
-    .filter(
-      (point) =>
-        point.name === metricName && Date.parse(point.timestamp) === latestTimestamp,
-    )
+    .filter((point) => point.name === metricName && Date.parse(point.timestamp) === latestTimestamp)
     .reduce((sum, point) => sum + Math.max(0, point.delta), 0)
 }

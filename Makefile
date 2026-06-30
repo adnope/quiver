@@ -53,6 +53,8 @@ frontend-build: frontend-install
 
 fmt:
 	$(GO) fmt ./...
+	npm --prefix frontend run format
+	npm --prefix frontend run lint -- --fix
 
 lint: lint-go lint-frontend
 
@@ -61,8 +63,7 @@ lint-go:
 
 lint-frontend:
 	npm --prefix frontend run lint
-
-test: test-unit
+	npm --prefix frontend run format:check
 
 test-unit:
 	$(GO) test ./...
@@ -104,7 +105,10 @@ test-integration:
 	QUIVER_KAFKA_BROKERS="$(TEST_KAFKA_BROKERS)" \
 	$(GO) test -tags=integration ./...
 
-test-all:
+test-race:
+	$(GO) test -race ./internal/...
+	
+test:
 	@set -e; \
 	trap '$(MAKE) test-down TEST_PROJECT=$(TEST_PROJECT)' EXIT; \
 	$(MAKE) test-up TEST_PROJECT=$(TEST_PROJECT); \
@@ -112,8 +116,7 @@ test-all:
 	$(MAKE) test-race; \
 	$(MAKE) test-integration
 
-test-race:
-	$(GO) test -race ./internal/...
+test-all: test
 
 coverage:
 	$(GO) test -coverprofile=coverage.out ./internal/...

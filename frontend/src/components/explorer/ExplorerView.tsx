@@ -13,6 +13,7 @@ import { MaterialIcon } from '@/components/shell/MaterialIcon'
 import { formatBytes, formatOptionalNumber, formatPort } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useFlowById, useFlows } from '@/hooks/useFlows'
+import { useHealth } from '@/hooks/useHealth'
 import { useAppStore } from '@/store/app-store'
 import type {
   FlowDirection,
@@ -30,12 +31,7 @@ const MAX_PORT_RANGE_VALUE = 65_525
 const DEBOUNCE_MS = 1_000
 const TABLE_ROW_HEIGHT = 33
 const LIMIT_OPTIONS = [25, 50, 100, 250, 500, 1000] as const
-const PORT_RANGE_FIELDS = [
-  'srcPortFrom',
-  'srcPortTo',
-  'dstPortFrom',
-  'dstPortTo',
-] as const
+const PORT_RANGE_FIELDS = ['srcPortFrom', 'srcPortTo', 'dstPortFrom', 'dstPortTo'] as const
 
 type PortRangeField = (typeof PORT_RANGE_FIELDS)[number]
 type PortRangeInputs = Record<PortRangeField, string>
@@ -45,6 +41,7 @@ interface ExplorerFilters {
   sourceType: '' | SourceType
   protocol: '' | TransportProtocol
   direction: '' | FlowDirection
+  collectorId: string
   srcIp: string
   dstIp: string
   srcCidr: string
@@ -93,11 +90,20 @@ async function copyTextToClipboard(text: string): Promise<void> {
 export function ExplorerView() {
   const lastApiLatency = useAppStore((state) => state.lastApiLatency)
   const [initialTimeWindow] = useState(createInitialTimeWindow)
+  const { data: healthData } = useHealth()
+
+  const collectorIds = useMemo(() => {
+    if (healthData && 'collectors' in healthData && Array.isArray(healthData.collectors)) {
+      return healthData.collectors.map((c) => c.collector_id)
+    }
+    return ['netflow-main', 'netflow-v9-main', 'zeek-conn-tcp-main', 'rest-ingest-main']
+  }, [healthData])
   const [filters, setFilters] = useState<ExplorerFilters>({
     search: '',
     sourceType: '',
     protocol: '',
     direction: '',
+    collectorId: '',
     srcIp: '',
     dstIp: '',
     srcCidr: '',
@@ -129,7 +135,7 @@ export function ExplorerView() {
     dstPortFrom: '',
     dstPortTo: '',
   })
-  const [detailWidth, setDetailWidth] = useState(400)
+  const [detailWidth, setDetailWidth] = useState(420)
   const timeError = getTimeWindowError(fromInput, toInput)
   const portError = getPortRangeError(portInputs)
 
@@ -160,31 +166,21 @@ export function ExplorerView() {
   const explorerRef = useRef<HTMLElement | null>(null)
   const timeRangeMenuRef = useRef<HTMLDetailsElement | null>(null)
 
-  const queryParams = useMemo(
-    () => {
-      return {
-        ...buildFlowSearchParams(filters, timeWindow.from, timeWindow.to),
-        limit,
-        ...(includeAttributes ? { include: 'attributes' as const } : {}),
-      }
-    },
-    [filters, timeWindow, limit, includeAttributes],
-  )
+  const queryParams = useMemo(() => {
+    return {
+      ...buildFlowSearchParams(filters, timeWindow.from, timeWindow.to),
+      limit,
+      ...(includeAttributes ? { include: 'attributes' as const } : {}),
+    }
+  }, [filters, timeWindow, limit, includeAttributes])
   const flows = useFlows(queryParams)
   const isFirstPageLoading = flows.isFetching && !flows.isFetchingNextPage
-  const rows = useMemo(
-    () => {
-      if (isFirstPageLoading) {
-        return []
-      }
-      return sortRows(
-        flows.data?.pages.flatMap((page) => page.items) ?? [],
-        sortKey,
-        sortDirection,
-      )
-    },
-    [flows.data?.pages, isFirstPageLoading, sortDirection, sortKey],
-  )
+  const rows = useMemo(() => {
+    if (isFirstPageLoading) {
+      return []
+    }
+    return sortRows(flows.data?.pages.flatMap((page) => page.items) ?? [], sortKey, sortDirection)
+  }, [flows.data?.pages, isFirstPageLoading, sortDirection, sortKey])
   // TanStack Virtual manages mutable scroll measurements outside React Compiler memoization.
   // eslint-disable-next-line react-hooks/incompatible-library
   const rowVirtualizer = useVirtualizer({
@@ -195,8 +191,7 @@ export function ExplorerView() {
   })
   const virtualRows = rowVirtualizer.getVirtualItems()
   const paddingTop = virtualRows[0]?.start ?? 0
-  const paddingBottom =
-    rowVirtualizer.getTotalSize() - (virtualRows.at(-1)?.end ?? 0)
+  const paddingBottom = rowVirtualizer.getTotalSize() - (virtualRows.at(-1)?.end ?? 0)
   const columnCount = includeAttributes ? 16 : 15
   const selectedFlow = useFlowById(selectedId, selectedStartTime, true)
 
@@ -223,20 +218,20 @@ export function ExplorerView() {
     if (!sentinel || !scrollContainer) {
       return
     }
-    const observer = new IntersectionObserver((entries) => {
-      const first = entries[0]
-      if (first?.isIntersecting && flows.hasNextPage && !flows.isFetchingNextPage) {
-        void flows.fetchNextPage()
-      }
-    }, { root: scrollContainer })
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const first = entries[0]
+        if (first?.isIntersecting && flows.hasNextPage && !flows.isFetchingNextPage) {
+          void flows.fetchNextPage()
+        }
+      },
+      { root: scrollContainer }
+    )
     observer.observe(sentinel)
     return () => observer.disconnect()
   }, [flows])
 
-  function updateFilter<K extends keyof ExplorerFilters>(
-    key: K,
-    value: ExplorerFilters[K],
-  ) {
+  function updateFilter<K extends keyof ExplorerFilters>(key: K, value: ExplorerFilters[K]) {
     setFilters((current) => ({ ...current, [key]: value }))
   }
 
@@ -266,13 +261,8 @@ export function ExplorerView() {
 
   function loadMoreOnVerticalScroll(event: ReactUIEvent<HTMLDivElement>) {
     const container = event.currentTarget
-    const distanceFromBottom =
-      container.scrollHeight - container.scrollTop - container.clientHeight
-    if (
-      distanceFromBottom <= 160 &&
-      flows.hasNextPage &&
-      !flows.isFetchingNextPage
-    ) {
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight
+    if (distanceFromBottom <= 160 && flows.hasNextPage && !flows.isFetchingNextPage) {
       void flows.fetchNextPage()
     }
   }
@@ -319,17 +309,15 @@ export function ExplorerView() {
               {lastApiLatency !== null && (
                 <>
                   <span className="text-[var(--border)]">•</span>
-                  <span className="font-mono" style={{ color: 'var(--accent-blue)' }}>{lastApiLatency}ms latency</span>
+                  <span className="font-mono" style={{ color: 'var(--accent-blue)' }}>
+                    {lastApiLatency}ms latency
+                  </span>
                 </>
               )}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              size="sm"
-              onClick={refreshFlows}
-            >
+            <Button type="button" size="sm" onClick={refreshFlows}>
               <MaterialIcon name="refresh" className="text-[18px]" />
               Refresh
             </Button>
@@ -341,7 +329,10 @@ export function ExplorerView() {
           <div className="flex w-full flex-wrap items-center gap-2">
             <details ref={timeRangeMenuRef} className="relative">
               <summary className="flex h-9 cursor-pointer list-none items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--input)] px-3 text-xs text-[var(--text-primary)] hover:border-sky-500/60">
-                <MaterialIcon name="schedule" className="text-[18px] text-[var(--text-secondary)]" />
+                <MaterialIcon
+                  name="schedule"
+                  className="text-[18px] text-[var(--text-secondary)]"
+                />
                 <span>{formatTimeRange(timeWindow.from, timeWindow.to)}</span>
               </summary>
               <div className="absolute left-0 top-full z-30 mt-2 w-[min(92vw,25rem)] space-y-3 rounded-md border border-[var(--border)] bg-[var(--panel)] p-3 shadow-xl">
@@ -376,7 +367,10 @@ export function ExplorerView() {
                   <input
                     type="datetime-local"
                     step="1"
-                    className={cn('h-9 min-w-0 rounded-md border bg-[var(--input)] px-2 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-500', timeError ? 'border-red-500' : 'border-[var(--border)]')}
+                    className={cn(
+                      'h-9 min-w-0 rounded-md border bg-[var(--input)] px-2 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-500',
+                      timeError ? 'border-red-500' : 'border-[var(--border)]'
+                    )}
                     value={fromInput}
                     onChange={(event) => setFromInput(event.target.value)}
                   />
@@ -386,7 +380,10 @@ export function ExplorerView() {
                   <input
                     type="datetime-local"
                     step="1"
-                    className={cn('h-9 min-w-0 rounded-md border bg-[var(--input)] px-2 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-500', timeError ? 'border-red-500' : 'border-[var(--border)]')}
+                    className={cn(
+                      'h-9 min-w-0 rounded-md border bg-[var(--input)] px-2 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-500',
+                      timeError ? 'border-red-500' : 'border-[var(--border)]'
+                    )}
                     value={toInput}
                     onChange={(event) => setToInput(event.target.value)}
                   />
@@ -412,7 +409,11 @@ export function ExplorerView() {
                 value={limit}
                 onChange={(e) => setLimit(Number(e.target.value))}
               >
-                {LIMIT_OPTIONS.map((v) => <option key={v} value={v}>{v}</option>)}
+                {LIMIT_OPTIONS.map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
               </select>
             </label>
             <label className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)] cursor-pointer select-none">
@@ -427,15 +428,18 @@ export function ExplorerView() {
           </div>
           {/* Row 2: Search and enum filters */}
           <input
-            className="h-9 min-w-[180px] flex-1 rounded-md border border-[var(--border)] bg-[var(--input)] px-3 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-500"
+            className="h-9 min-w-[160px] w-fit flex-1 rounded-md border border-[var(--border)] bg-[var(--input)] px-3 text-[var(--text-primary)] outline-none transition focus:border-sky-500"
+            style={{ fontSize: '13px' }}
             placeholder="Search IP, CIDR, port, protocol, source"
             value={searchInput}
             onChange={(event) => setSearchInput(event.target.value)}
           />
           <select
-            className="h-9 w-fit cursor-pointer rounded-md border border-[var(--border)] bg-[var(--input)] px-3 pr-8 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-500"
+            className="h-9 w-40 cursor-pointer rounded-md border border-[var(--border)] bg-[var(--input)] px-3 pr-8 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-500"
             value={filters.sourceType}
-            onChange={(event) => updateFilter('sourceType', event.target.value as ExplorerFilters['sourceType'])}
+            onChange={(event) =>
+              updateFilter('sourceType', event.target.value as ExplorerFilters['sourceType'])
+            }
           >
             <option value="">All sources</option>
             {sourceTypes.map((sourceType) => (
@@ -445,9 +449,11 @@ export function ExplorerView() {
             ))}
           </select>
           <select
-            className="h-9 w-fit cursor-pointer rounded-md border border-[var(--border)] bg-[var(--input)] px-3 pr-8 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-500"
+            className="h-9 w-33 cursor-pointer rounded-md border border-[var(--border)] bg-[var(--input)] px-3 pr-8 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-500"
             value={filters.protocol}
-            onChange={(event) => updateFilter('protocol', event.target.value as ExplorerFilters['protocol'])}
+            onChange={(event) =>
+              updateFilter('protocol', event.target.value as ExplorerFilters['protocol'])
+            }
           >
             <option value="">All protocols</option>
             {protocols.map((protocol) => (
@@ -457,9 +463,11 @@ export function ExplorerView() {
             ))}
           </select>
           <select
-            className="h-9 w-fit cursor-pointer rounded-md border border-[var(--border)] bg-[var(--input)] px-3 pr-8 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-500"
+            className="h-9 w-34 cursor-pointer rounded-md border border-[var(--border)] bg-[var(--input)] px-3 pr-8 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-500"
             value={filters.direction}
-            onChange={(event) => updateFilter('direction', event.target.value as ExplorerFilters['direction'])}
+            onChange={(event) =>
+              updateFilter('direction', event.target.value as ExplorerFilters['direction'])
+            }
           >
             <option value="">All directions</option>
             {directions.map((direction) => (
@@ -468,16 +476,30 @@ export function ExplorerView() {
               </option>
             ))}
           </select>
+          <select
+            className="h-9 w-48 cursor-pointer rounded-md border border-[var(--border)] bg-[var(--input)] px-3 pr-8 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-500"
+            value={filters.collectorId}
+            onChange={(event) => updateFilter('collectorId', event.target.value)}
+          >
+            <option value="">All collectors</option>
+            {collectorIds.map((id) => (
+              <option key={id} value={id}>
+                {id}
+              </option>
+            ))}
+          </select>
           {/* Row 3: IPs and port ranges */}
           <div className="flex w-full flex-wrap items-center gap-2">
             <input
-              className="h-9 w-40 min-w-0 rounded-md border border-[var(--border)] bg-[var(--input)] px-3 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-500"
+              className="h-9 w-40 min-w-0 rounded-md border border-[var(--border)] bg-[var(--input)] px-3 text-xs text-[var(--text-primary)] outline-none transition focus:border-sky-500"
+              style={{ fontSize: '13px' }}
               placeholder="src IP"
               value={srcIpInput}
               onChange={(event) => setSrcIpInput(event.target.value)}
             />
             <input
-              className="h-9 w-40 min-w-0 rounded-md border border-[var(--border)] bg-[var(--input)] px-3 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-500"
+              className="h-9 w-40 min-w-0 rounded-md border border-[var(--border)] bg-[var(--input)] px-3 text-xs text-[var(--text-primary)] outline-none transition focus:border-sky-500"
+              style={{ fontSize: '13px' }}
               placeholder="dst IP"
               value={dstIpInput}
               onChange={(event) => setDstIpInput(event.target.value)}
@@ -532,20 +554,60 @@ export function ExplorerView() {
           <table className="w-full border-collapse text-left text-xs whitespace-nowrap">
             <thead className="sticky top-0 z-10 bg-[var(--table-header)] text-[var(--text-secondary)]">
               <tr>
-                <th className="w-14 border-b border-r border-[var(--border)] px-3 py-2 text-right font-medium">#</th>
-                <th className="border-b border-r border-[var(--border)] px-3 py-2 font-medium">ID</th>
-                <SortableHeader label="Time" sortKey="event_start_time" activeKey={sortKey} direction={sortDirection} onSort={toggleSort} />
-                <th className="border-b border-r border-[var(--border)] px-3 py-2 font-medium">Source</th>
-                <th className="border-b border-r border-[var(--border)] px-3 py-2 font-medium">Collector ID</th>
-                <th className="border-b border-r border-[var(--border)] px-3 py-2 font-medium">Source Host</th>
-                <th className="border-b border-r border-[var(--border)] px-3 py-2 font-medium">Source IP</th>
-                <th className="border-b border-r border-[var(--border)] px-3 py-2 font-medium">Protocol</th>
-                <th className="border-b border-r border-[var(--border)] px-3 py-2 font-medium">Src IP</th>
-                <th className="border-b border-r border-[var(--border)] px-3 py-2 font-medium">Dst IP</th>
-                <th className="border-b border-r border-[var(--border)] px-3 py-2 font-medium">Ports</th>
-                <th className="border-b border-r border-[var(--border)] px-3 py-2 font-medium">Direction</th>
-                <SortableHeader label="Bytes" sortKey="bytes" activeKey={sortKey} direction={sortDirection} onSort={toggleSort} />
-                <SortableHeader label="Packets" sortKey="packets" activeKey={sortKey} direction={sortDirection} onSort={toggleSort} />
+                <th className="w-14 border-b border-r border-[var(--border)] px-3 py-2 text-right font-medium">
+                  #
+                </th>
+                <th className="border-b border-r border-[var(--border)] px-3 py-2 font-medium">
+                  ID
+                </th>
+                <SortableHeader
+                  label="Time"
+                  sortKey="event_start_time"
+                  activeKey={sortKey}
+                  direction={sortDirection}
+                  onSort={toggleSort}
+                />
+                <th className="border-b border-r border-[var(--border)] px-3 py-2 font-medium">
+                  Source
+                </th>
+                <th className="border-b border-r border-[var(--border)] px-3 py-2 font-medium">
+                  Collector ID
+                </th>
+                <th className="border-b border-r border-[var(--border)] px-3 py-2 font-medium">
+                  Source Host
+                </th>
+                <th className="border-b border-r border-[var(--border)] px-3 py-2 font-medium">
+                  Source IP
+                </th>
+                <th className="border-b border-r border-[var(--border)] px-3 py-2 font-medium">
+                  Protocol
+                </th>
+                <th className="border-b border-r border-[var(--border)] px-3 py-2 font-medium">
+                  Src IP
+                </th>
+                <th className="border-b border-r border-[var(--border)] px-3 py-2 font-medium">
+                  Dst IP
+                </th>
+                <th className="border-b border-r border-[var(--border)] px-3 py-2 font-medium">
+                  Ports
+                </th>
+                <th className="border-b border-r border-[var(--border)] px-3 py-2 font-medium">
+                  Direction
+                </th>
+                <SortableHeader
+                  label="Bytes"
+                  sortKey="bytes"
+                  activeKey={sortKey}
+                  direction={sortDirection}
+                  onSort={toggleSort}
+                />
+                <SortableHeader
+                  label="Packets"
+                  sortKey="packets"
+                  activeKey={sortKey}
+                  direction={sortDirection}
+                  onSort={toggleSort}
+                />
                 {includeAttributes ? (
                   <th className="border-b border-r border-[var(--border)] px-3 py-2 font-medium">
                     Attributes
@@ -570,7 +632,7 @@ export function ExplorerView() {
                     key={row.id}
                     className={cn(
                       'cursor-pointer border-b border-[var(--border)] text-[var(--text-primary)] transition hover:bg-[var(--panel-hover)]',
-                      selectedId === row.id && 'bg-sky-500/10',
+                      selectedId === row.id && 'bg-sky-500/10'
                     )}
                     style={{ height: TABLE_ROW_HEIGHT }}
                     onClick={() => {
@@ -592,16 +654,28 @@ export function ExplorerView() {
                       {row.collector_id}
                     </td>
                     <td className="border-r border-[var(--border)] px-3 py-2">{row.source_host}</td>
-                    <td className="border-r border-[var(--border)] px-3 py-2 font-mono">{row.source_ip ?? '-'}</td>
-                    <td className="border-r border-[var(--border)] px-3 py-2">{row.transport_protocol}</td>
-                    <td className="border-r border-[var(--border)] px-3 py-2 font-mono">{row.src_ip}</td>
-                    <td className="border-r border-[var(--border)] px-3 py-2 font-mono">{row.dst_ip}</td>
+                    <td className="border-r border-[var(--border)] px-3 py-2 font-mono">
+                      {row.source_ip ?? '-'}
+                    </td>
+                    <td className="border-r border-[var(--border)] px-3 py-2">
+                      {row.transport_protocol}
+                    </td>
+                    <td className="border-r border-[var(--border)] px-3 py-2 font-mono">
+                      {row.src_ip}
+                    </td>
+                    <td className="border-r border-[var(--border)] px-3 py-2 font-mono">
+                      {row.dst_ip}
+                    </td>
                     <td className="border-r border-[var(--border)] px-3 py-2 font-mono">
                       {formatPort(row.src_port)} {'->'} {formatPort(row.dst_port)}
                     </td>
                     <td className="border-r border-[var(--border)] px-3 py-2">{row.direction}</td>
-                    <td className="border-r border-[var(--border)] px-3 py-2">{formatBytes(row.bytes)}</td>
-                    <td className="border-r border-[var(--border)] px-3 py-2">{formatOptionalNumber(row.packets)}</td>
+                    <td className="border-r border-[var(--border)] px-3 py-2">
+                      {formatBytes(row.bytes)}
+                    </td>
+                    <td className="border-r border-[var(--border)] px-3 py-2">
+                      {formatOptionalNumber(row.packets)}
+                    </td>
                     {includeAttributes ? <AttributesCell attributes={row.attributes} /> : null}
                     <td className="px-3 py-2">{row.normalization_status}</td>
                   </tr>
@@ -624,9 +698,13 @@ export function ExplorerView() {
                 Flow query failed. Try again.
               </Button>
             ) : null}
-            {!isFirstPageLoading && !flows.isError && rows.length === 0 ? 'No flow records in this window.' : null}
+            {!isFirstPageLoading && !flows.isError && rows.length === 0
+              ? 'No flow records in this window.'
+              : null}
             {flows.isFetchingNextPage ? 'Loading more...' : null}
-            {!isFirstPageLoading && !flows.hasNextPage && rows.length > 0 ? 'End of result set' : null}
+            {!isFirstPageLoading && !flows.hasNextPage && rows.length > 0
+              ? 'End of result set'
+              : null}
           </div>
         </div>
       </div>
@@ -744,12 +822,8 @@ function formatTimeRange(from: string, to: string) {
 }
 
 function getPortRangeError(inputs: PortRangeInputs) {
-  const hasInvalidPort = PORT_RANGE_FIELDS.some((field) =>
-    isInvalidPortRangeValue(inputs[field]),
-  )
-  return hasInvalidPort
-    ? `Port values must be integers from 0 to ${MAX_PORT_RANGE_VALUE}.`
-    : ''
+  const hasInvalidPort = PORT_RANGE_FIELDS.some((field) => isInvalidPortRangeValue(inputs[field]))
+  return hasInvalidPort ? `Port values must be integers from 0 to ${MAX_PORT_RANGE_VALUE}.` : ''
 }
 
 function isInvalidPortRangeValue(value: string) {
@@ -767,15 +841,11 @@ function isInvalidPortRangeValue(value: string) {
 function portInputClass(value: string) {
   return cn(
     'h-9 w-20 rounded-md border bg-[var(--input)] px-2 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-500',
-    isInvalidPortRangeValue(value) ? 'border-red-500' : 'border-[var(--border)]',
+    isInvalidPortRangeValue(value) ? 'border-red-500' : 'border-[var(--border)]'
   )
 }
 
-function AttributesCell({
-  attributes,
-}: {
-  attributes: Record<string, unknown> | undefined
-}) {
+function AttributesCell({ attributes }: { attributes: Record<string, unknown> | undefined }) {
   const value = attributes ? JSON.stringify(attributes) : '-'
   return (
     <td
@@ -821,7 +891,7 @@ function SortableHeader({
 function buildFlowSearchParams(
   filters: ExplorerFilters,
   from: string,
-  to: string,
+  to: string
 ): Omit<FlowSearchParams, 'cursor'> {
   const params: Omit<FlowSearchParams, 'cursor'> = {
     from,
@@ -829,6 +899,9 @@ function buildFlowSearchParams(
   }
 
   assignSearchFilter(params, filters.search)
+  if (filters.collectorId) {
+    params.collector_id = filters.collectorId
+  }
   if (filters.sourceType) {
     params.source_type = filters.sourceType
   }
@@ -961,7 +1034,8 @@ function JsonTree({ value, name }: { value: unknown; name?: string }) {
   return (
     <details open className="font-mono text-xs leading-6">
       <summary className="cursor-pointer text-[var(--text-primary)]">
-        {name ? `${name}: ` : ''}{'{'}
+        {name ? `${name}: ` : ''}
+        {'{'}
         {entries.length}
         {'}'}
       </summary>
