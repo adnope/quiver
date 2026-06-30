@@ -2,7 +2,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
@@ -19,8 +18,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -127,37 +124,33 @@ var (
 )
 
 type Config struct {
-	TargetREST string
-	TargetUDP  string
-	TargetZeek string
-	TargetDB   string
-	ZeekMode   string
-	AdminKey   string
-	ClientKey  string
-	ZeekKey    string
-	UDPVersion string
-
-	DurationSec  int
-	RPS          int
-	Workers      int
-	RESTWorkers  int
-	UDPWorkers   int
-	ZeekWorkers  int
-	QueryWorkers int
-
+	TargetREST    string
+	TargetUDP     string
+	TargetZeek    string
+	TargetDB      string
+	ZeekMode      string
+	AdminKey      string
+	ClientKey     string
+	ZeekKey       string
+	UDPVersion    string
+	DurationSec   int
+	RPS           int
+	Workers       int
+	RESTWorkers   int
+	UDPWorkers    int
+	ZeekWorkers   int
+	QueryWorkers  int
 	RESTBatchSize int
 	UDPBatchSize  int
 	ZeekBatchSize int
-
-	MixREST int
-	MixUDP  int
-	MixZeek int
-
-	Ramp         bool
-	RampStart    int
-	RampStep     int
-	RampInterval time.Duration
-	RampMax      int
+	MixREST       int
+	MixUDP        int
+	MixZeek       int
+	Ramp          bool
+	RampStart     int
+	RampStep      int
+	RampInterval  time.Duration
+	RampMax       int
 }
 
 func main() {
@@ -170,24 +163,20 @@ func main() {
 	flag.StringVar(&cfg.AdminKey, "admin-key", "demoadminkey123", "Admin API Key for metrics/query")
 	flag.StringVar(&cfg.ClientKey, "client-key", "democlientkey123", "Client API Key for REST ingest")
 	flag.StringVar(&cfg.ZeekKey, "zeek-key", "zeekshipperkey123", "Zeek Shipper API Key")
-	flag.StringVar(&cfg.UDPVersion, "udp-version", "mix", "NetFlow UDP version to send: '5', '9', or 'mix'")
+	flag.StringVar(&cfg.UDPVersion, "udp-version", "mix", "UDP NetFlow version: '5', '9', or 'mix'")
 	flag.IntVar(&cfg.DurationSec, "duration", 30, "Duration of the fixed load test in seconds")
 	flag.IntVar(&cfg.RPS, "rps", 1000, "Target records per second for fixed mode")
-
 	flag.IntVar(&cfg.Workers, "workers", 4, "Deprecated alias for -rest-workers when -rest-workers is not set")
 	flag.IntVar(&cfg.RESTWorkers, "rest-workers", 0, "Number of REST ingest workers. Defaults to -workers for backwards compatibility")
 	flag.IntVar(&cfg.UDPWorkers, "udp-workers", 1, "Number of UDP NetFlow workers")
 	flag.IntVar(&cfg.ZeekWorkers, "zeek-workers", 1, "Number of Zeek workers")
 	flag.IntVar(&cfg.QueryWorkers, "query-workers", 2, "Number of concurrent query contention workers")
-
 	flag.IntVar(&cfg.RESTBatchSize, "rest-batch-size", 100, "Records per REST ingest request")
 	flag.IntVar(&cfg.UDPBatchSize, "udp-batch-size", 10, "NetFlow records per UDP packet")
 	flag.IntVar(&cfg.ZeekBatchSize, "zeek-batch-size", 10, "Zeek records per file write or HTTP request")
-
 	flag.IntVar(&cfg.MixREST, "mix-rest", 50, "REST source mix percentage/weight")
 	flag.IntVar(&cfg.MixUDP, "mix-udp", 40, "UDP NetFlow source mix percentage/weight")
 	flag.IntVar(&cfg.MixZeek, "mix-zeek", 10, "Zeek source mix percentage/weight")
-
 	flag.BoolVar(&cfg.Ramp, "ramp", false, "Enable ramping auto-tuning mode to find max throughput")
 	flag.IntVar(&cfg.RampStart, "ramp-start", 200, "Start RPS for ramp mode")
 	flag.IntVar(&cfg.RampStep, "ramp-step", 200, "Step RPS for ramp mode")
@@ -201,7 +190,8 @@ func main() {
 	normalizeConfig(&cfg)
 
 	fmt.Println("=== Quiver End-to-End Capacity Benchmark ===")
-	fmt.Printf("Source mix: REST=%d UDP=%d Zeek=%d | workers: REST=%d UDP=%d Zeek=%d | batch sizes: REST=%d UDP=%d Zeek=%d\n",
+	fmt.Printf(
+		"Source mix: REST=%d UDP=%d Zeek=%d | workers: REST=%d UDP=%d Zeek=%d | batch sizes: REST=%d UDP=%d Zeek=%d\n",
 		cfg.MixREST,
 		cfg.MixUDP,
 		cfg.MixZeek,
@@ -217,7 +207,6 @@ func main() {
 	defer cancel()
 
 	client := &http.Client{Timeout: 5 * time.Second}
-
 	db, err := sql.Open("postgres", cfg.TargetDB)
 	if err != nil {
 		fmt.Printf("Fatal: Invalid DB connection string: %v\n", err)
@@ -226,18 +215,19 @@ func main() {
 	defer closeAndLog("database connection", db)
 	db.SetMaxOpenConns(2)
 
-	initialPersisted, persistedSource, err := getPersistedCount(ctx, cfg, client, db)
+	initialPersisted, err := countFlowRecords(ctx, db)
 	if err != nil {
-		fmt.Printf("Fatal: Could not read persisted count. Is the backend running? Error: %v\n", err)
+		fmt.Printf("Fatal: Could not read initial durable row count from quiver.flow_records. Is the database running? Error: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Initial records persisted counter (%s): %d\n", persistedSource, initialPersisted)
+	fmt.Printf("Initial durable row count (db:quiver.flow_records): %d\n", initialPersisted)
 
 	var wg sync.WaitGroup
 	var queryLatencies []float64
 	var queryMu sync.Mutex
 
-	startTime := time.Now()
+	benchmarkStartedAt := time.Now()
+	var activeLoadStartedAt time.Time
 	warnings := []string{}
 	bottleneckDetected := false
 	var actualDuration float64
@@ -257,46 +247,43 @@ func main() {
 		targetRpsZeek.Store(int64(rZeek))
 	}
 
-	for range cfg.QueryWorkers {
+	for i := 0; i < cfg.QueryWorkers; i++ {
 		wg.Go(func() {
 			runQueryWorker(ctx, client, cfg.TargetREST, cfg.AdminKey, &queryMu, &queryLatencies)
 		})
 	}
-
 	for i := 0; i < cfg.RESTWorkers; i++ {
-		wg.Add(1)
-		go func(workerID int) {
-			defer wg.Done()
+		workerID := i
+		wg.Go(func() {
 			runRESTWorker(ctx, cfg, workerID, &targetRpsREST)
-		}(i)
+		})
 	}
 	for i := 0; i < cfg.UDPWorkers; i++ {
-		wg.Add(1)
-		go func(workerID int) {
-			defer wg.Done()
+		workerID := i
+		wg.Go(func() {
 			runUDPWorker(ctx, cfg, workerID, &targetRpsUDP)
-		}(i)
+		})
 	}
 	for i := 0; i < cfg.ZeekWorkers; i++ {
-		wg.Add(1)
-		go func(workerID int) {
-			defer wg.Done()
+		workerID := i
+		wg.Go(func() {
 			runZeekWorker(ctx, cfg, workerID, &targetRpsZeek)
-		}(i)
+		})
 	}
 
 	if !cfg.Ramp {
 		fmt.Printf("Mode: Fixed | Target RPS: %d | Duration: %ds\n", cfg.RPS, cfg.DurationSec)
+		activeLoadStartedAt = time.Now()
 		updateRPS(cfg.RPS)
-
 		select {
 		case <-ctx.Done():
 		case <-time.After(time.Duration(cfg.DurationSec) * time.Second):
 		}
+		actualDuration = time.Since(activeLoadStartedAt).Seconds()
 		cancel()
-		actualDuration = float64(cfg.DurationSec)
 	} else {
 		fmt.Printf("Mode: Ramping | Start: %d | Step: %d | Interval: %s | Max: %d\n", cfg.RampStart, cfg.RampStep, cfg.RampInterval, cfg.RampMax)
+		activeLoadStartedAt = time.Now()
 		currentRPS := cfg.RampStart
 
 	rampLoop:
@@ -309,7 +296,6 @@ func main() {
 			startAttempted := attempted.Load()
 			startAccepted := accepted.Load()
 			startFailed := failed.Load()
-
 			startREST := snapshotCounters(&restCounters)
 			startUDP := snapshotCounters(&udpCounters)
 			startZeek := snapshotCounters(&zeekCounters)
@@ -326,38 +312,50 @@ func main() {
 			endAttempted := attempted.Load()
 			endAccepted := accepted.Load()
 			endFailed := failed.Load()
-
 			stepAttempted := endAttempted - startAttempted
 			stepAccepted := endAccepted - startAccepted
 			stepFailed := endFailed - startFailed
-
 			stepAttemptedRPS := float64(stepAttempted) / cfg.RampInterval.Seconds()
 			stepAcceptedRPS := float64(stepAccepted) / cfg.RampInterval.Seconds()
 			stepFailedRPS := float64(stepFailed) / cfg.RampInterval.Seconds()
-
 			stepFailRate := 0.0
 			if stepAttempted > 0 {
 				stepFailRate = float64(stepFailed) / float64(stepAttempted)
 			}
-
 			acceptanceRate := 1.0
 			if stepAttempted > 0 {
 				acceptanceRate = float64(stepAccepted) / float64(stepAttempted)
 			}
 
-			fmt.Printf("   Attempted RPS: %.2f | Accepted RPS: %.2f | Failed RPS: %.2f | Failure Rate: %.1f%% | Accepted/Attempted: %.1f%%\n",
-				stepAttemptedRPS, stepAcceptedRPS, stepFailedRPS, stepFailRate*100, acceptanceRate*100)
+			fmt.Printf(
+				" Attempted RPS: %.2f | Accepted RPS: %.2f | Failed RPS: %.2f | Failure Rate: %.1f%% | Accepted/Attempted: %.1f%%\n",
+				stepAttemptedRPS,
+				stepAcceptedRPS,
+				stepFailedRPS,
+				stepFailRate*100,
+				acceptanceRate*100,
+			)
 			printSourceStep("REST", startREST, snapshotCounters(&restCounters), cfg.RampInterval)
 			printSourceStep("UDP ", startUDP, snapshotCounters(&udpCounters), cfg.RampInterval)
 			printSourceStep("Zeek", startZeek, snapshotCounters(&zeekCounters), cfg.RampInterval)
 
 			if stepAttemptedRPS < float64(currentRPS)*0.80 {
 				generatorUnderproducedSteps++
-				fmt.Printf("   Load generator under-produced this step: attempted %.2f RPS for target %d RPS. Continuing ramp (%d/3).\n",
-					stepAttemptedRPS, currentRPS, generatorUnderproducedSteps)
+				fmt.Printf(
+					" Load generator under-produced this step: attempted %.2f RPS for target %d RPS. Continuing ramp (%d/3).\n",
+					stepAttemptedRPS,
+					currentRPS,
+					generatorUnderproducedSteps,
+				)
 				if generatorUnderproducedSteps >= 3 {
 					bottleneckDetected = true
-					warnings = append(warnings, fmt.Sprintf("Load generator limit detected at %d RPS. Attempted RPS was %.2f, accepted RPS was %.2f, failure rate was %.1f%%.", currentRPS, stepAttemptedRPS, stepAcceptedRPS, stepFailRate*100))
+					warnings = append(warnings, fmt.Sprintf(
+						"Load generator limit detected at %d RPS. Attempted RPS was %.2f, accepted RPS was %.2f, failure rate was %.1f%%.",
+						currentRPS,
+						stepAttemptedRPS,
+						stepAcceptedRPS,
+						stepFailRate*100,
+					))
 					fmt.Println(warnings[len(warnings)-1])
 					break
 				}
@@ -365,7 +363,13 @@ func main() {
 				generatorUnderproducedSteps = 0
 				if acceptanceRate < 0.95 || stepFailRate > 0.05 {
 					bottleneckDetected = true
-					warnings = append(warnings, fmt.Sprintf("Backend bottleneck detected at %d RPS. Attempted RPS was %.2f, accepted RPS was %.2f, failure rate was %.1f%%.", currentRPS, stepAttemptedRPS, stepAcceptedRPS, stepFailRate*100))
+					warnings = append(warnings, fmt.Sprintf(
+						"Backend bottleneck detected at %d RPS. Attempted RPS was %.2f, accepted RPS was %.2f, failure rate was %.1f%%.",
+						currentRPS,
+						stepAttemptedRPS,
+						stepAcceptedRPS,
+						stepFailRate*100,
+					))
 					fmt.Println(warnings[len(warnings)-1])
 					break
 				}
@@ -377,54 +381,85 @@ func main() {
 				break
 			}
 		}
+		actualDuration = time.Since(activeLoadStartedAt).Seconds()
 		cancel()
-		actualDuration = time.Since(startTime).Seconds()
+	}
+
+	if actualDuration <= 0 {
+		actualDuration = time.Nanosecond.Seconds()
 	}
 
 	wg.Wait()
-
 	fmt.Println("Load generation stopped. Entering drain phase to measure durable storage persistence...")
 
-	finalPersisted := uint64(0)
-	var prevPersisted uint64
+	finalPersistedRowCount := initialPersisted
 	stagnantCycles := 0
 	drainStart := time.Now()
 	lastIncreaseTime := drainStart
+	acceptedTotal := accepted.Load()
 
 	for time.Since(drainStart) < 120*time.Second {
-		currentPersisted, _, err := getPersistedCount(context.Background(), cfg, client, db)
-		if err == nil {
-			if currentPersisted != prevPersisted {
-				lastIncreaseTime = time.Now()
-				stagnantCycles = 0
-			} else {
-				stagnantCycles++
-				if stagnantCycles >= 10 {
-					finalPersisted = currentPersisted
-					break
-				}
-			}
-			prevPersisted = currentPersisted
-			finalPersisted = currentPersisted
+		currentPersistedRowCount, err := countFlowRecords(context.Background(), db)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("Failed to read durable row count during drain: %v", err))
+			break
 		}
+
+		if currentPersistedRowCount < finalPersistedRowCount {
+			warnings = append(warnings, fmt.Sprintf(
+				"Durable row count decreased during drain: previous=%d current=%d. Check for concurrent truncation/deletion.",
+				finalPersistedRowCount,
+				currentPersistedRowCount,
+			))
+			finalPersistedRowCount = currentPersistedRowCount
+			break
+		}
+
+		if currentPersistedRowCount > finalPersistedRowCount {
+			lastIncreaseTime = time.Now()
+			stagnantCycles = 0
+		} else {
+			stagnantCycles++
+		}
+		finalPersistedRowCount = currentPersistedRowCount
+
+		persistedDelta := finalPersistedRowCount - initialPersisted
+		if persistedDelta >= acceptedTotal && time.Since(drainStart) >= time.Second {
+			break
+		}
+		if stagnantCycles >= 10 {
+			break
+		}
+
 		time.Sleep(1 * time.Second)
 	}
 
-	totalPersisted := int64(finalPersisted - initialPersisted)
-	droppedOrLag := max(accepted.Load()-totalPersisted, 0)
+	totalPersisted := finalPersistedRowCount - initialPersisted
+	if totalPersisted < 0 {
+		warnings = append(warnings, fmt.Sprintf(
+			"Durable row-count delta was negative: initial=%d final=%d. Reporting persisted=0 to avoid unsigned underflow.",
+			initialPersisted,
+			finalPersistedRowCount,
+		))
+		totalPersisted = 0
+	}
 
+	droppedOrLag := max(acceptedTotal-totalPersisted, int64(0))
 	if droppedOrLag > 0 {
 		warnings = append(warnings, fmt.Sprintf("%d records were accepted but not persisted within drain timeout. Kafka consumer lag or drops occurred.", droppedOrLag))
 	}
 
-	totalPersistenceDuration := lastIncreaseTime.Sub(startTime)
+	totalPersistenceDuration := lastIncreaseTime.Sub(activeLoadStartedAt)
+	if totalPersistenceDuration <= 0 {
+		totalPersistenceDuration = time.Duration(actualDuration * float64(time.Second))
+	}
 	if totalPersistenceDuration <= 0 {
 		totalPersistenceDuration = time.Second
 	}
+
 	durableThroughput := float64(totalPersisted) / totalPersistenceDuration.Seconds()
-	avgIngestionRPS := float64(accepted.Load()) / actualDuration
-	drainDuration := lastIncreaseTime.Sub(drainStart)
-	drainDuration = max(drainDuration, 0)
+	avgIngestionRPS := float64(acceptedTotal) / actualDuration
+	drainDuration := max(lastIncreaseTime.Sub(drainStart), time.Duration(0))
 
 	queryMu.Lock()
 	var lats Latencies
@@ -433,9 +468,9 @@ func main() {
 		sort.Float64s(queryLatencies)
 		lats.Min = queryLatencies[0]
 		lats.Max = queryLatencies[lats.Count-1]
-		lats.P50 = queryLatencies[int(float64(lats.Count)*0.50)]
-		lats.P95 = queryLatencies[int(float64(lats.Count)*0.95)]
-		lats.P99 = queryLatencies[int(float64(lats.Count)*0.99)]
+		lats.P50 = percentile(queryLatencies, 0.50)
+		lats.P95 = percentile(queryLatencies, 0.95)
+		lats.P99 = percentile(queryLatencies, 0.99)
 	}
 	queryMu.Unlock()
 
@@ -451,12 +486,12 @@ func main() {
 	}
 
 	result := PerformanceSmoke{
-		StartedAt:            startTime.UTC().Format(time.RFC3339),
+		StartedAt:            benchmarkStartedAt.UTC().Format(time.RFC3339),
 		DurationSeconds:      actualDuration,
 		Mode:                 modeName,
 		TargetRPS:            targetRPS,
 		RecordsAttempted:     attempted.Load(),
-		RecordsAccepted:      accepted.Load(),
+		RecordsAccepted:      acceptedTotal,
 		RecordsPersisted:     totalPersisted,
 		RecordsFailed:        failed.Load(),
 		RecordsDropped:       droppedOrLag,
@@ -469,10 +504,11 @@ func main() {
 			fmt.Sprintf("Average Ingestion Rate: %.2f records/sec (over %.2fs active load)", avgIngestionRPS, actualDuration),
 			fmt.Sprintf("Durable Write Throughput: %.2f records/sec (over %.2fs total write time)", durableThroughput, totalPersistenceDuration.Seconds()),
 			fmt.Sprintf("Drain Phase Duration: %.2fs", drainDuration.Seconds()),
+			fmt.Sprintf("Durable row-count delta: initial=%d final=%d", initialPersisted, finalPersistedRowCount),
 			fmt.Sprintf("Source mix weights: REST=%d UDP=%d Zeek=%d", cfg.MixREST, cfg.MixUDP, cfg.MixZeek),
 			fmt.Sprintf("Workers: REST=%d UDP=%d Zeek=%d Query=%d", cfg.RESTWorkers, cfg.UDPWorkers, cfg.ZeekWorkers, cfg.QueryWorkers),
 			fmt.Sprintf("Batch sizes: REST=%d UDP=%d Zeek=%d", cfg.RESTBatchSize, cfg.UDPBatchSize, cfg.ZeekBatchSize),
-			"Persistence is measured from flow_records_stored_total when /metrics is available, otherwise from SELECT COUNT(*).",
+			"Persistence is measured from SELECT COUNT(*) on quiver.flow_records before and after the run; metrics counters are not used for durable-write accounting.",
 			"Source breakdown uses record counts, not HTTP request counts.",
 		},
 	}
@@ -481,7 +517,7 @@ func main() {
 	if err := os.MkdirAll("artifacts", 0o750); err != nil {
 		fmt.Printf("Failed to create artifacts directory: %v\n", err)
 	} else {
-		fileBytes, err := json.MarshalIndent(result, "", "    ")
+		fileBytes, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
 			fmt.Printf("Failed to encode performance artifact: %v\n", err)
 		} else if err := os.WriteFile(artifactPath, fileBytes, 0o600); err != nil {
@@ -490,9 +526,9 @@ func main() {
 	}
 
 	fmt.Printf("\n=== Results ===\n")
-	fmt.Printf("Average Ingestion Rate:   %.2f records/sec (over %.2fs active load)\n", avgIngestionRPS, actualDuration)
-	fmt.Printf("Durable Write Throughput:  %.2f records/sec (over %.2fs total write time)\n", durableThroughput, totalPersistenceDuration.Seconds())
-	fmt.Printf("Drain Phase Duration:      %.2fs\n", drainDuration.Seconds())
+	fmt.Printf("Average Ingestion Rate: %.2f records/sec (over %.2fs active load)\n", avgIngestionRPS, actualDuration)
+	fmt.Printf("Durable Write Throughput: %.2f records/sec (over %.2fs total write time)\n", durableThroughput, totalPersistenceDuration.Seconds())
+	fmt.Printf("Drain Phase Duration: %.2fs\n", drainDuration.Seconds())
 	fmt.Printf("Persisted: %d | Accepted: %d | Failed: %d | Dropped/Lag: %d\n", result.RecordsPersisted, result.RecordsAccepted, result.RecordsFailed, result.RecordsDropped)
 	fmt.Printf("Source Breakdown:\n")
 	printSourceSummary("REST", sourceBreakdown["rest"])
@@ -500,7 +536,7 @@ func main() {
 	printSourceSummary("Zeek", sourceBreakdown["zeek"])
 	fmt.Printf("Query Latency (P95): %.2f ms\n", lats.P95)
 	if bottleneckDetected {
-		fmt.Println("⚠️ Bottleneck limit reached during ramp.")
+		fmt.Println("Bottleneck limit reached during ramp.")
 	}
 	fmt.Printf("Saved detailed artifact to %s\n", artifactPath)
 }
@@ -553,7 +589,7 @@ func normalizeConfig(cfg *Config) {
 	if cfg.MixZeek > 0 && cfg.ZeekWorkers == 0 {
 		cfg.ZeekWorkers = 1
 	}
-	if cfg.UDPVersion == "" {
+	if cfg.UDPVersion != "5" && cfg.UDPVersion != "9" && cfg.UDPVersion != "mix" {
 		cfg.UDPVersion = "mix"
 	}
 }
@@ -562,7 +598,6 @@ func splitSourceRPS(totalRPS int, cfg Config) (int, int, int) {
 	if totalRPS <= 0 {
 		return 0, 0, 0
 	}
-
 	totalWeight := cfg.MixREST + cfg.MixUDP + cfg.MixZeek
 	if totalWeight <= 0 {
 		return 0, 0, 0
@@ -581,7 +616,6 @@ func splitSourceRPS(totalRPS int, cfg Config) (int, int, int) {
 	if cfg.MixZeek == 0 {
 		zeek = 0
 	}
-
 	if cfg.MixREST > 0 && rest == 0 {
 		rest = 1
 	}
@@ -595,70 +629,15 @@ func splitSourceRPS(totalRPS int, cfg Config) (int, int, int) {
 	return rest, udp, zeek
 }
 
-func getPersistedCount(ctx context.Context, cfg Config, client *http.Client, db *sql.DB) (uint64, string, error) {
-	count, err := getStoredMetric(ctx, client, cfg.TargetREST, cfg.AdminKey)
-	if err == nil {
-		return count, "metrics:flow_records_stored_total", nil
+func countFlowRecords(ctx context.Context, db *sql.DB) (int64, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	var count int64
+	if err := db.QueryRowContext(queryCtx, "SELECT COUNT(*) FROM quiver.flow_records").Scan(&count); err != nil {
+		return 0, fmt.Errorf("count quiver.flow_records: %w", err)
 	}
-
-	dbCount, dbErr := getDatabaseInsertCount(ctx, db)
-	if dbErr == nil {
-		return dbCount, "db:count_flow_records", nil
-	}
-
-	return 0, "", fmt.Errorf("metrics read failed: %w; db count failed: %w", err, dbErr)
-}
-
-func getStoredMetric(ctx context.Context, client *http.Client, targetREST, adminKey string) (uint64, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/metrics", targetREST), nil)
-	if err != nil {
-		return 0, err
-	}
-	req.Header.Set("X-API-Key", adminKey)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			fmt.Printf("Failed to close metrics response body: %v\n", err)
-		}
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("metrics returned status %d", resp.StatusCode)
-	}
-
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "flow_records_stored_total ") {
-			fields := strings.Fields(line)
-			if len(fields) != 2 {
-				continue
-			}
-			value, err := strconv.ParseFloat(fields[1], 64)
-			if err != nil {
-				return 0, err
-			}
-			if value < 0 {
-				return 0, fmt.Errorf("flow_records_stored_total was negative: %f", value)
-			}
-			return uint64(value), nil
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return 0, err
-	}
-
-	return 0, fmt.Errorf("flow_records_stored_total not found")
-}
-
-func getDatabaseInsertCount(ctx context.Context, db *sql.DB) (uint64, error) {
-	var count uint64
-	err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM quiver.flow_records").Scan(&count)
-	return count, err
+	return count, nil
 }
 
 func runRESTWorker(ctx context.Context, cfg Config, workerID int, targetRPS *atomic.Int64) {
@@ -672,15 +651,12 @@ func runRESTWorker(ctx context.Context, cfg Config, workerID int, targetRPS *ato
 	}
 	targetURL := fmt.Sprintf("%s/api/v1/ingest/flows", cfg.TargetREST)
 	r := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerID)))
-
 	batchSize := cfg.RESTBatchSize
 	var ticker *time.Ticker
-
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-
 		currentRPS := int(targetRPS.Load())
 		if currentRPS <= 0 {
 			if !waitOrDone(ctx, 100*time.Millisecond) {
@@ -688,7 +664,6 @@ func runRESTWorker(ctx context.Context, cfg Config, workerID int, targetRPS *ato
 			}
 			continue
 		}
-
 		activeWorkers := activeWorkersForTarget(currentRPS, cfg.RESTWorkers, batchSize)
 		if workerID >= activeWorkers {
 			if !waitOrDone(ctx, 100*time.Millisecond) {
@@ -718,9 +693,7 @@ func runRESTWorker(ctx context.Context, cfg Config, workerID int, targetRPS *ato
 				}
 				bytesVal := uint64(500 + r.Int63n(10000))
 				packetsVal := uint64(5 + r.Int63n(100))
-
 				start := time.Now().UTC().Add(-time.Duration(r.Intn(10000)) * time.Millisecond).Format(time.RFC3339Nano)
-
 				records = append(records, IngestRecord{
 					EventStartTime:    start,
 					SrcIP:             internalIPs[r.Intn(len(internalIPs))],
@@ -735,13 +708,11 @@ func runRESTWorker(ctx context.Context, cfg Config, workerID int, targetRPS *ato
 			}
 
 			recordAttempt(&restCounters, int64(batchSize))
-
 			reqBody, err := json.Marshal(IngestRequest{Records: records})
 			if err != nil {
 				recordFailure(&restCounters, int64(batchSize))
 				continue
 			}
-
 			sendRESTIngestBatch(ctx, client, targetURL, cfg.ClientKey, reqBody, batchSize)
 		}
 	}
@@ -797,14 +768,12 @@ func runUDPWorker(ctx context.Context, cfg Config, workerID int, targetRPS *atom
 	r := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerID)*1009))
 	batchSize := cfg.UDPBatchSize
 	var ticker *time.Ticker
-
 	seq := uint32(1000 + workerID*1_000_000)
 
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-
 		currentRPS := int(targetRPS.Load())
 		if currentRPS <= 0 {
 			if !waitOrDone(ctx, 100*time.Millisecond) {
@@ -812,7 +781,6 @@ func runUDPWorker(ctx context.Context, cfg Config, workerID int, targetRPS *atom
 			}
 			continue
 		}
-
 		activeWorkers := activeWorkersForTarget(currentRPS, cfg.UDPWorkers, batchSize)
 		if workerID >= activeWorkers {
 			if !waitOrDone(ctx, 100*time.Millisecond) {
@@ -844,141 +812,13 @@ func runUDPWorker(ctx context.Context, cfg Config, workerID int, targetRPS *atom
 
 			var packet []byte
 			if sendV9 {
-				// Generate v9 packet
-				recordCount := batchSize
-				recordLen := 30
-				dataFlowSetLen := 4 + recordCount*recordLen
-				padding := (4 - (dataFlowSetLen % 4)) % 4
-				dataFlowSetLenAligned := dataFlowSetLen + padding
-				templateFlowSetLen := 48
-
-				packet = make([]byte, 20+templateFlowSetLen+dataFlowSetLenAligned)
-
-				// Header (20 bytes)
-				binary.BigEndian.PutUint16(packet[0:2], 9)
-				binary.BigEndian.PutUint16(packet[2:4], uint16(batchSize+1)) // 1 template + batchSize records
-				binary.BigEndian.PutUint32(packet[4:8], 10000)
-				binary.BigEndian.PutUint32(packet[8:12], uint32(time.Now().Unix()))
-				binary.BigEndian.PutUint32(packet[12:16], seq)
-				binary.BigEndian.PutUint32(packet[16:20], uint32(workerID+1)) // Source ID
-
-				// Template FlowSet (48 bytes)
-				tmplOffset := 20
-				binary.BigEndian.PutUint16(packet[tmplOffset:tmplOffset+2], 0) // Template FlowSet ID
-				binary.BigEndian.PutUint16(packet[tmplOffset+2:tmplOffset+4], uint16(templateFlowSetLen))
-				binary.BigEndian.PutUint16(packet[tmplOffset+4:tmplOffset+6], 256) // Template ID
-				binary.BigEndian.PutUint16(packet[tmplOffset+6:tmplOffset+8], 10)  // Field Count
-
-				fields := []struct {
-					id  uint16
-					len uint16
-				}{
-					{8, 4},  // sourceIPv4Address
-					{12, 4}, // destinationIPv4Address
-					{7, 2},  // sourceTransportPort
-					{11, 2}, // destinationTransportPort
-					{4, 1},  // protocolIdentifier
-					{1, 4},  // octetDeltaCount
-					{2, 4},  // packetDeltaCount
-					{6, 1},  // tcpControlBits
-					{22, 4}, // flowStartSysUpTime
-					{21, 4}, // flowEndSysUpTime
-				}
-
-				for idx, f := range fields {
-					off := tmplOffset + 8 + idx*4
-					binary.BigEndian.PutUint16(packet[off:off+2], f.id)
-					binary.BigEndian.PutUint16(packet[off+2:off+4], f.len)
-				}
-
-				// Data FlowSet
-				dataOffset := tmplOffset + templateFlowSetLen
-				binary.BigEndian.PutUint16(packet[dataOffset:dataOffset+2], 256) // Matches Template ID
-				binary.BigEndian.PutUint16(packet[dataOffset+2:dataOffset+4], uint16(dataFlowSetLenAligned))
-
-				for idx := range recordCount {
-					off := dataOffset + 4 + idx*recordLen
-
-					srcIP := internalIPs[r.Intn(len(internalIPs))]
-					copy(packet[off:off+4], net.ParseIP(srcIP).To4())
-
-					dstIP := publicIPs[r.Intn(len(publicIPs))]
-					copy(packet[off+4:off+8], net.ParseIP(dstIP).To4())
-
-					srcPort := uint16(15000 + r.Intn(40000))
-					dstPort := uint16(80)
-					if r.Intn(2) == 0 {
-						dstPort = 443
-					} else if r.Intn(5) == 0 {
-						dstPort = 53
-					}
-					binary.BigEndian.PutUint16(packet[off+8:off+10], srcPort)
-					binary.BigEndian.PutUint16(packet[off+10:off+12], dstPort)
-
-					prot := uint8(6)
-					if dstPort == 53 {
-						prot = 17
-					}
-					packet[off+12] = prot
-
-					pkts := uint32(1 + r.Intn(100))
-					binary.BigEndian.PutUint32(packet[off+13:off+17], pkts*250) // octets
-					binary.BigEndian.PutUint32(packet[off+17:off+21], pkts)     // packets
-
-					packet[off+21] = 0x10 // TCP flags (ACK)
-
-					binary.BigEndian.PutUint32(packet[off+22:off+26], 1000) // start sysUpTime
-					binary.BigEndian.PutUint32(packet[off+26:off+30], 2000) // end sysUpTime
-				}
+				packet = buildNetFlowV9Packet(r, workerID, seq, batchSize)
 			} else {
-				// Generate v5 packet
-				packet = make([]byte, 24+batchSize*48)
-				binary.BigEndian.PutUint16(packet[0:2], 5)
-				binary.BigEndian.PutUint16(packet[2:4], uint16(batchSize))
-				binary.BigEndian.PutUint32(packet[4:8], 10000)
-				binary.BigEndian.PutUint32(packet[8:12], uint32(time.Now().Unix()))
-				binary.BigEndian.PutUint32(packet[12:16], 125000000)
-				binary.BigEndian.PutUint32(packet[16:20], seq)
-				packet[20] = 1
-				packet[21] = 2
-				binary.BigEndian.PutUint16(packet[22:24], uint16(workerID+1))
-
-				for i := range batchSize {
-					offset := 24 + i*48
-					record := packet[offset : offset+48]
-
-					srcIP := internalIPs[r.Intn(len(internalIPs))]
-					copy(record[0:4], net.ParseIP(srcIP).To4())
-
-					dstIP := publicIPs[r.Intn(len(publicIPs))]
-					copy(record[4:8], net.ParseIP(dstIP).To4())
-
-					pkts := uint32(1 + r.Intn(100))
-					binary.BigEndian.PutUint32(record[16:20], pkts)
-					binary.BigEndian.PutUint32(record[20:24], pkts*uint32(250))
-
-					srcPort := uint16(15000 + r.Intn(40000))
-					dstPort := uint16(80)
-					if r.Intn(2) == 0 {
-						dstPort = 443
-					} else if r.Intn(5) == 0 {
-						dstPort = 53
-					}
-
-					binary.BigEndian.PutUint16(record[32:34], srcPort)
-					binary.BigEndian.PutUint16(record[34:36], dstPort)
-
-					prot := uint8(6)
-					if dstPort == 53 {
-						prot = 17
-					}
-					record[38] = prot
-				}
+				packet = buildNetFlowV5Packet(r, workerID, seq, batchSize)
 			}
 
 			seq += uint32(batchSize)
-			_, err := conn.Write(packet)
-			if err != nil {
+			if _, err := conn.Write(packet); err != nil {
 				recordFailure(&udpCounters, int64(batchSize))
 			} else {
 				recordAccepted(&udpCounters, int64(batchSize))
@@ -987,11 +827,127 @@ func runUDPWorker(ctx context.Context, cfg Config, workerID int, targetRPS *atom
 	}
 }
 
+func buildNetFlowV9Packet(r *rand.Rand, workerID int, seq uint32, batchSize int) []byte {
+	recordCount := batchSize
+	recordLen := 30
+	dataFlowSetLen := 4 + recordCount*recordLen
+	padding := (4 - (dataFlowSetLen % 4)) % 4
+	dataFlowSetLenAligned := dataFlowSetLen + padding
+	templateFlowSetLen := 48
+	packet := make([]byte, 20+templateFlowSetLen+dataFlowSetLenAligned)
+
+	binary.BigEndian.PutUint16(packet[0:2], 9)
+	binary.BigEndian.PutUint16(packet[2:4], uint16(batchSize+1))
+	binary.BigEndian.PutUint32(packet[4:8], 10000)
+	binary.BigEndian.PutUint32(packet[8:12], uint32(time.Now().Unix()))
+	binary.BigEndian.PutUint32(packet[12:16], seq)
+	binary.BigEndian.PutUint32(packet[16:20], uint32(workerID+1))
+
+	tmplOffset := 20
+	binary.BigEndian.PutUint16(packet[tmplOffset:tmplOffset+2], 0)
+	binary.BigEndian.PutUint16(packet[tmplOffset+2:tmplOffset+4], uint16(templateFlowSetLen))
+	binary.BigEndian.PutUint16(packet[tmplOffset+4:tmplOffset+6], 256)
+	binary.BigEndian.PutUint16(packet[tmplOffset+6:tmplOffset+8], 10)
+	fields := []struct {
+		id     uint16
+		length uint16
+	}{
+		{id: 8, length: 4},
+		{id: 12, length: 4},
+		{id: 7, length: 2},
+		{id: 11, length: 2},
+		{id: 4, length: 1},
+		{id: 1, length: 4},
+		{id: 2, length: 4},
+		{id: 6, length: 1},
+		{id: 22, length: 4},
+		{id: 21, length: 4},
+	}
+	for idx, field := range fields {
+		off := tmplOffset + 8 + idx*4
+		binary.BigEndian.PutUint16(packet[off:off+2], field.id)
+		binary.BigEndian.PutUint16(packet[off+2:off+4], field.length)
+	}
+
+	dataOffset := tmplOffset + templateFlowSetLen
+	binary.BigEndian.PutUint16(packet[dataOffset:dataOffset+2], 256)
+	binary.BigEndian.PutUint16(packet[dataOffset+2:dataOffset+4], uint16(dataFlowSetLenAligned))
+	for idx := range recordCount {
+		off := dataOffset + 4 + idx*recordLen
+		srcIP := internalIPs[r.Intn(len(internalIPs))]
+		copy(packet[off:off+4], net.ParseIP(srcIP).To4())
+		dstIP := publicIPs[r.Intn(len(publicIPs))]
+		copy(packet[off+4:off+8], net.ParseIP(dstIP).To4())
+		srcPort := uint16(15000 + r.Intn(40000))
+		dstPort := uint16(80)
+		if r.Intn(2) == 0 {
+			dstPort = 443
+		} else if r.Intn(5) == 0 {
+			dstPort = 53
+		}
+		binary.BigEndian.PutUint16(packet[off+8:off+10], srcPort)
+		binary.BigEndian.PutUint16(packet[off+10:off+12], dstPort)
+		protocol := uint8(6)
+		if dstPort == 53 {
+			protocol = 17
+		}
+		packet[off+12] = protocol
+		packets := uint32(1 + r.Intn(100))
+		binary.BigEndian.PutUint32(packet[off+13:off+17], packets*250)
+		binary.BigEndian.PutUint32(packet[off+17:off+21], packets)
+		packet[off+21] = 0x10
+		binary.BigEndian.PutUint32(packet[off+22:off+26], 1000)
+		binary.BigEndian.PutUint32(packet[off+26:off+30], 2000)
+	}
+
+	return packet
+}
+
+func buildNetFlowV5Packet(r *rand.Rand, workerID int, seq uint32, batchSize int) []byte {
+	packet := make([]byte, 24+batchSize*48)
+	binary.BigEndian.PutUint16(packet[0:2], 5)
+	binary.BigEndian.PutUint16(packet[2:4], uint16(batchSize))
+	binary.BigEndian.PutUint32(packet[4:8], 10000)
+	binary.BigEndian.PutUint32(packet[8:12], uint32(time.Now().Unix()))
+	binary.BigEndian.PutUint32(packet[12:16], 125000000)
+	binary.BigEndian.PutUint32(packet[16:20], seq)
+	packet[20] = 1
+	packet[21] = 2
+	binary.BigEndian.PutUint16(packet[22:24], uint16(workerID+1))
+
+	for i := range batchSize {
+		offset := 24 + i*48
+		record := packet[offset : offset+48]
+		srcIP := internalIPs[r.Intn(len(internalIPs))]
+		copy(record[0:4], net.ParseIP(srcIP).To4())
+		dstIP := publicIPs[r.Intn(len(publicIPs))]
+		copy(record[4:8], net.ParseIP(dstIP).To4())
+		packets := uint32(1 + r.Intn(100))
+		binary.BigEndian.PutUint32(record[16:20], packets)
+		binary.BigEndian.PutUint32(record[20:24], packets*250)
+		srcPort := uint16(15000 + r.Intn(40000))
+		dstPort := uint16(80)
+		if r.Intn(2) == 0 {
+			dstPort = 443
+		} else if r.Intn(5) == 0 {
+			dstPort = 53
+		}
+		binary.BigEndian.PutUint16(record[32:34], srcPort)
+		binary.BigEndian.PutUint16(record[34:36], dstPort)
+		protocol := uint8(6)
+		if dstPort == 53 {
+			protocol = 17
+		}
+		record[38] = protocol
+	}
+
+	return packet
+}
+
 func runZeekWorker(ctx context.Context, cfg Config, workerID int, targetRPS *atomic.Int64) {
 	r := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerID)*2003))
 	batchSize := cfg.ZeekBatchSize
 	var ticker *time.Ticker
-
 	client := &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
@@ -1000,9 +956,9 @@ func runZeekWorker(ctx context.Context, cfg Config, workerID int, targetRPS *ato
 			IdleConnTimeout:     90 * time.Second,
 		},
 	}
+
 	var file *os.File
 	var err error
-
 	if cfg.ZeekMode == "file" && cfg.TargetZeek != "" {
 		dir := filepath.Dir(cfg.TargetZeek)
 		if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -1021,7 +977,6 @@ func runZeekWorker(ctx context.Context, cfg Config, workerID int, targetRPS *ato
 		if ctx.Err() != nil {
 			return
 		}
-
 		currentRPS := int(targetRPS.Load())
 		if currentRPS <= 0 {
 			if !waitOrDone(ctx, 100*time.Millisecond) {
@@ -1029,7 +984,6 @@ func runZeekWorker(ctx context.Context, cfg Config, workerID int, targetRPS *ato
 			}
 			continue
 		}
-
 		activeWorkers := activeWorkersForTarget(currentRPS, cfg.ZeekWorkers, batchSize)
 		if workerID >= activeWorkers {
 			if !waitOrDone(ctx, 100*time.Millisecond) {
@@ -1051,17 +1005,27 @@ func runZeekWorker(ctx context.Context, cfg Config, workerID int, targetRPS *ato
 			return
 		case <-ticker.C:
 			recordAttempt(&zeekCounters, int64(batchSize))
-
 			if cfg.ZeekMode == "http" {
 				targetURL := fmt.Sprintf("%s/api/v1/ingest/zeek/conn", cfg.TargetREST)
 				records := make([]json.RawMessage, 0, batchSize)
 				for range batchSize {
 					rec := generateZeekRecord(r)
-					data, _ := json.Marshal(rec)
+					data, err := json.Marshal(rec)
+					if err != nil {
+						recordFailure(&zeekCounters, int64(batchSize))
+						continue
+					}
 					records = append(records, data)
 				}
 
-				payload, _ := json.Marshal(map[string]any{"records": records})
+				payload, err := json.Marshal(struct {
+					Records []json.RawMessage `json:"records"`
+				}{Records: records})
+				if err != nil {
+					recordFailure(&zeekCounters, int64(batchSize))
+					continue
+				}
+
 				req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(payload))
 				if err != nil {
 					recordFailure(&zeekCounters, int64(batchSize))
@@ -1087,7 +1051,11 @@ func runZeekWorker(ctx context.Context, cfg Config, workerID int, targetRPS *ato
 				var buf bytes.Buffer
 				for range batchSize {
 					rec := generateZeekRecord(r)
-					data, _ := json.Marshal(rec)
+					data, err := json.Marshal(rec)
+					if err != nil {
+						recordFailure(&zeekCounters, int64(batchSize))
+						continue
+					}
 					buf.Write(data)
 					buf.WriteByte('\n')
 				}
@@ -1103,12 +1071,10 @@ func runZeekWorker(ctx context.Context, cfg Config, workerID int, targetRPS *ato
 
 func generateZeekRecord(r *rand.Rand) ZeekRecord {
 	id, _ := domain.NewUUIDv7(time.Now())
-
 	origP := 32768 + r.Intn(32768)
 	respP := 80
 	protoName := "tcp"
 	service := "http"
-
 	if r.Intn(3) == 0 {
 		respP = 53
 		protoName = "udp"
@@ -1148,7 +1114,6 @@ func runQueryWorker(ctx context.Context, client *http.Client, targetREST, adminK
 			fromTime := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)
 			toTime := time.Now().UTC().Format(time.RFC3339)
 			queryURL := fmt.Sprintf("%s/api/v1/flows?from=%s&to=%s&limit=25", targetREST, url.QueryEscape(fromTime), url.QueryEscape(toTime))
-
 			qStart := time.Now()
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, queryURL, nil)
 			if err != nil {
@@ -1188,7 +1153,6 @@ func intervalForBatch(targetRPS int, batchSize int, workers int) time.Duration {
 	if perWorkerRPS <= 0 {
 		perWorkerRPS = 1
 	}
-
 	interval := time.Duration(float64(time.Second) * float64(batchSize) / perWorkerRPS)
 	if interval < time.Millisecond {
 		return time.Millisecond
@@ -1205,7 +1169,6 @@ func activeWorkersForTarget(targetRPS int, workers int, batchSize int) int {
 	}
 
 	const desiredMinInterval = 100 * time.Millisecond
-
 	active := int(math.Ceil(float64(targetRPS) * desiredMinInterval.Seconds() / float64(batchSize)))
 	active = max(active, 1)
 	active = min(active, workers)
@@ -1252,7 +1215,6 @@ func snapshotSourceStats(c *sourceCounters, targetRPS int64, durationSeconds flo
 	if durationSeconds <= 0 {
 		durationSeconds = 1
 	}
-
 	failureRate := 0.0
 	if s.attempted > 0 {
 		failureRate = float64(s.failed) / float64(s.attempted)
@@ -1274,17 +1236,16 @@ func printSourceStep(name string, before sourceSnapshot, after sourceSnapshot, i
 	if seconds <= 0 {
 		seconds = 1
 	}
-
 	attemptedDelta := after.attempted - before.attempted
 	acceptedDelta := after.accepted - before.accepted
 	failedDelta := after.failed - before.failed
-
 	failRate := 0.0
 	if attemptedDelta > 0 {
 		failRate = float64(failedDelta) / float64(attemptedDelta)
 	}
 
-	fmt.Printf("      %s attempted %.2f rps | accepted %.2f rps | failed %.2f rps | failure %.1f%%\n",
+	fmt.Printf(
+		" %s attempted %.2f rps | accepted %.2f rps | failed %.2f rps | failure %.1f%%\n",
 		name,
 		float64(attemptedDelta)/seconds,
 		float64(acceptedDelta)/seconds,
@@ -1294,7 +1255,8 @@ func printSourceStep(name string, before sourceSnapshot, after sourceSnapshot, i
 }
 
 func printSourceSummary(name string, stats SourceStats) {
-	fmt.Printf("  %s target=%d rps | attempted=%.2f rps | accepted=%.2f rps | failed=%d | failure=%.1f%%\n",
+	fmt.Printf(
+		" %s target=%d rps | attempted=%.2f rps | accepted=%.2f rps | failed=%d | failure=%.1f%%\n",
 		name,
 		stats.TargetRPS,
 		stats.AttemptedRPS,
@@ -1302,6 +1264,23 @@ func printSourceSummary(name string, stats SourceStats) {
 		stats.RecordsFailed,
 		stats.FailureRate*100,
 	)
+}
+
+func percentile(sorted []float64, p float64) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	if p <= 0 {
+		return sorted[0]
+	}
+	if p >= 1 {
+		return sorted[len(sorted)-1]
+	}
+
+	idx := int(math.Ceil(p*float64(len(sorted)))) - 1
+	idx = max(idx, 0)
+	idx = min(idx, len(sorted)-1)
+	return sorted[idx]
 }
 
 func maxInt(a int, b int) int {
