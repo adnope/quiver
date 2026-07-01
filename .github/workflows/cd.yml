@@ -43,7 +43,7 @@ jobs:
         run: npm --prefix frontend run test
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.26'
           cache: true
