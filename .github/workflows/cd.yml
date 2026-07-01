@@ -159,7 +159,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build Quiver image for scan
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           load: true
@@ -178,7 +178,7 @@ jobs:
           exit-code: '1'
 
       - name: Build Client image for scan
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.client
@@ -198,7 +198,7 @@ jobs:
           exit-code: '1'
 
       - name: Build Migration image for scan
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.migration
@@ -224,7 +224,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and Push Quiver Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
@@ -237,7 +237,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build and Push Client Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.client
@@ -251,7 +251,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build and Push Migration Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.migration
