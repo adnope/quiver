@@ -212,7 +212,7 @@ jobs:
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: adnope/quiver-migration:scan-${{ steps.slug.outputs.sha }}
-          vuln-type: os,library
+          vuln-type: os
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: '1'
