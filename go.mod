@@ -7,7 +7,7 @@ require gopkg.in/yaml.v3 v3.0.1
 require (
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/twmb/franz-go v1.21.3
+	github.com/twmb/franz-go v1.21.5
 	github.com/twmb/franz-go/pkg/kadm v1.18.0
 	google.golang.org/protobuf v1.36.11
 )
