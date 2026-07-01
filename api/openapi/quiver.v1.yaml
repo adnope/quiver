@@ -328,6 +328,17 @@ definitions:
       retryable:
         type: integer
     type: object
+  internal_api.SystemLogLine:
+    properties:
+      attributes:
+        type: object
+      level:
+        type: string
+      message:
+        type: string
+      timestamp:
+        type: string
+    type: object
   internal_api.TopPortResponse:
     properties:
       flow_count:
@@ -397,6 +408,69 @@ info:
   title: Quiver API
   version: "0.1"
 paths:
+  /api/v1/admin/logs:
+    get:
+      description: Returns newest-first best-effort backend log rows. Invalid time
+        and limit values fall back to defaults.
+      parameters:
+      - description: API key with metrics scope when metrics auth is enabled
+        in: header
+        name: X-API-Key
+        required: true
+        type: string
+      - description: RFC3339 inclusive start timestamp; defaults to one hour before
+          to
+        in: query
+        name: from
+        type: string
+      - description: RFC3339 exclusive end timestamp; defaults to current time
+        in: query
+        name: to
+        type: string
+      - description: Exact slog level filter
+        in: query
+        name: level
+        type: string
+      - description: Case-insensitive substring search over message and attributes
+        in: query
+        name: search
+        type: string
+      - default: 100
+        description: Maximum rows; positive values are capped at 1000
+        in: query
+        maximum: 1000
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/internal_api.SystemLogLine'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "429":
+          description: Too Many Requests
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Search persisted backend logs
+      tags:
+      - admin
   /api/v1/aggregations/protocols:
     get:
       description: Aggregates flows by protocol number and transport protocol.
@@ -812,6 +886,11 @@ paths:
           record attributes
         in: query
         name: include
+        type: string
+      - description: Optional event_start_time used to address the composite primary
+          key
+        in: query
+        name: start_time
         type: string
       produces:
       - application/json

@@ -1,71 +1,75 @@
 # Quiver
 
-Quiver is a high-performance, multi-protocol flow ingestion and normalization platform designed for modern network observability. It provides robust ingestion pipelines for NetFlow v5, NetFlow v9, REST, and Zeek logs.
+Quiver is a network-flow ingestion and query service written in Go. It receives NetFlow v5, NetFlow v9, Zeek `conn.log`, and REST network flow records, publishes Protobuf events to Kafka topics, normalizes them, stores them in TimescaleDB, and exposes query, aggregation, metrics, logs API endpoints.
 
-## Features
+## Ingestion paths
 
-- **NetFlow v5 Ingestion**: High-throughput UDP collector with zero-copy packet framing and full normalization.
-- **NetFlow v9 Ingestion**: Advanced template-based NetFlow v9 collector with stateful decoding, zero-allocation caching, and strict memory limits.
-- **REST Ingest**: JSON batch ingestion API with rich custom field mapping.
-- **Zeek Ingest**: Multi-protocol streaming ingest for Zeek connection logs (`zeek_conn_tcp`, `zeek_conn_http`).
-- **Storage & Search**: TimescaleDB columnar storage engine with flexible query capabilities and real-time aggregations.
-- **Redpanda / Kafka Ingestion Buffer**: Durable raw and dead-letter queues (DLQ) for operational safety.
+| Source          | Runtime path                                                         |
+| --------------- | -------------------------------------------------------------------- |
+| NetFlow v5      | `netflow_v5` via direct UDP collector, or with `quiver-client` proxy |
+| NetFlow v9      | `quiver-client` proxy routed to the `netflow_v9` collector           |
+| Zeek `conn.log` | HTTP batch ingest or the `zeek_conn_tcp` collector                   |
+| REST            | `POST /api/v1/ingest/flows` authenticated batches                    |
 
-## Configuration
+All accepted raw events use `flow.v1.RawFlowEventEnvelope` Protobuf values on `flow.raw` Kafka topic.
 
-Quiver uses a structured YAML configuration file. See `configs/quiver.example.yaml` for a complete reference.
+Failed events use `flow.v1.DeadLetterEvent` on `flow.dead_letter` topic.
 
-### NetFlow v9 Proxy & Collector Configuration
+Both topics are published with LZ4 compression and the key `collector_id + ":" + source_host`.
 
-```yaml
-quiver_client_gateways:
-  - name: "netflow-demo-gateway"
-    source_host: "netflow-gateway-01"
-    key_env: "NETFLOW_GATEWAY_DEMO_KEY"
-    allowed_collector_ids: ["netflow-main", "netflow-v9-main"]
+## Runtime
 
-proxy_netflow:
-  routes:
-    - version: 5
-      collector_id: "netflow-main"
-    - version: 9
-      collector_id: "netflow-v9-main"
+The main Docker Compose stack includes TimescaleDB, Redpanda (Kafka-compatible alternative), a migration job, one or more Quiver instances behind Nginx, and `quiver-client`.
 
-collectors:
-  instances:
-    - type: "netflow_v9"
-      collector_id: "netflow-v9-main"
-      enabled: true
-      settings:
-        template_ttl: "30m"
-        cleanup_interval: "1m"
-        exporter_idle_timeout: "5m"
-        sampling_rate: 1
-        max_packet_bytes: 65535
-        max_exporters: 100
-        max_templates_per_exporter: 100
-        max_templates_total: 1000
-        max_fields_per_template: 100
-        max_record_bytes: 4096
-        max_unknown_field_bytes: 1024
-        max_attributes_bytes: 4096
-        worker_count: 4
-        queue_capacity: 1000
-        max_queue_bytes: 10485760
-        pending:
-          max_wait: "1m"
-          max_bytes_per_exporter: 1048576
-          max_bytes_total: 10485760
+In production environment, it is recommended to run `quiver-client` on exporter hosts instead of running it in the compose stack.
+
+The frontend is embedded into the backend.
+
+```bash
+cp .env.example .env
+make dev-up
 ```
 
-## Running Verification & Tests
+The default dev UI and API are exposed through `quiver-lb` at
+`http://localhost:8118`.
 
-To run the full suite of unit tests:
-```bash
-make test-unit
-```
+By default, the compose stack uses the configuration at `configs/quiver.dev.yaml`. Feel free to use your own YAML configuration file. See `configs/quiver.example.yaml` for the complete strict YAML configuration shape.
 
-To run end-to-end NetFlow v9 verification using Docker Compose:
+## Deployment
+
+For deploying Quiver in a production environment:
+
+### Backend Services
+
+- Deploy the core backend services (TimescaleDB, Redpanda, Nginx, and Quiver instances) using Docker Compose.
+- It is recommended to not deploy `quiver-client` in the central backend compose stack in production.
+
+### On Exporter host - NetFlow Ingestion
+
+- For secure NetFlow v5/v9 ingestion with API keys, use `quiver-client`.
+- Deploy the client directly on the host that produces the network flows.
+- Refer to [client.yaml](configs/client.yaml) for client configuration.
+
+### On Exporter host - Zeek Log Ingestion
+
+- For Zeek `conn.log` ingestion, run Vector on the host producing the logs.
+- Refer to [vector.yaml](vector.yaml) for the pipeline configuration.
+- Refer to [compose.vector.yml](compose.vector.yml) for deployment reference.
+
+## Verification
+
 ```bash
+make test-unit            # unit tests for all Go packages
+make lint                 # Go and frontend lint/format checks
+make proto-check          # generated Protobuf freshness
+make swagger-check        # annotation freshness
+make test                 # isolated services + unit + integration tests
+make verify-demo          # full REST, Zeek HTTP, NetFlow v5/v9, DB, API, metrics, DLQ demo test
+make verify-vector-shipper
+make verify-zeek-conn-tcp
 make verify-netflow-v9
 ```
+
+`make coverage` writes `coverage.out`; the repository documents an 80% core
+package target, but the Makefile and CI currently generate coverage without
+enforcing that threshold.
