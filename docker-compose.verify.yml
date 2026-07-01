@@ -42,9 +42,9 @@ services:
       - redpanda_data:/var/lib/redpanda/data
 
   migration:
-    image: migrate/migrate:v4.19.1
-    volumes:
-      - ./internal/storage/postgres/migrations:/migrations
+    build:
+      context: .
+      dockerfile: Dockerfile.migration
     command: -path=/migrations -database="postgres://postgres:postgres@timescaledb:5432/quiver?sslmode=disable" up
     depends_on:
       timescaledb:

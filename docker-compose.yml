@@ -44,12 +44,12 @@ services:
       - redpanda_data:/var/lib/redpanda/data
 
   migration:
-    image: migrate/migrate:v4.19.1
+    build:
+      context: .
+      dockerfile: Dockerfile.migration
     container_name: ${COMPOSE_PROJECT_NAME:-quiver}-migration
     # cpus: 0.25
     # mem_limit: 128m
-    volumes:
-      - ./internal/storage/postgres/migrations:/migrations
     command: -path=/migrations -database="${QUIVER_DATABASE_DSN}" up
     depends_on:
       timescaledb:

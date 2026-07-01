@@ -1,0 +1,2 @@
+FROM migrate/migrate:v4.19.1
+COPY internal/storage/postgres/migrations /migrations

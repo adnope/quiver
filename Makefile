@@ -25,7 +25,7 @@ OPENAPI_FILE ?= $(OPENAPI_DIR)/quiver.v1.yaml
 TEST_DATABASE_DSN ?= postgres://postgres:postgres@localhost:5434/quiver?sslmode=disable
 TEST_KAFKA_BROKERS ?= localhost:9096
 
-.PHONY: build build-quiver build-client frontend-install frontend-typecheck frontend-test frontend-build fmt lint lint-go lint-frontend test test-unit test-up test-down test-integration test-all test-race coverage proto proto-check swagger swagger-check openapi openapi-check migrate-up dev-up dev-down dev-demo load-smoke dev-load-smoke verify-demo verify-demo-down verify-vector-shipper verify-zeek-conn-tcp verify-netflow-v9
+.PHONY: build build-quiver build-client build-docker build-docker-quiver build-docker-client build-docker-migration frontend-install frontend-typecheck frontend-test frontend-build fmt lint lint-go lint-frontend test test-unit test-up test-down test-integration test-all test-race coverage proto proto-check swagger swagger-check openapi openapi-check migrate-up dev-up dev-down dev-demo load-smoke dev-load-smoke verify-demo verify-demo-down verify-vector-shipper verify-zeek-conn-tcp verify-netflow-v9
 
 build: build-quiver build-client
 
@@ -34,6 +34,17 @@ build-quiver: frontend-build
 
 build-client:
 	$(GO) build -o bin/quiver-client cmd/quiver-client/main.go
+
+build-docker: build-docker-quiver build-docker-client build-docker-migration
+
+build-docker-quiver:
+	docker build -t adnope/quiver:latest .
+
+build-docker-client:
+	docker build -t adnope/quiver-client:latest -f Dockerfile.client .
+
+build-docker-migration:
+	docker build -t adnope/quiver-migration:latest -f Dockerfile.migration .
 
 frontend-install:
 	npm --prefix frontend ci
