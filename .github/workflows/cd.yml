@@ -110,7 +110,7 @@ jobs:
 
       - name: Upload Integration Test Logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cd-integration-test-logs
           path: artifacts/integration-test-logs
@@ -136,7 +136,7 @@ jobs:
 
       - name: Upload Demo Verification Logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cd-demo-verification-logs
           path: artifacts/demo-verification-logs
