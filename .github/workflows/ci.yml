@@ -150,7 +150,7 @@ jobs:
         run: make coverage
 
       - name: Upload Go Coverage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: go-coverage
           path: coverage.out
@@ -235,7 +235,7 @@ jobs:
 
       - name: Upload Integration Test Logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: integration-test-logs
           path: artifacts/integration-test-logs
@@ -280,7 +280,7 @@ jobs:
 
       - name: Upload Demo Verification Logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: demo-verification-logs
           path: artifacts/demo-verification-logs
