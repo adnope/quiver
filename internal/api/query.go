@@ -148,6 +148,7 @@ func (h *QueryHandler) Search(w http.ResponseWriter, r *http.Request) {
 // @Security ApiKeyAuth
 // @Param id path string true "Flow UUID"
 // @Param include query string false "Comma-separated optional expansions. Use attributes to include record attributes"
+// @Param start_time query string false "Optional event_start_time used to address the composite primary key"
 // @Success 200 {object} FlowResponse
 // @Failure 400 {object} ErrorResponse
 // @Failure 401 {object} ErrorResponse

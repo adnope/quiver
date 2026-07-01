@@ -13,7 +13,7 @@ type SystemLogLine struct {
 	Timestamp  time.Time       `json:"timestamp"`
 	Level      string          `json:"level"`
 	Message    string          `json:"message"`
-	Attributes json.RawMessage `json:"attributes"`
+	Attributes json.RawMessage `json:"attributes" swaggertype:"object"`
 }
 
 type LogsHandler struct {
@@ -24,6 +24,24 @@ func NewLogsHandler(db *sql.DB) *LogsHandler {
 	return &LogsHandler{db: db}
 }
 
+// ServeHTTP godoc
+// @Summary Search persisted backend logs
+// @Description Returns newest-first best-effort backend log rows. Invalid time and limit values fall back to defaults.
+// @Tags admin
+// @Produce json
+// @Security ApiKeyAuth
+// @Param X-API-Key header string true "API key with metrics scope when metrics auth is enabled"
+// @Param from query string false "RFC3339 inclusive start timestamp; defaults to one hour before to"
+// @Param to query string false "RFC3339 exclusive end timestamp; defaults to current time"
+// @Param level query string false "Exact slog level filter"
+// @Param search query string false "Case-insensitive substring search over message and attributes"
+// @Param limit query int false "Maximum rows; positive values are capped at 1000" default(100) maximum(1000)
+// @Success 200 {array} SystemLogLine
+// @Failure 401 {object} ErrorResponse
+// @Failure 403 {object} ErrorResponse
+// @Failure 429 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /api/v1/admin/logs [get]
 func (h *LogsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
