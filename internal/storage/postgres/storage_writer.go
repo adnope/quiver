@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -207,6 +208,9 @@ func (w *StorageWriter) insertWithRetry(ctx context.Context, records []domain.No
 			return result, nil
 		}
 		lastErr = err
+		if isCheckConstraintViolation(err) {
+			break
+		}
 		if attempt == w.maxRetries {
 			break
 		}
@@ -216,6 +220,14 @@ func (w *StorageWriter) insertWithRetry(ctx context.Context, records []domain.No
 		}
 	}
 	return InsertResult{}, fmt.Errorf("insert storage batch after retries: %w", lastErr)
+}
+
+func isCheckConstraintViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "violates check constraint") || strings.Contains(errStr, "23514")
 }
 
 func (w *StorageWriter) backoff(attempt int) time.Duration {
