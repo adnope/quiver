@@ -293,3 +293,27 @@ func waitForStatus(t *testing.T, manager *Manager, collectorID string, want Stat
 	t.Fatalf("collector %q did not reach status %q; snapshots=%+v", collectorID, want, manager.StatusSnapshots(context.Background()))
 	return StatusSnapshot{}
 }
+
+func TestManager_NilReceiversAndHelpers(t *testing.T) {
+	t.Parallel()
+
+	// Nil manager receivers
+	var nilManager *Manager
+	if _, ok := nilManager.PacketCollector("any"); ok {
+		t.Error("expected false for nil Manager.PacketCollector")
+	}
+	if nilManager.CollectorExists("any") {
+		t.Error("expected false for nil Manager.CollectorExists")
+	}
+
+	// sourceTypeLabel helper tests
+	if got := sourceTypeLabel(nil); got != "unknown" {
+		t.Errorf("sourceTypeLabel(nil) = %q, want 'unknown'", got)
+	}
+
+	// Mock a runtime collector that does not implement SourceTypeLabeler
+	dummyCollector := &testRuntimeCollector{id: "c-id", typ: "test-type"}
+	if got := sourceTypeLabel(dummyCollector); got != "test-type" {
+		t.Errorf("sourceTypeLabel(dummyCollector) = %q, want 'test-type'", got)
+	}
+}

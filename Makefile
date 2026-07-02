@@ -130,7 +130,7 @@ test:
 test-all: test
 
 coverage:
-	$(GO) test -coverprofile=coverage.out ./internal/...
+	$(GO) test ./... -coverprofile=coverage.out
 
 proto:
 	$(PROTOC) \

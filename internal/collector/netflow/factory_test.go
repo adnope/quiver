@@ -86,3 +86,17 @@ func TestCollectorOpenHonorsContext(t *testing.T) {
 		t.Fatalf("expected context cancellation, got %v", err)
 	}
 }
+
+func TestPluginMethods(t *testing.T) {
+	t.Parallel()
+	p := NewPlugin()
+	if p.Type() != PluginType {
+		t.Errorf("Type() = %q, want %q", p.Type(), PluginType)
+	}
+	if p.SettingsMode() != collector.SettingsRequired {
+		t.Errorf("SettingsMode() = %v, want SettingsRequired", p.SettingsMode())
+	}
+	if p.SourceType() != flowv1.SourceType_SOURCE_TYPE_NETFLOW_V5 {
+		t.Errorf("SourceType() = %v, want NetFlow V5", p.SourceType())
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -170,3 +171,84 @@ func (p *tcpTestPublisher) waitDLQ(t *testing.T) *flowv1.DeadLetterEvent {
 }
 
 var _ kafka.RawEventPublisher = (*tcpTestPublisher)(nil)
+
+func TestCollector_MethodsAndHelpers(t *testing.T) {
+	t.Parallel()
+
+	publisher := newTCPTestPublisher()
+	c := newRunningTestCollector(t, publisher)
+
+	// SourceType
+	if got := c.SourceType(); got != flowv1.SourceType_SOURCE_TYPE_ZEEK_CONN_JSON {
+		t.Errorf("SourceType() = %v, want ZEEK_CONN_JSON", got)
+	}
+
+	// Health
+	h := c.Health(context.Background())
+	if h.Details["listen_addr"] == "" {
+		t.Error("expected listen_addr in Health details")
+	}
+
+	// activeConnectionGauge
+	if got := activeConnectionGauge(-1); got != 0 {
+		t.Errorf("activeConnectionGauge(-1) = %d, want 0", got)
+	}
+	if got := activeConnectionGauge(5); got != 5 {
+		t.Errorf("activeConnectionGauge(5) = %d, want 5", got)
+	}
+
+	// remoteAddrIP invalid format
+	invalidIP := remoteAddrIP(&net.IPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if invalidIP.IsValid() {
+		t.Error("expected invalid IP for non-TCP address")
+	}
+
+	// truncatePayload
+	res, truncated := truncatePayload([]byte("hello"), 0)
+	if string(res) != "hello" || truncated {
+		t.Error("expected untruncated string for 0 maxBytes")
+	}
+
+	res, truncated = truncatePayload([]byte("hello"), 2)
+	if string(res) != "he" || !truncated {
+		t.Error("expected truncated to 'he'")
+	}
+}
+
+func TestCollector_AllowedPeer(t *testing.T) {
+	t.Parallel()
+
+	// 1. Empty AllowedPeerCIDRs allows all
+	c1, _ := NewCollector(CollectorConfig{
+		CollectorID: "c1",
+	}, newTCPTestPublisher(), testAuthenticator(t), nil, nil)
+
+	addr := &net.TCPAddr{IP: net.IPv4(192, 168, 1, 10), Port: 80}
+	if !c1.allowedPeer(addr) {
+		t.Error("expected peer allowed when CIDRs list is empty")
+	}
+
+	// 2. Matching AllowedPeerCIDRs
+	prefix, err := netip.ParsePrefix("192.168.1.0/24")
+	if err != nil {
+		t.Fatalf("ParsePrefix failed: %v", err)
+	}
+	c2, _ := NewCollector(CollectorConfig{
+		CollectorID:      "c2",
+		AllowedPeerCIDRs: []netip.Prefix{prefix},
+	}, newTCPTestPublisher(), testAuthenticator(t), nil, nil)
+
+	if !c2.allowedPeer(addr) {
+		t.Error("expected peer to be allowed within CIDR")
+	}
+
+	badAddr := &net.TCPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 80}
+	if c2.allowedPeer(badAddr) {
+		t.Error("expected peer to be denied outside CIDR")
+	}
+
+	// 3. Invalid remote address format
+	if c2.allowedPeer(&net.IPAddr{IP: net.IPv4(192, 168, 1, 10)}) {
+		t.Error("expected invalid address format to be denied")
+	}
+}

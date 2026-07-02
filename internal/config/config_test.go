@@ -667,3 +667,167 @@ quiver_client_gateways:
     key_env: ZEEK_SHIPPER_DEMO_KEY
 `
 }
+
+func TestConfigValidateEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	env := envLookup(map[string]string{
+		cursorEnv:                     "cursor-key",
+		"QUIVER_DEMO_ADMIN_API_KEY":   "admin-key",
+		"REST_INGEST_DEMO_CLIENT_KEY": "ingest-key",
+		"NETFLOW_GATEWAY_DEMO_KEY":    "netflow-key",
+		"ZEEK_SHIPPER_DEMO_KEY":       "zeek-key",
+	})
+
+	tests := []struct {
+		name     string
+		mutate   func(*Config)
+		expected string
+	}{
+		{
+			name: "server missing HTTPAddr",
+			mutate: func(cfg *Config) {
+				cfg.Server.HTTPAddr = ""
+			},
+			expected: "http_addr",
+		},
+		{
+			name: "server HTTPAddr invalid format",
+			mutate: func(cfg *Config) {
+				cfg.Server.HTTPAddr = "invalidaddr"
+			},
+			expected: "http_addr",
+		},
+		{
+			name: "kafka missing brokers",
+			mutate: func(cfg *Config) {
+				cfg.Kafka.Brokers = nil
+			},
+			expected: "brokers",
+		},
+		{
+			name: "database missing dsn",
+			mutate: func(cfg *Config) {
+				cfg.Database.DSN = ""
+			},
+			expected: "dsn",
+		},
+		{
+			name: "ingestion invalid queue size",
+			mutate: func(cfg *Config) {
+				cfg.Ingestion.PublishQueueSize = 0
+			},
+			expected: "publish_queue_size",
+		},
+		{
+			name: "api negative max query window",
+			mutate: func(cfg *Config) {
+				cfg.API.Query.MaxQueryWindow = Duration(-time.Hour)
+			},
+			expected: "max_query_window",
+		},
+		{
+			name: "api invalid scope",
+			mutate: func(cfg *Config) {
+				cfg.API.Keys[0].Scopes = []string{"invalid_scope"}
+			},
+			expected: "scope",
+		},
+		{
+			name: "rest ingest invalid max batch size",
+			mutate: func(cfg *Config) {
+				cfg.RestIngest.MaxBatchSize = 9999999
+			},
+			expected: "max_batch_size",
+		},
+		{
+			name: "zeek ingest invalid max batch size",
+			mutate: func(cfg *Config) {
+				cfg.ZeekIngest.MaxBatchSize = 9999999
+			},
+			expected: "max_batch_size",
+		},
+		{
+			name: "observability zero interval",
+			mutate: func(cfg *Config) {
+				cfg.Observability.MetricsSaveInterval = Duration(0)
+			},
+			expected: "metrics_save_interval",
+		},
+		{
+			name: "storage writer zero batch size",
+			mutate: func(cfg *Config) {
+				cfg.StorageWriter.BatchSize = 0
+			},
+			expected: "batch_size",
+		},
+		{
+			name: "collectors invalid restart policy",
+			mutate: func(cfg *Config) {
+				cfg.Collectors.Restart.Policy = "invalid"
+			},
+			expected: "policy",
+		},
+		{
+			name: "collectors negative max restarts",
+			mutate: func(cfg *Config) {
+				cfg.Collectors.Restart.MaxRestarts = -1
+			},
+			expected: "max_restarts",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			tt.mutate(&cfg)
+			err := cfg.Validate(env)
+			if tt.expected == "" {
+				if err != nil {
+					t.Fatalf("unexpected validation error: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Fatal("expected validation error")
+				}
+				if !strings.Contains(err.Error(), tt.expected) {
+					t.Fatalf("error %q does not contain %q", err, tt.expected)
+				}
+			}
+		})
+	}
+}
+
+func TestConfig_LoadErrors(t *testing.T) {
+	t.Parallel()
+
+	// 1. LoadFile with canceled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := LoadFile(ctx, "somepath", envLookup(nil))
+	if err == nil || !strings.Contains(err.Error(), "load config") {
+		t.Errorf("expected load config error, got %v", err)
+	}
+
+	// 2. LoadReader with nil lookupEnv
+	_, err = LoadReader(strings.NewReader("{}"), nil)
+	if err == nil || !strings.Contains(err.Error(), "env lookup is required") {
+		t.Errorf("expected env lookup is required error, got %v", err)
+	}
+
+	// 3. LoadReader with invalid YAML
+	_, err = LoadReader(strings.NewReader("bad: : yaml"), envLookup(nil))
+	if err == nil || !strings.Contains(err.Error(), "decode yaml") {
+		t.Errorf("expected YAML decode error, got %v", err)
+	}
+
+	// 4. LoadReader with missing required env var
+	missingEnvYAML := `
+database:
+  dsn: "postgres://${MISSING_VAR}/db"
+`
+	_, err = LoadReader(strings.NewReader(missingEnvYAML), envLookup(nil))
+	if err == nil || !strings.Contains(err.Error(), "required env var") {
+		t.Errorf("expected missing env var error, got %v", err)
+	}
+}

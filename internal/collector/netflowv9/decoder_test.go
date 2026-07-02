@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"math"
 	"net/netip"
 	"strings"
@@ -649,4 +650,18 @@ func checkedUint16(value int) uint16 {
 		panic("test fixture exceeds uint16")
 	}
 	return uint16(value)
+}
+
+func TestDecoder_RunCleanup(t *testing.T) {
+	t.Parallel()
+
+	decoder := newTestDecoder(t, Config{
+		CleanupInterval: time.Millisecond,
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	err := decoder.RunCleanup(ctx)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled error, got %v", err)
+	}
 }

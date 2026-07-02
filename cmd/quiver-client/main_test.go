@@ -6,8 +6,15 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"flag"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -309,4 +316,249 @@ func TestPostBatchForwardsMaximumSizePacket(t *testing.T) {
 	if err != nil || status != http.StatusAccepted || response.Accepted != 1 {
 		t.Fatalf("postBatch() response=%+v status=%d err=%v", response, status, err)
 	}
+}
+
+func TestClientMainStartsAndStops(t *testing.T) {
+	if os.Getenv("QUIVER_CLIENT_TEST_MAIN") == "1" {
+		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+		os.Args = []string{os.Args[0], "-config", os.Getenv("QUIVER_CLIENT_TEST_CONFIG")}
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			proc, err := os.FindProcess(os.Getpid())
+			if err == nil {
+				_ = proc.Signal(os.Interrupt)
+			}
+		}()
+		main()
+		return
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"accepted":0,"retryable":0,"rejected":0,"results":[]}`))
+	}))
+	defer server.Close()
+
+	configPath := filepath.Join(t.TempDir(), "client.yaml")
+	config := `backend_url: "` + server.URL + `"
+api_key: "client-key"
+listen_addr: "127.0.0.1:0"
+batch_interval_ms: 10
+max_batch_size: 2
+max_packet_bytes: 65535
+`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestClientMainStartsAndStops$") //nolint:gosec // test intentionally re-execs the current test binary.
+	cmd.Env = append(os.Environ(), "QUIVER_CLIENT_TEST_MAIN=1", "QUIVER_CLIENT_TEST_CONFIG="+configPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("main subprocess failed: %v output=%s", err, output)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("main subprocess timed out: %v output=%s", ctx.Err(), output)
+	}
+	if !strings.Contains(string(output), "quiver-client stopped cleanly") {
+		t.Fatalf("output = %s, want clean shutdown", output)
+	}
+}
+
+func TestClientConfigValidateRejectsInvalidFields(t *testing.T) {
+	t.Parallel()
+
+	valid := ClientConfig{
+		BackendURL:      "https://quiver.example",
+		APIKey:          "secret",
+		ListenAddr:      "127.0.0.1:2055",
+		BatchIntervalMS: 1000,
+		MaxBatchSize:    100,
+		MaxPacketBytes:  65535,
+	}
+	tests := []struct {
+		name string
+		edit func(*ClientConfig)
+		want string
+	}{
+		{name: "relative backend", edit: func(c *ClientConfig) { c.BackendURL = "/relative" }, want: "backend_url"},
+		{name: "unsupported scheme", edit: func(c *ClientConfig) { c.BackendURL = "ftp://example.com" }, want: "backend_url"},
+		{name: "credentials", edit: func(c *ClientConfig) { c.BackendURL = "https://user:pass@example.com" }, want: "credentials"},
+		{name: "blank api key", edit: func(c *ClientConfig) { c.APIKey = " \t" }, want: "api_key"},
+		{name: "bad listen addr", edit: func(c *ClientConfig) { c.ListenAddr = "127.0.0.1" }, want: "listen_addr"},
+		{name: "zero interval", edit: func(c *ClientConfig) { c.BatchIntervalMS = 0 }, want: "batch_interval_ms"},
+		{name: "large interval", edit: func(c *ClientConfig) { c.BatchIntervalMS = 60001 }, want: "batch_interval_ms"},
+		{name: "zero batch", edit: func(c *ClientConfig) { c.MaxBatchSize = 0 }, want: "max_batch_size"},
+		{name: "large batch", edit: func(c *ClientConfig) { c.MaxBatchSize = 1001 }, want: "max_batch_size"},
+		{name: "zero packet", edit: func(c *ClientConfig) { c.MaxPacketBytes = 0 }, want: "max_packet_bytes"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := valid
+			tt.edit(&cfg)
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Validate() error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestRetryableSubsetValidation(t *testing.T) {
+	t.Parallel()
+
+	items := []QueueItem{
+		{sourceIP: "192.0.2.1", packetData: []byte("one"), receivedAt: time.Now()},
+		{sourceIP: "192.0.2.2", packetData: []byte("two"), receivedAt: time.Now()},
+	}
+	valid := ProxyV2Response{
+		Accepted:  1,
+		Retryable: 1,
+		Rejected:  0,
+		Results: []ProxyRecordResult{
+			{Index: 0, Status: "accepted"},
+			{Index: 1, Status: "retryable", ErrorCode: "queue_full"},
+		},
+	}
+	retryable, err := retryableSubset(items, valid)
+	if err != nil {
+		t.Fatalf("retryableSubset(valid) error = %v", err)
+	}
+	if len(retryable) != 1 || string(retryable[0].packetData) != "two" {
+		t.Fatalf("retryable = %+v", retryable)
+	}
+
+	tests := []struct {
+		name     string
+		response ProxyV2Response
+		want     string
+	}{
+		{name: "result count mismatch", response: ProxyV2Response{Results: valid.Results[:1]}, want: "result count"},
+		{name: "negative index", response: ProxyV2Response{Results: []ProxyRecordResult{{Index: -1, Status: "accepted"}, {Index: 1, Status: "accepted"}}}, want: "invalid"},
+		{name: "duplicate index", response: ProxyV2Response{Results: []ProxyRecordResult{{Index: 0, Status: "accepted"}, {Index: 0, Status: "accepted"}}}, want: "duplicate"},
+		{name: "accepted with error", response: ProxyV2Response{Results: []ProxyRecordResult{{Index: 0, Status: "accepted", ErrorCode: "bad"}, {Index: 1, Status: "accepted"}}}, want: "accepted"},
+		{name: "retryable missing error", response: ProxyV2Response{Results: []ProxyRecordResult{{Index: 0, Status: "accepted"}, {Index: 1, Status: "retryable"}}}, want: "retryable"},
+		{name: "rejected missing error", response: ProxyV2Response{Results: []ProxyRecordResult{{Index: 0, Status: "accepted"}, {Index: 1, Status: "rejected"}}}, want: "rejected"},
+		{name: "unknown status", response: ProxyV2Response{Results: []ProxyRecordResult{{Index: 0, Status: "accepted"}, {Index: 1, Status: "unknown"}}}, want: "unknown"},
+		{name: "count mismatch", response: ProxyV2Response{Accepted: 2, Retryable: 0, Rejected: 0, Results: valid.Results}, want: "counts"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := retryableSubset(items, tt.response)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("retryableSubset() error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestPostBatchResponseEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	items := []QueueItem{{sourceIP: "192.0.2.1", packetData: []byte("packet"), receivedAt: time.Now()}}
+
+	_, _, err := postBatch(context.Background(), http.DefaultClient, ClientConfig{BackendURL: "://bad-url", APIKey: "key"}, items)
+	if err == nil || !strings.Contains(err.Error(), "create proxy request") {
+		t.Fatalf("bad URL error = %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		wantStatus int
+		wantErr    string
+	}{
+		{name: "server unavailable", statusCode: http.StatusServiceUnavailable, body: "try later", wantStatus: http.StatusServiceUnavailable},
+		{name: "bad json", statusCode: http.StatusAccepted, body: `not-json`, wantStatus: http.StatusAccepted, wantErr: "decode proxy response"},
+		{name: "extra json", statusCode: http.StatusAccepted, body: `{"accepted":1,"retryable":0,"rejected":0,"results":[{"index":0,"status":"accepted"}]} {}`, wantStatus: http.StatusAccepted, wantErr: "one json object"},
+		{name: "unknown field", statusCode: http.StatusAccepted, body: `{"accepted":1,"retryable":0,"rejected":0,"results":[{"index":0,"status":"accepted"}],"extra":true}`, wantStatus: http.StatusAccepted, wantErr: "decode proxy response"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			_, status, err := postBatch(context.Background(), server.Client(), ClientConfig{BackendURL: server.URL, APIKey: "key"}, items)
+			if status != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", status, tt.wantStatus)
+			}
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("postBatch() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("postBatch() error = %v, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestSleepWithContext(t *testing.T) {
+	t.Parallel()
+
+	if !sleepWithContext(context.Background(), time.Nanosecond) {
+		t.Fatal("sleepWithContext completed = false, want true")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if sleepWithContext(ctx, time.Hour) {
+		t.Fatal("sleepWithContext canceled = true, want false")
+	}
+}
+
+func TestLogRejectedResultsNoPanic(t *testing.T) {
+	t.Parallel()
+
+	logRejectedResults(nil)
+	logRejectedResults([]ProxyRecordResult{
+		{Index: 0, Status: "accepted"},
+		{Index: 1, Status: "rejected", ErrorCode: "malformed_packet"},
+		{Index: 2, Status: "rejected", ErrorCode: "malformed_packet"},
+		{Index: 3, Status: "rejected", ErrorCode: "unsupported_version"},
+	})
+}
+
+func TestSendBatchWithRetryStopsWhenContextCanceledDuringBackoff(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	sendBatchWithRetry(ctx, server.Client(), ClientConfig{BackendURL: server.URL, APIKey: "key"}, []QueueItem{{sourceIP: "192.0.2.1", packetData: []byte("packet"), receivedAt: time.Now()}})
+}
+
+func TestPostBatchPropagatesClientDoError(t *testing.T) {
+	t.Parallel()
+
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("network down")
+	})}
+	_, _, err := postBatch(context.Background(), client, ClientConfig{BackendURL: "http://quiver.invalid", APIKey: "key"}, []QueueItem{{sourceIP: "192.0.2.1", packetData: []byte("packet"), receivedAt: time.Now()}})
+	if err == nil || !strings.Contains(err.Error(), "send proxy request") {
+		t.Fatalf("postBatch client error = %v", err)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
 }

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -232,4 +233,133 @@ func validFlowRecord() domain.NormalizedFlowRecord {
 		NormalizationStatus: domain.NormalizationStatusOK,
 		Attributes:          map[string]json.RawMessage{"env": json.RawMessage(`"test"`)},
 	}
+}
+
+func TestFlowSearchValidationEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeFlowStore{}
+	handler := newQueryTestServer(t, store, nil)
+
+	tests := []struct {
+		name      string
+		query     string
+		wantError string
+	}{
+		{
+			name:      "bad src_cidr",
+			query:     "src_cidr=invalid",
+			wantError: CodeInvalidParameter,
+		},
+		{
+			name:      "bad src_port",
+			query:     "src_port=999999",
+			wantError: CodeInvalidParameter,
+		},
+		{
+			name:      "bad protocol",
+			query:     "protocol=999",
+			wantError: CodeInvalidParameter,
+		},
+		{
+			name:      "bad direction",
+			query:     "direction=invalid",
+			wantError: CodeInvalidParameter,
+		},
+		{
+			name:      "bad limit negative",
+			query:     "limit=-5",
+			wantError: CodeInvalidParameter,
+		},
+		{
+			name:      "bad limit too large",
+			query:     "limit=99999",
+			wantError: CodeInvalidParameter,
+		},
+		{
+			name:      "bad destination port",
+			query:     "dst_port=invalid",
+			wantError: CodeInvalidParameter,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			recorder := httptest.NewRecorder()
+			target := "/api/v1/flows?from=2026-06-16T10:00:00Z&to=2026-06-16T11:00:00Z&" + tt.query
+			handler.ServeHTTP(recorder, newQueryRequest(target, "query-key"))
+
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400, body = %s", recorder.Code, recorder.Body.String())
+			}
+			var response ErrorResponse
+			decodeJSON(t, recorder, &response)
+			if response.Error.Code != tt.wantError {
+				t.Fatalf("error code = %q, want %q", response.Error.Code, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestQueryHandlerStoreErrorsAndHelperBranches(t *testing.T) {
+	t.Parallel()
+
+	cfg := validAPICfg()
+	cfg.API.Cursor.HMACSecretEnv = "CURSOR_SECRET"
+	codec, err := cursorCodecFromConfig(cfg, envLookupWithCursor())
+	if err != nil {
+		t.Fatalf("cursor codec: %v", err)
+	}
+	nilHandler := NewQueryHandler(cfg, nil, codec)
+	recorder := httptest.NewRecorder()
+	nilHandler.Search(recorder, newQueryRequest("/api/v1/flows?from=2026-06-16T10:00:00Z&to=2026-06-16T11:00:00Z", "query-key"))
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("nil store search status = %d", recorder.Code)
+	}
+
+	errorStore := errorFlowStore{err: errors.New("database down")}
+	errorHandler := NewQueryHandler(cfg, errorStore, codec)
+	recorder = httptest.NewRecorder()
+	errorHandler.Search(recorder, newQueryRequest("/api/v1/flows?from=2026-06-16T10:00:00Z&to=2026-06-16T11:00:00Z", "query-key"))
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("store error search status = %d", recorder.Code)
+	}
+
+	recorder = httptest.NewRecorder()
+	errorHandler.Lookup(recorder, newQueryRequest("/api/v1/flows/01934d7c-79b4-7000-8b69-001122334455?start_time=2026-06-16T10:00:00Z", "query-key"))
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("store error lookup status = %d", recorder.Code)
+	}
+
+	if _, _, apiErr := parseRequiredRange("", "2026-06-16T11:00:00Z", time.Hour); apiErr == nil || apiErr.Code != CodeMissingRequiredParameter {
+		t.Fatalf("missing from apiErr = %+v", apiErr)
+	}
+	if _, _, apiErr := parseRequiredRange("bad", "2026-06-16T11:00:00Z", time.Hour); apiErr == nil || apiErr.Code != CodeInvalidParameter {
+		t.Fatalf("bad from apiErr = %+v", apiErr)
+	}
+	if _, _, apiErr := parseRequiredRange("2026-06-16T11:00:00Z", "2026-06-16T10:00:00Z", time.Hour); apiErr == nil || apiErr.Code != CodeInvalidParameter {
+		t.Fatalf("reversed range apiErr = %+v", apiErr)
+	}
+
+	attrs := rawAttributesToAny(map[string]json.RawMessage{"ok": []byte(`"value"`), "bad": []byte(`{`)})
+	if attrs["ok"] != "value" {
+		t.Fatalf("decoded attributes = %+v", attrs)
+	}
+	if len(rawAttributesToAny(nil)) != 0 {
+		t.Fatal("nil attributes should decode to an empty map")
+	}
+}
+
+type errorFlowStore struct {
+	err error
+}
+
+func (s errorFlowStore) SearchFlows(context.Context, postgres.FlowSearchQuery) (postgres.FlowSearchResult, error) {
+	return postgres.FlowSearchResult{}, s.err
+}
+
+func (s errorFlowStore) GetFlowByID(context.Context, string, *time.Time) (domain.NormalizedFlowRecord, bool, error) {
+	return domain.NormalizedFlowRecord{}, false, s.err
 }

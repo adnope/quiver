@@ -125,3 +125,86 @@ func TestNormalizeNetFlowV9MissingSrcDst(t *testing.T) {
 		t.Fatal("expected normalization error for missing src/dst IP")
 	}
 }
+
+func TestNormalizeNetFlowV9DecodedFields(t *testing.T) {
+	t.Parallel()
+
+	ptr := func(s string) *string { return &s }
+	sourceIP := "10.10.0.1"
+	event := &flowv1.RawFlowEventEnvelope{
+		EventId:       "01934d7c-79b4-7000-8b69-001122334458",
+		SchemaVersion: domain.RawSchemaVersion,
+		Source: &flowv1.SourceIdentity{
+			CollectorId: "netflow-v9-main",
+			SourceType:  flowv1.SourceType_SOURCE_TYPE_NETFLOW_V9,
+			SourceHost:  "router-v9-01",
+			SourceIp:    &sourceIP,
+		},
+		ReceivedAt:   timestamppb.New(time.Date(2026, 6, 16, 10, 15, 20, 0, time.UTC)),
+		PartitionKey: "netflow-v9-main:router-v9-01",
+		Payload: &flowv1.RawEventPayload{
+			Payload: &flowv1.RawEventPayload_NetflowV9{
+				NetflowV9: &flowv1.NetFlowV9Flow{
+					PacketSequence:   42,
+					RecordIndex:      7,
+					SourceId:         1,
+					TemplateId:       256,
+					ExporterUnixTime: timestamppb.New(time.Date(2026, 6, 16, 10, 15, 20, 0, time.UTC)),
+					ExporterUptimeMs: 10000,
+					DecodedFields: []*flowv1.NetFlowV9DecodedField{
+						{
+							Name:        ptr("sourceIPv4Address"),
+							FieldId:     8,
+							FieldLength: 4,
+							Value:       &flowv1.NetFlowV9DecodedField_StringValue{StringValue: "192.168.1.10"},
+						},
+						{
+							Name:        ptr("destinationIPv4Address"),
+							FieldId:     12,
+							FieldLength: 4,
+							Value:       &flowv1.NetFlowV9DecodedField_StringValue{StringValue: "8.8.8.8"},
+						},
+						{
+							Name:        ptr("sourceTransportPort"),
+							FieldId:     7,
+							FieldLength: 2,
+							Value:       &flowv1.NetFlowV9DecodedField_UnsignedValue{UnsignedValue: 51524},
+						},
+						{
+							Name:        ptr("destinationTransportPort"),
+							FieldId:     11,
+							FieldLength: 2,
+							Value:       &flowv1.NetFlowV9DecodedField_UnsignedValue{UnsignedValue: 443},
+						},
+						{
+							Name:        ptr("protocolIdentifier"),
+							FieldId:     4,
+							FieldLength: 1,
+							Value:       &flowv1.NetFlowV9DecodedField_UnsignedValue{UnsignedValue: 6},
+						},
+						{
+							Name:        ptr("octetDeltaCount"),
+							FieldId:     1,
+							FieldLength: 8,
+							Value:       &flowv1.NetFlowV9DecodedField_UnsignedValue{UnsignedValue: 420},
+						},
+						{
+							Name:        ptr("packetDeltaCount"),
+							FieldId:     2,
+							FieldLength: 8,
+							Value:       &flowv1.NetFlowV9DecodedField_UnsignedValue{UnsignedValue: 3},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	record, err := NormalizeRawEvent(event, testOptions())
+	if err != nil {
+		t.Fatalf("NormalizeRawEvent(netflow_v9 decoded) error = %v", err)
+	}
+	if record.SrcIP.String() != "192.168.1.10" || record.DstIP.String() != "8.8.8.8" {
+		t.Errorf("ips = %s/%s", record.SrcIP, record.DstIP)
+	}
+}
