@@ -309,7 +309,7 @@ func (n normalizer) applyNetFlowV5(record *domain.NormalizedFlowRecord, event *f
 	addOptionalAttr(record.Attributes, "dst_mask", flow.DstMask)
 
 	if flow.SamplingRate != nil && flow.GetSamplingRate() > 0 {
-			record.SamplingRate = new(flow.GetSamplingRate())
+		record.SamplingRate = new(flow.GetSamplingRate())
 	}
 
 	sourceIP := ""

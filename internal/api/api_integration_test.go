@@ -59,6 +59,15 @@ func TestAPIIntegrationWithTimescaleDB(t *testing.T) {
 	if _, err := db.ExecContext(ctx, "DELETE FROM quiver.flow_records"); err != nil {
 		t.Fatalf("Failed to clear flow_records: %v", err)
 	}
+	if _, err := db.ExecContext(ctx, "DELETE FROM quiver.system_metric_aggregates"); err != nil {
+		t.Fatalf("Failed to clear system_metric_aggregates: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "DELETE FROM quiver.system_metric_histogram_buckets"); err != nil {
+		t.Fatalf("Failed to clear system_metric_histogram_buckets: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "DELETE FROM quiver.system_logs"); err != nil {
+		t.Fatalf("Failed to clear system_logs: %v", err)
+	}
 
 	flowRepo, err := postgres.NewFlowRepository(db)
 	if err != nil {
@@ -207,6 +216,66 @@ func TestAPIIntegrationWithTimescaleDB(t *testing.T) {
 	}
 	if !strings.Contains(wHist.Body.String(), "test_history_metric_total") {
 		t.Errorf("GET /api/v1/metrics/history output missing expected metric: %s", wHist.Body.String())
+	}
+
+	// 8. Test /api/v1/metrics/aggregates
+	nowTime := time.Now().UTC().Truncate(time.Minute)
+	// Seed system_metric_aggregates
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO quiver.system_metric_aggregates (
+			bucket_start, bucket_width_seconds, metric_name, labels, metric_kind,
+			sample_count, count, sum, avg, min, max, p90, p95, p99, first, last, delta
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+		nowTime, 5, "my_metric", `{"a":"b"}`, "duration",
+		1, 1, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 0.0)
+	if err != nil {
+		t.Fatalf("Failed to seed system_metric_aggregates: %v", err)
+	}
+
+	// Seed system_metric_histogram_buckets
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO quiver.system_metric_histogram_buckets (
+			bucket_start, bucket_width_seconds, metric_name, labels, bucket_index, bucket_upper_bound, count
+		) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		nowTime, 5, "my_metric", `{"a":"b"}`, 1, 10.0, 1)
+	if err != nil {
+		t.Fatalf("Failed to seed system_metric_histogram_buckets: %v", err)
+	}
+
+	fromStr := nowTime.Add(-5 * time.Minute).Format(time.RFC3339)
+	toStr := nowTime.Add(5 * time.Minute).Format(time.RFC3339)
+	reqAggs := httptest.NewRequestWithContext(context.Background(), "GET", fmt.Sprintf("/api/v1/metrics/aggregates?from=%s&to=%s&step=5s&metrics=my_metric", fromStr, toStr), nil)
+	reqAggs.Header.Set("X-API-Key", "adminsecret123")
+	wAggs := httptest.NewRecorder()
+	server.Handler().ServeHTTP(wAggs, reqAggs)
+
+	if wAggs.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/metrics/aggregates returned status %d: %s", wAggs.Code, wAggs.Body.String())
+	}
+	if !strings.Contains(wAggs.Body.String(), "my_metric") {
+		t.Errorf("GET /api/v1/metrics/aggregates output missing expected metric: %s", wAggs.Body.String())
+	}
+
+	// 9. Test /api/v1/admin/logs
+	logTime := time.Now().UTC().Truncate(time.Second)
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO quiver.system_logs (timestamp, level, message, attributes)
+		VALUES ($1, $2, $3, $4)`,
+		logTime, "INFO", "test log msg", `{"key":"value"}`)
+	if err != nil {
+		t.Fatalf("Failed to seed system_logs: %v", err)
+	}
+
+	reqLogs := httptest.NewRequestWithContext(context.Background(), "GET", "/api/v1/admin/logs?limit=5&level=INFO&search=test", nil)
+	reqLogs.Header.Set("X-API-Key", "adminsecret123")
+	wLogs := httptest.NewRecorder()
+	server.Handler().ServeHTTP(wLogs, reqLogs)
+
+	if wLogs.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/admin/logs returned status %d: %s", wLogs.Code, wLogs.Body.String())
+	}
+	if !strings.Contains(wLogs.Body.String(), "test log msg") {
+		t.Errorf("GET /api/v1/admin/logs output missing expected message: %s", wLogs.Body.String())
 	}
 }
 

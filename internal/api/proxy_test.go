@@ -587,3 +587,49 @@ func newProxyTestServer(t *testing.T, router PacketRouter, metrics *observabilit
 	}
 	return server
 }
+
+func TestProxyRecordAndTimestampHelpers(t *testing.T) {
+	t.Parallel()
+
+	var record ProxyRecord
+	if err := json.Unmarshal([]byte(`{"source_ip":"192.0.2.1","packet_data":"AA==","received_at":"not-time"}`), &record); err != nil {
+		t.Fatalf("unmarshal invalid timestamp record: %v", err)
+	}
+	if !record.receivedAtPresent || !record.receivedAtInvalid {
+		t.Fatalf("timestamp flags present=%v invalid=%v", record.receivedAtPresent, record.receivedAtInvalid)
+	}
+	if err := json.Unmarshal([]byte(`{"source_ip":"192.0.2.1","packet_data":"AA=="} {}`), &record); err == nil {
+		t.Fatal("extra json object should fail")
+	}
+
+	metrics := observability.NewRegistry()
+	handler := NewProxyHandler(validAPICfg(), nil, metrics)
+	backendTime := time.Date(2026, 6, 16, 10, 0, 0, 0, time.UTC)
+	handler.now = func() time.Time { return backendTime }
+	if got := handler.validProxyTimestamp(ProxyRecord{}, backendTime); got != nil {
+		t.Fatalf("missing timestamp = %v, want nil", got)
+	}
+	if got := handler.validProxyTimestamp(record, backendTime); got != nil {
+		t.Fatalf("invalid timestamp = %v, want nil", got)
+	}
+	future := ProxyRecord{ReceivedAt: backendTime.Add(maxProxyClockSkew + time.Second), receivedAtPresent: true}
+	if got := handler.validProxyTimestamp(future, backendTime); got != nil {
+		t.Fatalf("future timestamp = %v, want nil", got)
+	}
+	old := ProxyRecord{ReceivedAt: backendTime.Add(-maxProxyTimestampAge - time.Second), receivedAtPresent: true}
+	if got := handler.validProxyTimestamp(old, backendTime); got != nil {
+		t.Fatalf("old timestamp = %v, want nil", got)
+	}
+	valid := ProxyRecord{ReceivedAt: backendTime.Add(-time.Second), receivedAtPresent: true}
+	if got := handler.validProxyTimestamp(valid, backendTime); got == nil || !got.Equal(valid.ReceivedAt) {
+		t.Fatalf("valid timestamp = %v", got)
+	}
+	if proxyTimestampReason(ProxyRecord{}, false, false) != "invalid" || proxyTimestampReason(future, true, false) != "future" || proxyTimestampReason(old, false, true) != "old" {
+		t.Fatal("unexpected proxy timestamp reason")
+	}
+
+	result := handler.trackPacketResult([]byte{0, 5}, collector.PacketResult{Status: collector.PacketAccepted})
+	if result.Status != collector.PacketAccepted {
+		t.Fatalf("track result = %+v", result)
+	}
+}

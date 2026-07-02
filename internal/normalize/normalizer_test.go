@@ -2,6 +2,7 @@ package normalize
 
 import (
 	"encoding/json"
+	"errors"
 	"net/netip"
 	"strings"
 	"testing"
@@ -212,6 +213,99 @@ func TestNewDeadLetterEventForNormalizationFailure(t *testing.T) {
 	}
 	if err := validation.ValidateDeadLetterEvent(deadLetter); err != nil {
 		t.Fatalf("dead-letter validation failed: %v", err)
+	}
+}
+
+func TestNewDeadLetterEvent_Errors(t *testing.T) {
+	t.Parallel()
+
+	// 1. Nil event
+	_, err := NewDeadLetterEvent(nil, errors.New("err"), time.Now())
+	if err == nil {
+		t.Error("expected error for nil event")
+	}
+
+	// 2. Nil cause
+	event := rawZeekEvent(t)
+	_, err = NewDeadLetterEvent(event, nil, time.Now())
+	if err == nil {
+		t.Error("expected error for nil cause")
+	}
+
+	// 3. Zero time
+	dl, err := NewDeadLetterEvent(event, errors.New("err"), time.Time{})
+	if err != nil {
+		t.Fatalf("unexpected error for zero time: %v", err)
+	}
+	if dl == nil || dl.FailedAt == nil {
+		t.Fatal("expected dead letter with FailedAt set")
+	}
+
+	// 4. Validation failure
+	badEvent := rawZeekEvent(t)
+	badEvent.EventId = "invalid-uuidv7"
+	_, err = NewDeadLetterEvent(badEvent, errors.New("err"), time.Now())
+	if err == nil {
+		t.Error("expected validation error for invalid raw event ID")
+	}
+}
+
+func TestNormalizeREST_Errors(t *testing.T) {
+	t.Parallel()
+
+	// 1. Missing event start time
+	event := &flowv1.RawFlowEventEnvelope{
+		EventId:       "01934d7c-79b4-7000-8b69-001122334458",
+		SchemaVersion: domain.RawSchemaVersion,
+		Source: &flowv1.SourceIdentity{
+			CollectorId: "rest-main",
+			SourceType:  flowv1.SourceType_SOURCE_TYPE_REST_JSON,
+			SourceHost:  "rest-host",
+		},
+		PartitionKey: "rest-main:rest-host",
+		ReceivedAt:   timestamppb.New(time.Now()),
+		Payload: &flowv1.RawEventPayload{
+			Payload: &flowv1.RawEventPayload_RestFlow{
+				RestFlow: &flowv1.RestFlowInput{
+					EventStartTime: nil, // missing
+				},
+			},
+		},
+	}
+	_, err := NormalizeRawEvent(event, testOptions())
+	if err == nil || !strings.Contains(err.Error(), "event_start_time is required") {
+		t.Errorf("expected event_start_time error, got %v", err)
+	}
+
+	// 2. TCP flags overflow
+	event.Payload.GetRestFlow().EventStartTime = timestamppb.New(time.Now())
+	srcIPStr := "192.168.1.1"
+	dstIPStr := "8.8.8.8"
+	event.Payload.GetRestFlow().Tuple = &flowv1.NetworkTuple{
+		SrcIp: &srcIPStr,
+		DstIp: &dstIPStr,
+	}
+	flags := uint32(70000) // overflow uint16
+	event.Payload.GetRestFlow().TcpFlags = &flags
+	_, err = NormalizeRawEvent(event, testOptions())
+	if err == nil || !strings.Contains(err.Error(), "out of range") {
+		t.Errorf("expected out of range error, got %v", err)
+	}
+}
+
+func TestUintFromUint32_Helpers(t *testing.T) {
+	t.Parallel()
+
+	// uint16FromUint32 overflow
+	_, err := uint16FromUint32("test", 65536)
+	if err == nil || !strings.Contains(err.Error(), "out of range") {
+		t.Errorf("expected overflow error, got %v", err)
+	}
+
+	// uint8FromUint32 overflow
+	_, err = uint8FromUint32("test", 256)
+	if err == nil || !strings.Contains(err.Error(), "out of range") {
+		t.Errorf("expected overflow error, got %v", err)
 	}
 }
 

@@ -225,3 +225,86 @@ func TestMetricAggregateRollupCounterRates(t *testing.T) {
 func newFloat(val float64) *float64 {
 	return &val
 }
+
+func TestMetricsAggregateParsingAndPureHelpers(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.ObservabilityConfig{
+		MetricsAggregateBucketWidth: config.Duration(5 * time.Second),
+		MetricsAggregateMaxPoints:   2,
+	}
+	validTarget := "/api/v1/metrics/aggregates?from=2026-06-16T10:00:00Z&to=2026-06-16T10:00:10Z&step=5s&metric=%20ingest%20&metric=&metric=latency"
+	recorder := httptest.NewRecorder()
+	query, ok := parseMetricAggregatesQuery(recorder, httptest.NewRequestWithContext(context.Background(), http.MethodGet, validTarget, nil), cfg)
+	if !ok || len(query.Metrics) != 2 || query.Step != 5*time.Second || query.BaseBucketWidth != 5*time.Second {
+		t.Fatalf("query=%+v ok=%v body=%s", query, ok, recorder.Body.String())
+	}
+
+	tests := []string{
+		"/api/v1/metrics/aggregates?to=2026-06-16T10:00:10Z",
+		"/api/v1/metrics/aggregates?from=bad&to=2026-06-16T10:00:10Z",
+		"/api/v1/metrics/aggregates?from=2026-06-16T10:00:10Z&to=2026-06-16T10:00:00Z",
+		"/api/v1/metrics/aggregates?from=2026-06-16T10:00:00Z&to=2026-06-16T10:00:10Z&step=bad",
+		"/api/v1/metrics/aggregates?from=2026-06-16T10:00:00Z&to=2026-06-16T10:00:10Z&step=1s",
+		"/api/v1/metrics/aggregates?from=2026-06-16T10:00:00Z&to=2026-06-16T10:00:10Z&step=6s",
+		"/api/v1/metrics/aggregates?from=2026-06-16T10:00:00Z&to=2026-06-16T10:00:20Z&step=5s",
+	}
+	for _, target := range tests {
+		t.Run(target, func(t *testing.T) {
+			t.Parallel()
+			recorder := httptest.NewRecorder()
+			_, ok := parseMetricAggregatesQuery(recorder, httptest.NewRequestWithContext(context.Background(), http.MethodGet, target, nil), cfg)
+			if ok || recorder.Code != http.StatusBadRequest {
+				t.Fatalf("target=%s ok=%v status=%d body=%s", target, ok, recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+
+	if _, err := parseRequiredRFC3339(" "); err == nil {
+		t.Fatal("empty timestamp should fail")
+	}
+	if got := ceilDurationDiv(11*time.Second, 5*time.Second); got != 3 {
+		t.Fatalf("ceilDurationDiv = %d, want 3", got)
+	}
+	if labels, err := decodeMetricLabels(nil); err != nil || len(labels) != 0 {
+		t.Fatalf("empty labels = %+v err=%v", labels, err)
+	}
+	if labels, err := decodeMetricLabels([]byte("null")); err != nil || len(labels) != 0 {
+		t.Fatalf("null labels = %+v err=%v", labels, err)
+	}
+	if _, err := decodeMetricLabels([]byte("{")); err == nil {
+		t.Fatal("invalid labels should fail")
+	}
+	if nonNegativeInt64(-1) != 0 || nonNegativeInt64(7) != 7 {
+		t.Fatal("nonNegativeInt64 returned unexpected values")
+	}
+	if nullFloatPtr(sql.NullFloat64{}) != nil {
+		t.Fatal("invalid sql.NullFloat64 should become nil")
+	}
+	validFloat := nullFloatPtr(sql.NullFloat64{Float64: 1.5, Valid: true})
+	if validFloat == nil || *validFloat != 1.5 {
+		t.Fatalf("valid float ptr = %v", validFloat)
+	}
+	from := time.Date(2026, 6, 16, 10, 0, 0, 0, time.UTC)
+	if alignToQueryStart(from.Add(16*time.Second), from, 10*time.Second) != from.Add(10*time.Second) {
+		t.Fatal("alignToQueryStart did not floor to query step")
+	}
+	if labelsStableKey(nil) != "{}" || labelsStableKey(map[string]string{"b": "2", "a": "1"}) != `{"a":"1","b":"2"}` {
+		t.Fatal("labelsStableKey returned unexpected value")
+	}
+	if counts := histogramCountsSlice(map[int]uint64{2: 5, -1: 9}); len(counts) != 3 || counts[2] != 5 {
+		t.Fatalf("histogramCountsSlice = %+v", counts)
+	}
+	if counts := histogramCountsSlice(nil); counts != nil {
+		t.Fatalf("empty histogram counts = %+v", counts)
+	}
+	if table, width := selectMetricAggregatesTableAndWidth(from, from.Add(time.Hour)); table != "quiver.system_metric_aggregates" || width != 5 {
+		t.Fatalf("short table=%s width=%d", table, width)
+	}
+	if table, width := selectMetricAggregatesTableAndWidth(from, from.Add(24*time.Hour)); table != "quiver.system_metric_5m_aggregates" || width != 300 {
+		t.Fatalf("medium table=%s width=%d", table, width)
+	}
+	if table, width := selectMetricHistogramsTableAndWidth(from, from.Add(8*24*time.Hour)); table != "quiver.system_metric_1h_histogram_buckets" || width != 3600 {
+		t.Fatalf("long table=%s width=%d", table, width)
+	}
+}

@@ -277,3 +277,61 @@ func assertJSON(t *testing.T, raw json.RawMessage, expected string) {
 }
 
 type object any
+
+func TestNewUUIDv7(t *testing.T) {
+	t.Parallel()
+
+	// Success with zero time
+	id, err := NewUUIDv7(time.Time{})
+	if err != nil {
+		t.Fatalf("unexpected NewUUIDv7 error: %v", err)
+	}
+	if !IsUUIDv7(id) {
+		t.Errorf("expected valid UUIDv7 string, got %q", id)
+	}
+
+	// Success with specific time
+	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	id2, err := NewUUIDv7(now)
+	if err != nil {
+		t.Fatalf("unexpected NewUUIDv7 error: %v", err)
+	}
+	if !IsUUIDv7(id2) {
+		t.Errorf("expected valid UUIDv7 string, got %q", id2)
+	}
+
+	// Timestamp out of range error
+	badTime := time.UnixMilli(-1)
+	_, err = NewUUIDv7(badTime)
+	if err == nil {
+		t.Error("expected error for negative unix milli timestamp")
+	}
+
+	badTime2 := time.UnixMilli(0x1000000000000)
+	_, err = NewUUIDv7(badTime2)
+	if err == nil {
+		t.Error("expected error for timestamp out of 48-bit range")
+	}
+}
+
+func TestProtocolNumberFromName(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		proto TransportProtocol
+		num   uint8
+		ok    bool
+	}{
+		{TransportProtocolUnknown, 0, true},
+		{TransportProtocolICMP, 1, true},
+		{TransportProtocolTCP, 6, true},
+		{TransportProtocolUDP, 17, true},
+		{TransportProtocolGRE, 47, true},
+		{TransportProtocol("invalid"), 0, false},
+	}
+	for _, tt := range tests {
+		num, ok := ProtocolNumberFromName(tt.proto)
+		if num != tt.num || ok != tt.ok {
+			t.Errorf("ProtocolNumberFromName(%q) = (%d, %t), want (%d, %t)", tt.proto, num, ok, tt.num, tt.ok)
+		}
+	}
+}

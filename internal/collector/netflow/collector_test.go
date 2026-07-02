@@ -275,3 +275,20 @@ func handleTestPacket(
 		Data:       data,
 	})
 }
+
+func TestCollectorCloseAndHealth(t *testing.T) {
+	t.Parallel()
+	c, err := NewCollector(CollectorConfig{
+		CollectorID: "netflow-v5-test",
+		ListenAddr:  "127.0.0.1:0",
+	}, 1, &fakePublisher{}, nil, nil)
+	if err != nil {
+		t.Fatalf("failed to create collector: %v", err)
+	}
+
+	_ = c.Health(context.Background())
+
+	if err := c.Close(context.Background()); err != nil {
+		t.Errorf("Close failed: %v", err)
+	}
+}
