@@ -64,10 +64,11 @@ func TestStorageWriterNewValidationCoversAllConfigFields(t *testing.T) {
 	t.Parallel()
 
 	base := config.StorageWriterConfig{
-		BatchSize:      1,
-		MaxRetries:     0,
-		InitialBackoff: config.Duration(time.Millisecond),
-		MaxBackoff:     config.Duration(time.Millisecond),
+		BatchSize:         1,
+		MaxRetries:        0,
+		InitialBackoff:    config.Duration(time.Millisecond),
+		MaxBackoff:        config.Duration(time.Millisecond),
+		InsertConcurrency: 1,
 	}
 
 	cfg := base
@@ -85,6 +86,16 @@ func TestStorageWriterNewValidationCoversAllConfigFields(t *testing.T) {
 	if _, err := NewStorageWriter(cfg, &fakeInserter{}, &fakeDeadLetterPublisher{}); !errors.Is(err, ErrInvalidStorageWriter) {
 		t.Fatalf("zero max backoff error = %v", err)
 	}
+	cfg = base
+	cfg.InsertConcurrency = 0
+	if _, err := NewStorageWriter(cfg, &fakeInserter{}, &fakeDeadLetterPublisher{}); !errors.Is(err, ErrInvalidStorageWriter) {
+		t.Fatalf("zero insert concurrency error = %v", err)
+	}
+	cfg = base
+	cfg.InsertConcurrency = config.DefaultMaxStorageInsertConcurrency + 1
+	if _, err := NewStorageWriter(cfg, &fakeInserter{}, &fakeDeadLetterPublisher{}); !errors.Is(err, ErrInvalidStorageWriter) {
+		t.Fatalf("too-high insert concurrency error = %v", err)
+	}
 }
 
 func TestStorageWriterRetriesTransientInsertError(t *testing.T) {
@@ -92,10 +103,11 @@ func TestStorageWriterRetriesTransientInsertError(t *testing.T) {
 
 	inserter := &errorInserter{errs: []error{errors.New("temporary failure"), nil}}
 	writer, err := NewStorageWriter(config.StorageWriterConfig{
-		BatchSize:      1,
-		MaxRetries:     1,
-		InitialBackoff: config.Duration(time.Millisecond),
-		MaxBackoff:     config.Duration(time.Millisecond),
+		BatchSize:         1,
+		MaxRetries:        1,
+		InitialBackoff:    config.Duration(time.Millisecond),
+		MaxBackoff:        config.Duration(time.Millisecond),
+		InsertConcurrency: 1,
 	}, inserter, &fakeDeadLetterPublisher{})
 	if err != nil {
 		t.Fatalf("NewStorageWriter() error = %v", err)
@@ -131,10 +143,11 @@ func TestStorageWriterPropagatesSleepAndCommitErrors(t *testing.T) {
 
 	inserter := &errorInserter{errs: []error{errors.New("temporary failure")}}
 	writer, err := NewStorageWriter(config.StorageWriterConfig{
-		BatchSize:      1,
-		MaxRetries:     1,
-		InitialBackoff: config.Duration(time.Millisecond),
-		MaxBackoff:     config.Duration(time.Millisecond),
+		BatchSize:         1,
+		MaxRetries:        1,
+		InitialBackoff:    config.Duration(time.Millisecond),
+		MaxBackoff:        config.Duration(time.Millisecond),
+		InsertConcurrency: 1,
 	}, inserter, &fakeDeadLetterPublisher{})
 	if err != nil {
 		t.Fatalf("NewStorageWriter() error = %v", err)

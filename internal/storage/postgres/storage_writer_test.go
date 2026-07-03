@@ -88,15 +88,152 @@ func TestStorageWriterIsolatesBadDatabaseRow(t *testing.T) {
 	}
 }
 
+func TestStorageWriterParallelInsertUsesConfiguredConcurrency(t *testing.T) {
+	t.Parallel()
+
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	inserter := &blockingInserter{entered: entered, release: release}
+	dlq := &fakeDeadLetterPublisher{}
+	writer := newTestStorageWriterWithConfig(t, config.StorageWriterConfig{
+		BatchSize:         2,
+		MaxRetries:        0,
+		InitialBackoff:    config.Duration(time.Millisecond),
+		MaxBackoff:        config.Duration(time.Millisecond),
+		InsertConcurrency: 2,
+	}, inserter, dlq)
+	committer := &fakeCommitter{}
+	items := []StorageBatchItem{
+		{Record: validStorageRecord("01934d7c-79b4-7000-8b69-001122334455")},
+		{Record: validStorageRecord("01934d7c-79b4-7000-8b69-001122334456")},
+		{Record: validStorageRecord("01934d7c-79b4-7000-8b69-001122334457")},
+		{Record: validStorageRecord("01934d7c-79b4-7000-8b69-001122334458")},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	done := make(chan struct {
+		result StorageWriteResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := writer.WriteBatch(ctx, items, committer)
+		done <- struct {
+			result StorageWriteResult
+			err    error
+		}{result: result, err: err}
+	}()
+
+	for range 2 {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for parallel insert workers")
+		}
+	}
+	select {
+	case completed := <-done:
+		t.Fatalf("WriteBatch completed before blocked inserts were released: result=%+v err=%v", completed.result, completed.err)
+	default:
+	}
+	close(release)
+
+	select {
+	case completed := <-done:
+		if completed.err != nil {
+			t.Fatalf("WriteBatch() error = %v", completed.err)
+		}
+		if completed.result.Inserted != 4 || completed.result.Deduplicated != 0 || completed.result.DeadLettered != 0 {
+			t.Fatalf("result = %+v", completed.result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for WriteBatch")
+	}
+	if !committer.committed {
+		t.Fatal("expected offsets to be committed after successful parallel inserts")
+	}
+	if inserter.maxActiveCount() < 2 {
+		t.Fatalf("max active inserts = %d, want at least 2", inserter.maxActiveCount())
+	}
+}
+
+func TestStorageWriterParallelInsertMergesChunkResults(t *testing.T) {
+	t.Parallel()
+
+	inserter := &fakeInserter{results: []InsertResult{
+		{Attempted: 2, Inserted: 1, Deduplicated: 1},
+		{Attempted: 2, Inserted: 2, Deduplicated: 0},
+	}}
+	writer := newTestStorageWriterWithConfig(t, config.StorageWriterConfig{
+		BatchSize:         2,
+		MaxRetries:        0,
+		InitialBackoff:    config.Duration(time.Millisecond),
+		MaxBackoff:        config.Duration(time.Millisecond),
+		InsertConcurrency: 2,
+	}, inserter, &fakeDeadLetterPublisher{})
+
+	result, err := writer.WriteBatch(context.Background(), []StorageBatchItem{
+		{Record: validStorageRecord("01934d7c-79b4-7000-8b69-001122334455")},
+		{Record: validStorageRecord("01934d7c-79b4-7000-8b69-001122334456")},
+		{Record: validStorageRecord("01934d7c-79b4-7000-8b69-001122334457")},
+		{Record: validStorageRecord("01934d7c-79b4-7000-8b69-001122334458")},
+	}, nil)
+	if err != nil {
+		t.Fatalf("WriteBatch() error = %v", err)
+	}
+	if result.Inserted != 3 || result.Deduplicated != 1 || result.DeadLettered != 0 {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestStorageWriterParallelInsertDoesNotCommitOnError(t *testing.T) {
+	t.Parallel()
+
+	inserter := &fakeInserter{badSourceHost: "bad-db"}
+	writer := newTestStorageWriterWithConfig(t, config.StorageWriterConfig{
+		BatchSize:         1,
+		MaxRetries:        0,
+		InitialBackoff:    config.Duration(time.Millisecond),
+		MaxBackoff:        config.Duration(time.Millisecond),
+		InsertConcurrency: 2,
+	}, inserter, failingDeadLetterPublisher{})
+	bad := validStorageRecord("01934d7c-79b4-7000-8b69-001122334455")
+	bad.SourceHost = "bad-db"
+	committer := &fakeCommitter{}
+
+	_, err := writer.WriteBatch(context.Background(), []StorageBatchItem{
+		{Record: bad},
+		{Record: validStorageRecord("01934d7c-79b4-7000-8b69-001122334456")},
+	}, committer)
+	if err == nil {
+		t.Fatal("expected WriteBatch error")
+	}
+	if committer.committed {
+		t.Fatal("offsets should not be committed when a parallel insert fails")
+	}
+}
+
 func newTestStorageWriter(t *testing.T, inserter FlowRecordInserter, publisher DeadLetterPublisher) *StorageWriter {
 	t.Helper()
 
-	writer, err := NewStorageWriter(config.StorageWriterConfig{
-		BatchSize:      1000,
-		MaxRetries:     0,
-		InitialBackoff: config.Duration(time.Millisecond),
-		MaxBackoff:     config.Duration(time.Millisecond),
+	return newTestStorageWriterWithConfig(t, config.StorageWriterConfig{
+		BatchSize:         1000,
+		MaxRetries:        0,
+		InitialBackoff:    config.Duration(time.Millisecond),
+		MaxBackoff:        config.Duration(time.Millisecond),
+		InsertConcurrency: 1,
 	}, inserter, publisher)
+}
+
+func newTestStorageWriterWithConfig(
+	t *testing.T,
+	cfg config.StorageWriterConfig,
+	inserter FlowRecordInserter,
+	publisher DeadLetterPublisher,
+) *StorageWriter {
+	t.Helper()
+
+	writer, err := NewStorageWriter(cfg, inserter, publisher)
 	if err != nil {
 		t.Fatalf("NewStorageWriter() error = %v", err)
 	}
@@ -129,11 +266,54 @@ func (i *fakeInserter) InsertFlowRecords(_ context.Context, records []domain.Nor
 	return InsertResult{Attempted: len(records), Inserted: len(records)}, nil
 }
 
+type blockingInserter struct {
+	mu        sync.Mutex
+	calls     int
+	active    int
+	maxActive int
+	entered   chan<- struct{}
+	release   <-chan struct{}
+}
+
+func (i *blockingInserter) InsertFlowRecords(ctx context.Context, records []domain.NormalizedFlowRecord) (InsertResult, error) {
+	i.mu.Lock()
+	i.calls++
+	i.active++
+	if i.active > i.maxActive {
+		i.maxActive = i.active
+	}
+	i.mu.Unlock()
+
+	i.entered <- struct{}{}
+	select {
+	case <-i.release:
+	case <-ctx.Done():
+		i.mu.Lock()
+		i.active--
+		i.mu.Unlock()
+		return InsertResult{}, ctx.Err()
+	}
+
+	i.mu.Lock()
+	i.active--
+	i.mu.Unlock()
+	return InsertResult{Attempted: len(records), Inserted: len(records)}, nil
+}
+
+func (i *blockingInserter) maxActiveCount() int {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.maxActive
+}
+
 type fakeDeadLetterPublisher struct {
+	mu     sync.Mutex
 	events []*flowv1.DeadLetterEvent
 }
 
 func (p *fakeDeadLetterPublisher) PublishDeadLetter(_ context.Context, event *flowv1.DeadLetterEvent) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.events = append(p.events, event)
 	return nil
 }

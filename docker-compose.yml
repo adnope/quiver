@@ -2,8 +2,6 @@ services:
   timescaledb:
     image: timescale/timescaledb:latest-pg17
     container_name: ${COMPOSE_PROJECT_NAME:-quiver}-timescaledb
-    # cpus: 2.0
-    # mem_limit: 2g
     env_file:
       - .env
     ports:
@@ -43,13 +41,33 @@ services:
     volumes:
       - redpanda_data:/var/lib/redpanda/data
 
+  kafka-init:
+    image: redpandadata/redpanda:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-quiver}-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+
+        echo "Creating Kafka topics..."
+
+        rpk topic create flow.raw \
+          --brokers=kafka:9092 \
+          --partitions=8 \
+          --replicas=1 \
+          || true
+
+        echo "flow.raw topic description:"
+        rpk topic describe flow.raw --brokers=kafka:9092
+
   migration:
     build:
       context: .
       dockerfile: Dockerfile.migration
     container_name: ${COMPOSE_PROJECT_NAME:-quiver}-migration
-    # cpus: 0.25
-    # mem_limit: 128m
     command: -path=/migrations -database="${QUIVER_DATABASE_DSN}" up
     depends_on:
       timescaledb:
@@ -57,8 +75,6 @@ services:
 
   quiver:
     build: .
-    # cpus: 1
-    # mem_limit: 256m
     command: ["-config", "${QUIVER_CONFIG:-/configs/quiver.dev.yaml}"]
     env_file:
       - .env
@@ -77,14 +93,14 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       migration:
         condition: service_completed_successfully
 
   quiver-lb:
     image: nginx:alpine
     container_name: ${COMPOSE_PROJECT_NAME:-quiver}-lb
-    # cpus: 0.10
-    # mem_limit: 128m
     env_file:
       - .env
     ports:
@@ -115,13 +131,10 @@ services:
         condition: service_started
 
   quiver-client:
-    # NetFlow v5 and v9 proxy configuration
     build:
       context: .
       dockerfile: Dockerfile.client
     container_name: ${COMPOSE_PROJECT_NAME:-quiver}-client
-    # cpus: 0.15
-    # mem_limit: 128m
     command: ["--backend-url", "http://quiver-lb:8080", "--api-key", "${NETFLOW_GATEWAY_DEMO_KEY}", "--listen-addr", "0.0.0.0:2055"]
     env_file:
       - .env

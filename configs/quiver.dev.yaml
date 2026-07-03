@@ -28,12 +28,13 @@ storage:
     after: "24h"
 
 storage_writer:
-  batch_size: 3000
+  batch_size: 2000
   flush_interval: "1s"
   max_retries: 10
   initial_backoff: "100ms"
   max_backoff: "5s"
   concurrency: 8
+  insert_concurrency: 8
 
 api:
   max_request_body_bytes: 5242880

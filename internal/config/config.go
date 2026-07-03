@@ -17,7 +17,8 @@ import (
 const (
 	DefaultMaxRequestBodyBytes         = 5 * 1024 * 1024
 	DefaultMaxBatchSize                = 1000
-	DefaultMaxStorageWriterBatchSize   = 5000
+	DefaultMaxStorageWriterBatchSize   = 20000
+	DefaultMaxStorageInsertConcurrency = 32
 	DefaultMaxQueryWindow              = Duration(7 * dayDuration)
 	DefaultQueryLimit                  = 100
 	DefaultMaxQueryLimit               = 1000
@@ -91,12 +92,13 @@ type ColumnstoreConfig struct {
 }
 
 type StorageWriterConfig struct {
-	BatchSize      int      `yaml:"batch_size"`
-	FlushInterval  Duration `yaml:"flush_interval"`
-	MaxRetries     int      `yaml:"max_retries"`
-	InitialBackoff Duration `yaml:"initial_backoff"`
-	MaxBackoff     Duration `yaml:"max_backoff"`
-	Concurrency    int      `yaml:"concurrency"`
+	BatchSize         int      `yaml:"batch_size"`
+	FlushInterval     Duration `yaml:"flush_interval"`
+	MaxRetries        int      `yaml:"max_retries"`
+	InitialBackoff    Duration `yaml:"initial_backoff"`
+	MaxBackoff        Duration `yaml:"max_backoff"`
+	Concurrency       int      `yaml:"concurrency"`
+	InsertConcurrency int      `yaml:"insert_concurrency"`
 }
 
 type APIConfig struct {
@@ -401,12 +403,13 @@ func Default() Config {
 			},
 		},
 		StorageWriter: StorageWriterConfig{
-			BatchSize:      3000,
-			FlushInterval:  Duration(time.Second),
-			MaxRetries:     10,
-			InitialBackoff: Duration(100 * time.Millisecond),
-			MaxBackoff:     Duration(5 * time.Second),
-			Concurrency:    8,
+			BatchSize:         3000,
+			FlushInterval:     Duration(time.Second),
+			MaxRetries:        10,
+			InitialBackoff:    Duration(100 * time.Millisecond),
+			MaxBackoff:        Duration(5 * time.Second),
+			Concurrency:       8,
+			InsertConcurrency: 1,
 		},
 		API: APIConfig{
 			MaxRequestBodyBytes: DefaultMaxRequestBodyBytes,
@@ -868,6 +871,9 @@ func (c Config) validateStorageWriter() error {
 	}
 	if c.StorageWriter.Concurrency <= 0 {
 		return fmt.Errorf("%w: storage_writer.concurrency must be positive", ErrInvalidConfig)
+	}
+	if c.StorageWriter.InsertConcurrency <= 0 || c.StorageWriter.InsertConcurrency > DefaultMaxStorageInsertConcurrency {
+		return fmt.Errorf("%w: storage_writer.insert_concurrency must be within 1..32", ErrInvalidConfig)
 	}
 	return nil
 }

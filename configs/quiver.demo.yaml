@@ -34,6 +34,7 @@ storage_writer:
   initial_backoff: "100ms"
   max_backoff: "5s"
   concurrency: 8
+  insert_concurrency: 1
 
 api:
   max_request_body_bytes: 5242880

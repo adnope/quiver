@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -44,15 +45,16 @@ type StorageWriteResult struct {
 }
 
 type StorageWriter struct {
-	inserter       FlowRecordInserter
-	deadLetters    DeadLetterPublisher
-	batchSize      int
-	maxRetries     int
-	initialBackoff time.Duration
-	maxBackoff     time.Duration
-	now            func() time.Time
-	sleep          func(context.Context, time.Duration) error
-	metrics        *observability.Registry
+	inserter          FlowRecordInserter
+	deadLetters       DeadLetterPublisher
+	batchSize         int
+	insertConcurrency int
+	maxRetries        int
+	initialBackoff    time.Duration
+	maxBackoff        time.Duration
+	now               func() time.Time
+	sleep             func(context.Context, time.Duration) error
+	metrics           *observability.Registry
 }
 
 func NewStorageWriter(
@@ -69,6 +71,9 @@ func NewStorageWriter(
 	if cfg.BatchSize <= 0 {
 		return nil, fmt.Errorf("%w: batch_size must be positive", ErrInvalidStorageWriter)
 	}
+	if cfg.InsertConcurrency <= 0 || cfg.InsertConcurrency > config.DefaultMaxStorageInsertConcurrency {
+		return nil, fmt.Errorf("%w: insert_concurrency must be within 1..32", ErrInvalidStorageWriter)
+	}
 	if cfg.MaxRetries < 0 {
 		return nil, fmt.Errorf("%w: max_retries cannot be negative", ErrInvalidStorageWriter)
 	}
@@ -76,14 +81,15 @@ func NewStorageWriter(
 		return nil, fmt.Errorf("%w: backoff durations must be positive", ErrInvalidStorageWriter)
 	}
 	return &StorageWriter{
-		inserter:       inserter,
-		deadLetters:    deadLetters,
-		batchSize:      cfg.BatchSize,
-		maxRetries:     cfg.MaxRetries,
-		initialBackoff: cfg.InitialBackoff.Std(),
-		maxBackoff:     cfg.MaxBackoff.Std(),
-		now:            time.Now,
-		sleep:          sleepContext,
+		inserter:          inserter,
+		deadLetters:       deadLetters,
+		batchSize:         cfg.BatchSize,
+		insertConcurrency: cfg.InsertConcurrency,
+		maxRetries:        cfg.MaxRetries,
+		initialBackoff:    cfg.InitialBackoff.Std(),
+		maxBackoff:        cfg.MaxBackoff.Std(),
+		now:               time.Now,
+		sleep:             sleepContext,
 	}, nil
 }
 
@@ -124,17 +130,13 @@ func (w *StorageWriter) WriteBatch(
 		valid = append(valid, item)
 	}
 
-	for len(valid) > 0 {
-		size := min(len(valid), w.batchSize)
-		insertResult, err := w.insertWithIsolation(ctx, valid[:size])
-		if err != nil {
-			return StorageWriteResult{}, err
-		}
-		result.Inserted += insertResult.Inserted
-		result.Deduplicated += insertResult.Deduplicated
-		result.DeadLettered += insertResult.DeadLettered
-		valid = valid[size:]
+	insertResult, err := w.writeValidItems(ctx, valid)
+	if err != nil {
+		return StorageWriteResult{}, err
 	}
+	result.Inserted += insertResult.Inserted
+	result.Deduplicated += insertResult.Deduplicated
+	result.DeadLettered += insertResult.DeadLettered
 
 	if committer != nil {
 		if err := committer.Commit(ctx); err != nil {
@@ -143,6 +145,110 @@ func (w *StorageWriter) WriteBatch(
 	}
 	w.recordMetrics(result, start)
 	return result, nil
+}
+
+func (w *StorageWriter) writeValidItems(ctx context.Context, items []StorageBatchItem) (StorageWriteResult, error) {
+	chunks := splitStorageBatchItems(items, w.batchSize)
+	if len(chunks) == 0 {
+		return StorageWriteResult{}, nil
+	}
+	if w.insertConcurrency == 1 || len(chunks) == 1 {
+		return w.writeValidItemsSerial(ctx, chunks)
+	}
+	return w.writeValidItemsParallel(ctx, chunks)
+}
+
+func (w *StorageWriter) writeValidItemsSerial(ctx context.Context, chunks [][]StorageBatchItem) (StorageWriteResult, error) {
+	var result StorageWriteResult
+	for _, chunk := range chunks {
+		insertResult, err := w.insertWithIsolation(ctx, chunk)
+		if err != nil {
+			return StorageWriteResult{}, err
+		}
+		result.Inserted += insertResult.Inserted
+		result.Deduplicated += insertResult.Deduplicated
+		result.DeadLettered += insertResult.DeadLettered
+	}
+	return result, nil
+}
+
+type storageInsertChunkResult struct {
+	result StorageWriteResult
+	err    error
+}
+
+func (w *StorageWriter) writeValidItemsParallel(ctx context.Context, chunks [][]StorageBatchItem) (StorageWriteResult, error) {
+	workerCount := min(w.insertConcurrency, len(chunks))
+	workCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	jobs := make(chan []StorageBatchItem)
+	results := make(chan storageInsertChunkResult, len(chunks))
+	var wg sync.WaitGroup
+	for range workerCount {
+		wg.Go(func() {
+			for chunk := range jobs {
+				if err := workCtx.Err(); err != nil {
+					results <- storageInsertChunkResult{err: err}
+					continue
+				}
+				insertResult, err := w.insertWithIsolation(workCtx, chunk)
+				if err != nil {
+					cancel()
+				}
+				results <- storageInsertChunkResult{result: insertResult, err: err}
+			}
+		})
+	}
+
+	dispatched := 0
+	for _, chunk := range chunks {
+		if err := workCtx.Err(); err != nil {
+			break
+		}
+		select {
+		case jobs <- chunk:
+			dispatched++
+		case <-workCtx.Done():
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	close(results)
+
+	var result StorageWriteResult
+	var firstErr error
+	for insertResult := range results {
+		if insertResult.err != nil && firstErr == nil {
+			firstErr = insertResult.err
+		}
+		result.Inserted += insertResult.result.Inserted
+		result.Deduplicated += insertResult.result.Deduplicated
+		result.DeadLettered += insertResult.result.DeadLettered
+	}
+	if firstErr != nil {
+		return StorageWriteResult{}, firstErr
+	}
+	if dispatched < len(chunks) {
+		if err := workCtx.Err(); err != nil {
+			return StorageWriteResult{}, fmt.Errorf("write storage chunks: %w", err)
+		}
+		return StorageWriteResult{}, fmt.Errorf("write storage chunks: dispatched %d of %d chunks", dispatched, len(chunks))
+	}
+	return result, nil
+}
+
+func splitStorageBatchItems(items []StorageBatchItem, batchSize int) [][]StorageBatchItem {
+	if len(items) == 0 {
+		return nil
+	}
+	chunks := make([][]StorageBatchItem, 0, (len(items)+batchSize-1)/batchSize)
+	for len(items) > 0 {
+		size := min(len(items), batchSize)
+		chunks = append(chunks, items[:size])
+		items = items[size:]
+	}
+	return chunks
 }
 
 func (w *StorageWriter) insertWithIsolation(ctx context.Context, items []StorageBatchItem) (StorageWriteResult, error) {

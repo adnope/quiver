@@ -32,10 +32,11 @@ func TestProcessBatchSequential(t *testing.T) {
 	inserter := &fakeInserter{}
 	dlq := &fakeDeadLetterPublisher{}
 	sw, err := postgres.NewStorageWriter(config.StorageWriterConfig{
-		BatchSize:      1000,
-		MaxRetries:     0,
-		InitialBackoff: config.Duration(time.Millisecond),
-		MaxBackoff:     config.Duration(time.Millisecond),
+		BatchSize:         1000,
+		MaxRetries:        0,
+		InitialBackoff:    config.Duration(time.Millisecond),
+		MaxBackoff:        config.Duration(time.Millisecond),
+		InsertConcurrency: 1,
 	}, inserter, dlq)
 	if err != nil {
 		t.Fatalf("failed to create storage writer: %v", err)
@@ -82,10 +83,11 @@ func TestProcessBatchConcurrentSuccess(t *testing.T) {
 	inserter := &fakeInserter{}
 	dlq := &fakeDeadLetterPublisher{}
 	sw, err := postgres.NewStorageWriter(config.StorageWriterConfig{
-		BatchSize:      1000,
-		MaxRetries:     0,
-		InitialBackoff: config.Duration(time.Millisecond),
-		MaxBackoff:     config.Duration(time.Millisecond),
+		BatchSize:         1000,
+		MaxRetries:        0,
+		InitialBackoff:    config.Duration(time.Millisecond),
+		MaxBackoff:        config.Duration(time.Millisecond),
+		InsertConcurrency: 1,
 	}, inserter, dlq)
 	if err != nil {
 		t.Fatalf("failed to create storage writer: %v", err)
@@ -141,10 +143,11 @@ func TestProcessBatchConcurrentFailure(t *testing.T) {
 		failPublish: true,
 	}
 	sw, err := postgres.NewStorageWriter(config.StorageWriterConfig{
-		BatchSize:      100,
-		MaxRetries:     0,
-		InitialBackoff: config.Duration(time.Millisecond),
-		MaxBackoff:     config.Duration(time.Millisecond),
+		BatchSize:         100,
+		MaxRetries:        0,
+		InitialBackoff:    config.Duration(time.Millisecond),
+		MaxBackoff:        config.Duration(time.Millisecond),
+		InsertConcurrency: 1,
 	}, inserter, dlq)
 	if err != nil {
 		t.Fatalf("failed to create storage writer: %v", err)
@@ -190,10 +193,11 @@ func TestProcessBatchConcurrentPanic(t *testing.T) {
 	}
 	dlq := &fakeDeadLetterPublisher{}
 	sw, err := postgres.NewStorageWriter(config.StorageWriterConfig{
-		BatchSize:      100,
-		MaxRetries:     0,
-		InitialBackoff: config.Duration(time.Millisecond),
-		MaxBackoff:     config.Duration(time.Millisecond),
+		BatchSize:         100,
+		MaxRetries:        0,
+		InitialBackoff:    config.Duration(time.Millisecond),
+		MaxBackoff:        config.Duration(time.Millisecond),
+		InsertConcurrency: 1,
 	}, inserter, dlq)
 	if err != nil {
 		t.Fatalf("failed to create storage writer: %v", err)
@@ -244,10 +248,11 @@ func TestProcessBatchConcurrentDeduplicationAndDLQ(t *testing.T) {
 	}
 	dlq := &fakeDeadLetterPublisher{}
 	sw, err := postgres.NewStorageWriter(config.StorageWriterConfig{
-		BatchSize:      1000,
-		MaxRetries:     0,
-		InitialBackoff: config.Duration(time.Millisecond),
-		MaxBackoff:     config.Duration(time.Millisecond),
+		BatchSize:         1000,
+		MaxRetries:        0,
+		InitialBackoff:    config.Duration(time.Millisecond),
+		MaxBackoff:        config.Duration(time.Millisecond),
+		InsertConcurrency: 1,
 	}, inserter, dlq)
 	if err != nil {
 		t.Fatalf("failed to create storage writer: %v", err)
@@ -441,7 +446,13 @@ func TestNewPipeline_Errors(t *testing.T) {
 	}
 
 	// Nil publisher
-	sw, _ := postgres.NewStorageWriter(config.StorageWriterConfig{}, &fakeInserter{}, &fakeDeadLetterPublisher{})
+	sw, _ := postgres.NewStorageWriter(config.StorageWriterConfig{
+		BatchSize:         1,
+		MaxRetries:        0,
+		InitialBackoff:    config.Duration(time.Millisecond),
+		MaxBackoff:        config.Duration(time.Millisecond),
+		InsertConcurrency: 1,
+	}, &fakeInserter{}, &fakeDeadLetterPublisher{})
 	_, err = NewPipeline(cfg, sw, nil, nil, nil)
 	if err == nil {
 		t.Error("expected publisher error")
@@ -502,10 +513,11 @@ func TestPipeline_StartStop(t *testing.T) {
 	inserter := &fakeInserter{}
 	dlq := &fakeDeadLetterPublisher{}
 	sw, err := postgres.NewStorageWriter(config.StorageWriterConfig{
-		BatchSize:      1000,
-		MaxRetries:     0,
-		InitialBackoff: config.Duration(time.Millisecond),
-		MaxBackoff:     config.Duration(time.Millisecond),
+		BatchSize:         1000,
+		MaxRetries:        0,
+		InitialBackoff:    config.Duration(time.Millisecond),
+		MaxBackoff:        config.Duration(time.Millisecond),
+		InsertConcurrency: 1,
 	}, inserter, dlq)
 	if err != nil {
 		t.Fatalf("failed to create storage writer: %v", err)
@@ -545,10 +557,11 @@ func TestNewPipeline(t *testing.T) {
 	inserter := &fakeInserter{}
 	dlq := &fakeDeadLetterPublisher{}
 	sw, err := postgres.NewStorageWriter(config.StorageWriterConfig{
-		BatchSize:      1000,
-		MaxRetries:     0,
-		InitialBackoff: config.Duration(time.Millisecond),
-		MaxBackoff:     config.Duration(time.Millisecond),
+		BatchSize:         1000,
+		MaxRetries:        0,
+		InitialBackoff:    config.Duration(time.Millisecond),
+		MaxBackoff:        config.Duration(time.Millisecond),
+		InsertConcurrency: 1,
 	}, inserter, dlq)
 	if err != nil {
 		t.Fatalf("failed to create storage writer: %v", err)
@@ -603,10 +616,11 @@ func TestProcessBatch_CorruptAndInvalid(t *testing.T) {
 	inserter := &fakeInserter{}
 	dlq := &fakeDeadLetterPublisher{}
 	sw, err := postgres.NewStorageWriter(config.StorageWriterConfig{
-		BatchSize:      1000,
-		MaxRetries:     0,
-		InitialBackoff: config.Duration(time.Millisecond),
-		MaxBackoff:     config.Duration(time.Millisecond),
+		BatchSize:         1000,
+		MaxRetries:        0,
+		InitialBackoff:    config.Duration(time.Millisecond),
+		MaxBackoff:        config.Duration(time.Millisecond),
+		InsertConcurrency: 1,
 	}, inserter, dlq)
 	if err != nil {
 		t.Fatalf("failed to create storage writer: %v", err)
@@ -670,10 +684,11 @@ func TestProcessBatchConcurrent_CorruptAndInvalid(t *testing.T) {
 	inserter := &fakeInserter{}
 	dlq := &fakeDeadLetterPublisher{}
 	sw, err := postgres.NewStorageWriter(config.StorageWriterConfig{
-		BatchSize:      1000,
-		MaxRetries:     0,
-		InitialBackoff: config.Duration(time.Millisecond),
-		MaxBackoff:     config.Duration(time.Millisecond),
+		BatchSize:         1000,
+		MaxRetries:        0,
+		InitialBackoff:    config.Duration(time.Millisecond),
+		MaxBackoff:        config.Duration(time.Millisecond),
+		InsertConcurrency: 1,
 	}, inserter, dlq)
 	if err != nil {
 		t.Fatalf("failed to create storage writer: %v", err)
@@ -706,5 +721,59 @@ func TestProcessBatchConcurrent_CorruptAndInvalid(t *testing.T) {
 	}
 	if len(mockPub.dlqEvents) != 2 {
 		t.Errorf("expected 2 DLQ events, got %d", len(mockPub.dlqEvents))
+	}
+}
+
+func TestStoragePollBatchSizeScalesWithInsertConcurrency(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  config.StorageWriterConfig
+		want int
+	}{
+		{
+			name: "default fallback",
+			cfg: config.StorageWriterConfig{
+				BatchSize:         0,
+				InsertConcurrency: 1,
+			},
+			want: 1000,
+		},
+		{
+			name: "serial insert uses batch size",
+			cfg: config.StorageWriterConfig{
+				BatchSize:         3000,
+				InsertConcurrency: 1,
+			},
+			want: 3000,
+		},
+		{
+			name: "parallel insert scales poll size",
+			cfg: config.StorageWriterConfig{
+				BatchSize:         2000,
+				InsertConcurrency: 4,
+			},
+			want: 8000,
+		},
+		{
+			name: "invalid insert concurrency does not scale",
+			cfg: config.StorageWriterConfig{
+				BatchSize:         2000,
+				InsertConcurrency: 0,
+			},
+			want: 2000,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := storagePollBatchSize(tt.cfg)
+			if got != tt.want {
+				t.Fatalf("storagePollBatchSize() = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
