@@ -350,4 +350,105 @@ func TestFlowRepositoryIntegration(t *testing.T) {
 			t.Fatalf("unexpected long-window TopPorts result: %+v", longPorts)
 		}
 	})
+
+	// 8. Test TopTalkers
+	t.Run("TopTalkers", func(t *testing.T) {
+		query := AggregationQuery{
+			From:      seedTime.Add(-10 * time.Minute),
+			To:        seedTime.Add(10 * time.Minute),
+			Metric:    AggregationMetricBytes,
+			Limit:     10,
+			Direction: AggregationDirectionSrc,
+		}
+		talkers, err := flowRepo.TopTalkers(ctx, query)
+		if err != nil {
+			t.Fatalf("TopTalkers (src) failed: %v", err)
+		}
+		if len(talkers) != 2 {
+			t.Fatalf("Expected 2 talker rows, got %d", len(talkers))
+		}
+		if talkers[0].IP != netip.MustParseAddr("10.0.0.1") || talkers[0].Value != 1500 {
+			t.Errorf("Expected first talker 10.0.0.1 with value 1500, got %v and %d", talkers[0].IP, talkers[0].Value)
+		}
+
+		query.Direction = AggregationDirectionDst
+		talkersDst, err := flowRepo.TopTalkers(ctx, query)
+		if err != nil {
+			t.Fatalf("TopTalkers (dst) failed: %v", err)
+		}
+		if len(talkersDst) != 2 {
+			t.Fatalf("Expected 2 dst talker rows, got %d", len(talkersDst))
+		}
+	})
+
+	// 9. Test Query Validations
+	t.Run("QueryValidations", func(t *testing.T) {
+		// Invalid metric
+		badQuery := AggregationQuery{
+			From:      seedTime.Add(-10 * time.Minute),
+			To:        seedTime.Add(10 * time.Minute),
+			Metric:    "invalid_metric",
+			Limit:     10,
+			Direction: AggregationDirectionSrc,
+		}
+		_, err := flowRepo.TopPorts(ctx, badQuery)
+		if err == nil {
+			t.Error("expected error for invalid metric")
+		}
+
+		// Negative limit
+		badQuery.Metric = AggregationMetricBytes
+		badQuery.Limit = -1
+		_, err = flowRepo.TopPorts(ctx, badQuery)
+		if err == nil {
+			t.Error("expected error for negative limit")
+		}
+
+		// Invalid direction
+		badQuery.Limit = 10
+		badQuery.Direction = "invalid_direction"
+		_, err = flowRepo.TopTalkers(ctx, badQuery)
+		if err == nil {
+			t.Error("expected error for invalid direction in TopTalkers")
+		}
+	})
+
+	// 10. Test DB Accessor
+	t.Run("DBAccessor", func(t *testing.T) {
+		if flowRepo.DB() != db {
+			t.Error("expected DB() accessor to return the database instance")
+		}
+	})
+
+	// 11. Test Aggregation Cursor
+	t.Run("AggregationCursor", func(t *testing.T) {
+		portVal := uint16(54321)
+		cursor := &AggregationCursor{
+			Endpoint:  AggregationEndpointTopPorts,
+			Metric:    AggregationMetricBytes,
+			Direction: AggregationDirectionSrc,
+			Value:     1500,
+			Port:      &portVal,
+		}
+		query := AggregationQuery{
+			From:      seedTime.Add(-10 * time.Minute),
+			To:        seedTime.Add(10 * time.Minute),
+			Metric:    AggregationMetricBytes,
+			Limit:     10,
+			Direction: AggregationDirectionSrc,
+			Cursor:    cursor,
+		}
+		ports, err := flowRepo.TopPorts(ctx, query)
+		if err != nil {
+			t.Fatalf("TopPorts with cursor failed: %v", err)
+		}
+		// Since value is 1500, we should only see ports with value < 1500 or (value == 1500 and port > 54321)
+		// Our second port was 80 with bytes 1000, so we should see 1 row (port 80).
+		if len(ports) != 1 {
+			t.Fatalf("Expected 1 port row after cursor, got %d: %+v", len(ports), ports)
+		}
+		if ports[0].Port != 12345 {
+			t.Errorf("Expected port 12345, got %d", ports[0].Port)
+		}
+	})
 }

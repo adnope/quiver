@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/adnope/quiver/internal/config"
+	"github.com/adnope/quiver/internal/domain"
 	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
 	kafkapub "github.com/adnope/quiver/internal/kafka"
 )
@@ -408,5 +409,93 @@ func assertNoHTTPResponse(t *testing.T, done <-chan *httptest.ResponseRecorder) 
 	case recorder := <-done:
 		t.Fatalf("response returned before Kafka ACK: status=%d body=%s", recorder.Code, recorder.Body.String())
 	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+func TestCursorCodecFromConfigAndServerConstructorBranches(t *testing.T) {
+	t.Parallel()
+
+	cfg := validAPICfg()
+	codec, err := cursorCodecFromConfig(cfg, nil)
+	if codec != nil || !errors.Is(err, errCursorSecretNotConfigured) {
+		t.Fatalf("nil lookup codec=%v err=%v", codec, err)
+	}
+	cfg.API.Cursor.HMACSecretEnv = "CURSOR_SECRET"
+	_, err = cursorCodecFromConfig(cfg, func(string) string { return "short" })
+	if !errors.Is(err, ErrInvalidCursor) {
+		t.Fatalf("short secret error = %v, want ErrInvalidCursor", err)
+	}
+	codec, err = cursorCodecFromConfig(cfg, envLookupWithCursor())
+	if err != nil || codec == nil {
+		t.Fatalf("valid cursor codec=%v err=%v", codec, err)
+	}
+
+	cfgWithoutCursor := validAPICfg()
+	_, err = NewServerWithStores(cfgWithoutCursor, newImmediatePublisher(), &fakeFlowStore{}, nil, envLookup())
+	if !errors.Is(err, ErrInvalidCursor) {
+		t.Fatalf("NewServerWithStores without cursor error = %v, want ErrInvalidCursor", err)
+	}
+
+	badAuthCfg := validAPICfg()
+	badAuthCfg.API.Keys = []config.APIKeyConfig{{Name: "missing", KeyEnv: "MISSING_KEY", Scopes: []string{"query"}}}
+	_, err = NewServer(badAuthCfg, newImmediatePublisher(), envLookup())
+	if err == nil {
+		t.Fatal("NewServer() with missing API key env succeeded")
+	}
+
+	var nilServer *Server
+	recorder := httptest.NewRecorder()
+	nilServer.Handler().ServeHTTP(recorder, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/missing", nil))
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("nil server status = %d, want 404", recorder.Code)
+	}
+}
+
+func TestIngestAndZeekPureHelpers(t *testing.T) {
+	t.Parallel()
+
+	if _, err := parseRequiredTime("bad"); err == nil {
+		t.Fatal("bad time should fail")
+	}
+	port := uint32(65535)
+	badPort := uint32(65536)
+	if invalidPort(&port) || !invalidPort(nil) || !invalidPort(&badPort) {
+		t.Fatal("invalidPort returned unexpected values")
+	}
+	if !requiresPorts(domain.TransportProtocolTCP) || !requiresPorts(domain.TransportProtocolUDP) || requiresPorts(domain.TransportProtocolICMP) {
+		t.Fatal("requiresPorts returned unexpected values")
+	}
+	if protoTransportProtocol(domain.TransportProtocolGRE) != flowv1.TransportProtocol_TRANSPORT_PROTOCOL_GRE ||
+		protoTransportProtocol(domain.TransportProtocol("unknown-value")) != flowv1.TransportProtocol_TRANSPORT_PROTOCOL_UNKNOWN {
+		t.Fatal("protoTransportProtocol returned unexpected values")
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.10:54321"
+	if clientIP(req) != "203.0.113.10" {
+		t.Fatalf("clientIP with port = %q", clientIP(req))
+	}
+	req.RemoteAddr = "203.0.113.11"
+	if clientIP(req) != "203.0.113.11" {
+		t.Fatalf("clientIP without port = %q", clientIP(req))
+	}
+	req.RemoteAddr = "bad addr"
+	if clientIP(req) != "" {
+		t.Fatalf("clientIP bad addr = %q", clientIP(req))
+	}
+	if data, validationErr := zeekRecordBytes(json.RawMessage(`"{\"ts\":1}"`)); validationErr != nil || string(data) != `{"ts":1}` {
+		t.Fatalf("zeek string bytes=%s err=%+v", data, validationErr)
+	}
+	if _, validationErr := zeekRecordBytes(json.RawMessage(`""`)); validationErr == nil || validationErr.Code != "invalid_zeek_conn" {
+		t.Fatalf("empty zeek string validationErr = %+v", validationErr)
+	}
+	if string(bytesTrimSpace([]byte(" \n demo \t"))) != "demo" {
+		t.Fatal("bytesTrimSpace did not trim ASCII whitespace")
+	}
+	truncated, wasTruncated := truncateDebugPayload([]byte("abcdef"), 3)
+	if string(truncated) != "abc" || !wasTruncated {
+		t.Fatalf("truncateDebugPayload = %q/%v", truncated, wasTruncated)
+	}
+	if hash := sha256Hex([]byte("demo")); len(hash) != 64 {
+		t.Fatalf("sha256Hex length = %d", len(hash))
 	}
 }

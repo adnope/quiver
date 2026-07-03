@@ -10,6 +10,7 @@ import (
 	quiverauth "github.com/adnope/quiver/internal/auth"
 	"github.com/adnope/quiver/internal/collector"
 	"github.com/adnope/quiver/internal/config"
+	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
 )
 
 func TestPluginBuildsCollectorFromStrictSettings(t *testing.T) {
@@ -123,5 +124,19 @@ func TestPluginOpenHonorsContext(t *testing.T) {
 	cancel()
 	if err := runtime.Open(ctx); err == nil || !strings.Contains(err.Error(), context.Canceled.Error()) {
 		t.Fatalf("expected context cancellation, got %v", err)
+	}
+}
+
+func TestPluginMethods(t *testing.T) {
+	t.Parallel()
+	p := NewPlugin()
+	if p.Type() != PluginType {
+		t.Errorf("Type() = %q, want %q", p.Type(), PluginType)
+	}
+	if p.SettingsMode() != collector.SettingsRequired {
+		t.Errorf("SettingsMode() = %v, want SettingsRequired", p.SettingsMode())
+	}
+	if p.SourceType() != flowv1.SourceType_SOURCE_TYPE_ZEEK_CONN_JSON {
+		t.Errorf("SourceType() = %v, want ZEEK_CONN_JSON", p.SourceType())
 	}
 }

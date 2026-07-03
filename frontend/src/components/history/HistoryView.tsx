@@ -250,11 +250,13 @@ export function HistoryView() {
         <div className="grid gap-4 lg:grid-cols-2">
           {CHARTS.map((card) => {
             const chart = charts[card.widget]
+            const isTallChart = card.widget === 'ingestion' || card.widget === 'dbLatency'
+
             return (
               <article
                 key={card.widget}
                 className={`rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4 shadow-sm transition-all duration-200 ease-in-out hover:border-sky-500/40 ${
-                  card.widget === 'ingestion' ? 'min-h-[434px]' : 'min-h-[318px]'
+                  isTallChart ? 'min-h-[434px]' : 'min-h-[318px]'
                 }`}
               >
                 <div className="mb-4 flex items-start justify-between gap-4">
@@ -278,7 +280,7 @@ export function HistoryView() {
                   series={chart.series}
                   isLoading={query.isLoading}
                   onRetry={() => void query.refetch()}
-                  heightClass={card.widget === 'ingestion' ? 'h-72' : 'h-44'}
+                  heightClass={isTallChart ? 'h-72' : 'h-44'}
                   {...(query.isError ? { error: 'Metric aggregates unavailable. Try again.' } : {})}
                 />
                 <div className="mt-3 flex flex-wrap gap-2">

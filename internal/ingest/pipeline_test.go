@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -427,4 +428,283 @@ func (h *discardLoggerHandler) WithGroup(name string) slog.Handler              
 
 func newDiscardLogger() *slog.Logger {
 	return slog.New(&discardLoggerHandler{})
+}
+
+func TestNewPipeline_Errors(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+
+	// Nil storage writer
+	_, err := NewPipeline(cfg, nil, &mockPublisher{}, nil, nil)
+	if err == nil {
+		t.Error("expected storage writer error")
+	}
+
+	// Nil publisher
+	sw, _ := postgres.NewStorageWriter(config.StorageWriterConfig{}, &fakeInserter{}, &fakeDeadLetterPublisher{})
+	_, err = NewPipeline(cfg, sw, nil, nil, nil)
+	if err == nil {
+		t.Error("expected publisher error")
+	}
+}
+
+func TestFranzCommitter(t *testing.T) {
+	t.Parallel()
+	client := &mockKafkaClient{}
+
+	// Commit empty records
+	committer := &franzCommitter{client: client, records: nil}
+	if err := committer.Commit(context.Background()); err != nil {
+		t.Errorf("unexpected error committing empty records: %v", err)
+	}
+	if client.commitCalls != 0 {
+		t.Errorf("expected 0 commits, got %d", client.commitCalls)
+	}
+
+	// Commit some records
+	records := []*kgo.Record{{Value: []byte("test")}}
+	committer = &franzCommitter{client: client, records: records}
+	if err := committer.Commit(context.Background()); err != nil {
+		t.Errorf("unexpected error committing: %v", err)
+	}
+	if client.commitCalls != 1 {
+		t.Errorf("expected 1 commit, got %d", client.commitCalls)
+	}
+}
+
+func TestPipeline_PollKafkaLag_EdgeCases(t *testing.T) {
+	t.Parallel()
+	pipeline := &Pipeline{
+		metrics: nil, // pollKafkaLag should exit early
+	}
+	pipeline.wg.Add(1)
+	pipeline.pollKafkaLag(context.Background())
+
+	pipeline2 := &Pipeline{
+		metrics: observability.NewRegistry(),
+		client:  &mockKafkaClient{}, // not a *kgo.Client, should exit early
+	}
+	pipeline2.wg.Add(1)
+	pipeline2.pollKafkaLag(context.Background())
+}
+
+func TestPipeline_CollectKafkaLag_EdgeCases(t *testing.T) {
+	t.Parallel()
+	pipeline := &Pipeline{
+		metrics: nil, // collectKafkaLag should exit early
+	}
+	pipeline.collectKafkaLag(context.Background(), nil)
+}
+
+func TestPipeline_StartStop(t *testing.T) {
+	t.Parallel()
+
+	inserter := &fakeInserter{}
+	dlq := &fakeDeadLetterPublisher{}
+	sw, err := postgres.NewStorageWriter(config.StorageWriterConfig{
+		BatchSize:      1000,
+		MaxRetries:     0,
+		InitialBackoff: config.Duration(time.Millisecond),
+		MaxBackoff:     config.Duration(time.Millisecond),
+	}, inserter, dlq)
+	if err != nil {
+		t.Fatalf("failed to create storage writer: %v", err)
+	}
+
+	mockKafka := &mockKafkaClient{}
+	metrics := observability.NewRegistry()
+	mockPub := &mockPublisher{}
+
+	pipeline := &Pipeline{
+		cfg:           config.Default(),
+		client:        mockKafka,
+		storageWriter: sw,
+		publisher:     mockPub,
+		metrics:       metrics,
+		logger:        newDiscardLogger(),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	pipeline.Start(ctx)
+	time.Sleep(5 * time.Millisecond)
+	pipeline.Stop()
+}
+
+func TestNewPipeline(t *testing.T) {
+	t.Parallel()
+
+	// 1. Nil storage writer
+	_, err := NewPipeline(config.Config{}, nil, &mockPublisher{}, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "storage writer is nil") {
+		t.Errorf("expected storage writer is nil error, got %v", err)
+	}
+
+	// 2. Nil publisher
+	inserter := &fakeInserter{}
+	dlq := &fakeDeadLetterPublisher{}
+	sw, err := postgres.NewStorageWriter(config.StorageWriterConfig{
+		BatchSize:      1000,
+		MaxRetries:     0,
+		InitialBackoff: config.Duration(time.Millisecond),
+		MaxBackoff:     config.Duration(time.Millisecond),
+	}, inserter, dlq)
+	if err != nil {
+		t.Fatalf("failed to create storage writer: %v", err)
+	}
+
+	_, err = NewPipeline(config.Config{}, sw, nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "publisher is nil") {
+		t.Errorf("expected publisher is nil error, got %v", err)
+	}
+
+	// 3. Success path
+	cfg := config.Default()
+	cfg.Kafka.Brokers = []string{"localhost:9092"}
+	cfg.Kafka.Topics.Raw = "raw-topic"
+	pipe, err := NewPipeline(cfg, sw, &mockPublisher{}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewPipeline failed: %v", err)
+	}
+	if pipe.logger == nil {
+		t.Error("expected logger to be initialized to default")
+	}
+}
+
+func TestProcessBatch_CorruptAndInvalid(t *testing.T) {
+	t.Parallel()
+
+	// 1. Corrupt record (invalid protobuf)
+	corruptRecord := &kgo.Record{
+		Topic: "flow-events",
+		Value: []byte("corrupt data that is not a protobuf message"),
+	}
+
+	// 2. Invalid envelope (missing fields, e.g. schema version)
+	invalidEnvelope := &flowv1.RawFlowEventEnvelope{
+		EventId:       "01934d7c-79b4-7000-8b69-001122334455",
+		SchemaVersion: "bad-version",
+	}
+	invalidEnvelopeBytes, err := proto.Marshal(invalidEnvelope)
+	if err != nil {
+		t.Fatalf("failed to marshal invalid envelope: %v", err)
+	}
+	invalidRecord := &kgo.Record{
+		Topic: "flow-events",
+		Value: invalidEnvelopeBytes,
+	}
+
+	// 3. Valid record
+	validRec := testRecord(t, 1)
+
+	records := []*kgo.Record{corruptRecord, invalidRecord, validRec}
+
+	inserter := &fakeInserter{}
+	dlq := &fakeDeadLetterPublisher{}
+	sw, err := postgres.NewStorageWriter(config.StorageWriterConfig{
+		BatchSize:      1000,
+		MaxRetries:     0,
+		InitialBackoff: config.Duration(time.Millisecond),
+		MaxBackoff:     config.Duration(time.Millisecond),
+	}, inserter, dlq)
+	if err != nil {
+		t.Fatalf("failed to create storage writer: %v", err)
+	}
+
+	mockKafka := &mockKafkaClient{}
+	metrics := observability.NewRegistry()
+	mockPub := &mockPublisher{}
+
+	pipeline := &Pipeline{
+		cfg:           config.Default(),
+		client:        mockKafka,
+		storageWriter: sw,
+		publisher:     mockPub,
+		metrics:       metrics,
+		logger:        newDiscardLogger(),
+	}
+
+	err = pipeline.processBatch(context.Background(), records)
+	if err != nil {
+		t.Fatalf("processBatch failed: %v", err)
+	}
+
+	// We expect the valid record to be inserted, and the 2 bad records to be sent to DLQ
+	if inserter.calls != 1 {
+		t.Errorf("expected 1 inserter call, got %d", inserter.calls)
+	}
+	if len(mockPub.dlqEvents) != 2 {
+		t.Errorf("expected 2 DLQ events, got %d", len(mockPub.dlqEvents))
+	}
+}
+
+func TestProcessBatchConcurrent_CorruptAndInvalid(t *testing.T) {
+	t.Parallel()
+
+	// 250 records to trigger concurrent process (> 200)
+	records := make([]*kgo.Record, 250)
+	for i := range 250 {
+		records[i] = testRecord(t, i)
+	}
+
+	// Make one corrupt and one invalid
+	records[10] = &kgo.Record{
+		Topic: "flow-events",
+		Value: []byte("corrupt data that is not a protobuf message"),
+	}
+
+	invalidEnvelope := &flowv1.RawFlowEventEnvelope{
+		EventId:       "01934d7c-79b4-7000-8b69-001122334455",
+		SchemaVersion: "bad-version",
+	}
+	invalidEnvelopeBytes, err := proto.Marshal(invalidEnvelope)
+	if err != nil {
+		t.Fatalf("failed to marshal invalid envelope: %v", err)
+	}
+	records[20] = &kgo.Record{
+		Topic: "flow-events",
+		Value: invalidEnvelopeBytes,
+	}
+
+	inserter := &fakeInserter{}
+	dlq := &fakeDeadLetterPublisher{}
+	sw, err := postgres.NewStorageWriter(config.StorageWriterConfig{
+		BatchSize:      1000,
+		MaxRetries:     0,
+		InitialBackoff: config.Duration(time.Millisecond),
+		MaxBackoff:     config.Duration(time.Millisecond),
+	}, inserter, dlq)
+	if err != nil {
+		t.Fatalf("failed to create storage writer: %v", err)
+	}
+
+	mockKafka := &mockKafkaClient{}
+	metrics := observability.NewRegistry()
+	mockPub := &mockPublisher{}
+
+	cfg := config.Default()
+	cfg.StorageWriter.Concurrency = 4
+
+	pipeline := &Pipeline{
+		cfg:           cfg,
+		client:        mockKafka,
+		storageWriter: sw,
+		publisher:     mockPub,
+		metrics:       metrics,
+		logger:        newDiscardLogger(),
+	}
+
+	err = pipeline.processBatch(context.Background(), records)
+	if err != nil {
+		t.Fatalf("processBatch failed: %v", err)
+	}
+
+	// We expect the valid records to be inserted, and the 2 bad records to be sent to DLQ
+	if inserter.calls != 1 {
+		t.Errorf("expected 1 inserter call, got %d", inserter.calls)
+	}
+	if len(mockPub.dlqEvents) != 2 {
+		t.Errorf("expected 2 DLQ events, got %d", len(mockPub.dlqEvents))
+	}
 }

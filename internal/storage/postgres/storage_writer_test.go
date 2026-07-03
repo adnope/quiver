@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/adnope/quiver/internal/config"
 	"github.com/adnope/quiver/internal/domain"
 	flowv1 "github.com/adnope/quiver/internal/gen/flow/v1"
+	"github.com/adnope/quiver/internal/observability"
 )
 
 func TestStorageWriterInsertDuplicateAndCommit(t *testing.T) {
@@ -209,5 +211,153 @@ func validRawStorageEvent(id string) *flowv1.RawFlowEventEnvelope {
 				},
 			},
 		},
+	}
+}
+
+func TestStorageWriter_NewValidationErrors(t *testing.T) {
+	t.Parallel()
+
+	// Nil inserter
+	_, err := NewStorageWriter(config.StorageWriterConfig{}, nil, &fakeDeadLetterPublisher{})
+	if err == nil || !strings.Contains(err.Error(), "inserter is nil") {
+		t.Errorf("expected inserter is nil error, got %v", err)
+	}
+
+	// Nil publisher
+	_, err = NewStorageWriter(config.StorageWriterConfig{}, &fakeInserter{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "dead-letter publisher is nil") {
+		t.Errorf("expected publisher is nil error, got %v", err)
+	}
+
+	// Invalid config fields
+	cfg := config.StorageWriterConfig{BatchSize: 0}
+	_, err = NewStorageWriter(cfg, &fakeInserter{}, &fakeDeadLetterPublisher{})
+	if err == nil || !strings.Contains(err.Error(), "batch_size must be positive") {
+		t.Errorf("expected batch size error, got %v", err)
+	}
+}
+
+func TestStorageWriter_WithMetrics(t *testing.T) {
+	t.Parallel()
+	writer := newTestStorageWriter(t, &fakeInserter{}, &fakeDeadLetterPublisher{})
+	metrics := &observability.Registry{} // Using pointer to Registry directly
+	writer2 := writer.WithMetrics(metrics)
+	if writer2.metrics != metrics {
+		t.Error("expected metrics registry to be set on StorageWriter")
+	}
+}
+
+func TestStorageWriter_Backoff(t *testing.T) {
+	t.Parallel()
+	writer := newTestStorageWriter(t, &fakeInserter{}, &fakeDeadLetterPublisher{})
+	writer.initialBackoff = 10 * time.Millisecond
+	writer.maxBackoff = 100 * time.Millisecond
+
+	if d := writer.backoff(0); d != 10*time.Millisecond {
+		t.Errorf("attempt 0 backoff = %v, want 10ms", d)
+	}
+	if d := writer.backoff(1); d != 20*time.Millisecond {
+		t.Errorf("attempt 1 backoff = %v, want 20ms", d)
+	}
+	if d := writer.backoff(2); d != 40*time.Millisecond {
+		t.Errorf("attempt 2 backoff = %v, want 40ms", d)
+	}
+	// Max cap
+	if d := writer.backoff(10); d != 100*time.Millisecond {
+		t.Errorf("attempt 10 backoff = %v, want 100ms", d)
+	}
+}
+
+func TestSourceTypeToProto(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		in  domain.SourceType
+		out flowv1.SourceType
+	}{
+		{domain.SourceTypeUnknown, flowv1.SourceType_SOURCE_TYPE_UNSPECIFIED},
+		{domain.SourceTypeNetFlowV5, flowv1.SourceType_SOURCE_TYPE_NETFLOW_V5},
+		{domain.SourceTypeZeekConnJSON, flowv1.SourceType_SOURCE_TYPE_ZEEK_CONN_JSON},
+		{domain.SourceTypeRESTJSON, flowv1.SourceType_SOURCE_TYPE_REST_JSON},
+		{domain.SourceTypeNetFlowV9, flowv1.SourceType_SOURCE_TYPE_NETFLOW_V9},
+		{domain.SourceTypeSyslogCEF, flowv1.SourceType_SOURCE_TYPE_SYSLOG_CEF},
+		{domain.SourceTypeSyslogLEEF, flowv1.SourceType_SOURCE_TYPE_SYSLOG_LEEF},
+		{domain.SourceTypeSuricataEVE, flowv1.SourceType_SOURCE_TYPE_SURICATA_EVE_JSON},
+		{domain.SourceType("invalid"), flowv1.SourceType_SOURCE_TYPE_UNSPECIFIED},
+	}
+	for _, tt := range tests {
+		if got := sourceTypeToProto(tt.in); got != tt.out {
+			t.Errorf("sourceTypeToProto(%q) = %v, want %v", tt.in, got, tt.out)
+		}
+	}
+}
+
+func TestSleepContext(t *testing.T) {
+	t.Parallel()
+
+	// 1. Successful sleep
+	start := time.Now()
+	err := sleepContext(context.Background(), time.Millisecond)
+	if err != nil {
+		t.Fatalf("unexpected sleep error: %v", err)
+	}
+	if time.Since(start) < time.Millisecond {
+		t.Error("sleep was too short")
+	}
+
+	// 2. Canceled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = sleepContext(ctx, time.Hour)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestStorageWriterDLQWithoutRawEvent(t *testing.T) {
+	t.Parallel()
+
+	dlq := &fakeDeadLetterPublisher{}
+	writer := newTestStorageWriter(t, &fakeInserter{}, dlq)
+	record := validStorageRecord("01934d7c-79b4-7000-8b69-001122334455")
+	record.SchemaVersion = "bad" // fails validation
+
+	result, err := writer.WriteBatch(context.Background(), []StorageBatchItem{
+		{Record: record, RawEvent: nil}, // RawEvent is nil to trigger storageDebugPayload!
+	}, &fakeCommitter{})
+	if err != nil {
+		t.Fatalf("WriteBatch() error = %v", err)
+	}
+	if result.DeadLettered != 1 || len(dlq.events) != 1 {
+		t.Fatalf("result = %+v dlq=%d", result, len(dlq.events))
+	}
+	if dlq.events[0].GetRawPayloadDebug() == nil || !dlq.events[0].GetRawPayloadDebug().GetMasked() {
+		t.Errorf("expected RawPayloadDebug to be set and masked")
+	}
+}
+
+func TestStorageWriterRecordMetrics(t *testing.T) {
+	t.Parallel()
+
+	inserter := &fakeInserter{
+		results: []InsertResult{{Attempted: 2, Inserted: 1, Deduplicated: 1}},
+	}
+	committer := &fakeCommitter{inserter: inserter}
+	metrics := observability.NewRegistry()
+	writer := newTestStorageWriter(t, inserter, &fakeDeadLetterPublisher{}).WithMetrics(metrics)
+
+	_, err := writer.WriteBatch(context.Background(), []StorageBatchItem{
+		{Record: validStorageRecord("01934d7c-79b4-7000-8b69-001122334455")},
+		{Record: validStorageRecord("01934d7c-79b4-7000-8b69-001122334456")},
+	}, committer)
+	if err != nil {
+		t.Fatalf("WriteBatch failed: %v", err)
+	}
+
+	prometheusOutput := string(metrics.WritePrometheus())
+	if !strings.Contains(prometheusOutput, "storage_insert_batches_total") {
+		t.Error("expected storage_insert_batches_total metric")
+	}
+	if !strings.Contains(prometheusOutput, "storage_insert_records_total") {
+		t.Error("expected storage_insert_records_total metric")
 	}
 }

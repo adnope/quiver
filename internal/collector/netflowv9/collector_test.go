@@ -1,6 +1,7 @@
 package netflowv9
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"net/netip"
@@ -181,5 +182,84 @@ func TestCollectorRejectsMalformedAndTooLarge(t *testing.T) {
 	})
 	if err != nil || res.Status != collector.PacketRejected || res.ErrorCode != "packet_too_large" {
 		t.Fatalf("HandlePacket(large) result = %+v, err = %v", res, err)
+	}
+}
+
+func TestPluginMethods(t *testing.T) {
+	t.Parallel()
+	p := NewPlugin()
+	if p.Type() != PluginType {
+		t.Errorf("Type() = %q, want %q", p.Type(), PluginType)
+	}
+	if p.SettingsMode() != collector.SettingsRequired {
+		t.Errorf("SettingsMode() = %v, want SettingsRequired", p.SettingsMode())
+	}
+	if p.SourceType() != flowv1.SourceType_SOURCE_TYPE_NETFLOW_V9 {
+		t.Errorf("SourceType() = %v, want NetFlow V9", p.SourceType())
+	}
+}
+
+func TestCollectorDecodesAndPublishes(t *testing.T) {
+	t.Parallel()
+
+	publisher := &fakePublisher{}
+	metrics := observability.NewRegistry()
+	c, err := NewPlugin().Build(collector.BuildContext{Publisher: publisher, Metrics: metrics, Logger: slog.Default()}, collector.InstanceConfig{
+		Type:        PluginType,
+		CollectorID: "netflow-v9-test",
+		Settings:    netflowV9SettingsNode(t, validSettingsYAML),
+	})
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	pktCollector := c.(collector.PacketCollector)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	go func() { _ = pktCollector.Run(ctx) }()
+
+	fields := []testField{
+		{id: 8, length: 4},  // IPv4 source address
+		{id: 12, length: 4}, // IPv4 dest address
+		{id: 7, length: 2},  // source port
+		{id: 11, length: 2}, // dest port
+		{id: 4, length: 1},  // IP protocol
+		{id: 1, length: 8},  // bytes
+		{id: 2, length: 8},  // packets
+	}
+	record := bytes.Join([][]byte{
+		{192, 0, 2, 10},
+		{192, 0, 2, 20},
+		uintBytes(12345, 2),
+		uintBytes(80, 2),
+		{6}, // TCP
+		uintBytes(1000, 8),
+		uintBytes(10, 8),
+	}, nil)
+	packet := packetBytes(
+		2,
+		1000,
+		100,
+		10,
+		7,
+		templateFlowSet(256, fields),
+		dataFlowSet(256, record, 0, false),
+	)
+
+	res, err := pktCollector.HandlePacket(ctx, collector.PacketInput{
+		SourceIP:   netip.MustParseAddr("10.10.0.1"),
+		SourceHost: "auth-gateway",
+		Data:       packet,
+	})
+	if err != nil || res.Status != collector.PacketAccepted {
+		t.Fatalf("HandlePacket(valid) result = %+v, err = %v", res, err)
+	}
+
+	// Verify that the publisher received the raw event
+	publisher.mu.Lock()
+	defer publisher.mu.Unlock()
+	if len(publisher.raw) != 1 {
+		t.Fatalf("expected 1 raw flow event published, got %d", len(publisher.raw))
 	}
 }

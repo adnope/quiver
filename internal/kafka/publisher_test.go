@@ -438,3 +438,130 @@ func waitQueueLen(t *testing.T, publisher *Publisher, expected int) {
 		}
 	}
 }
+
+func TestPublisher_Healthy(t *testing.T) {
+	t.Parallel()
+	writer := &fakeWriter{}
+	cfg := DefaultConfig()
+	cfg.QueueSize = 10
+	cfg.Workers = 1
+	publisher, err := NewPublisher(writer, cfg)
+	if err != nil {
+		t.Fatalf("failed to create publisher: %v", err)
+	}
+
+	if !publisher.Healthy() {
+		t.Error("expected publisher to be healthy initially")
+	}
+
+	// Stop/Close publisher
+	_ = publisher.Close(context.Background())
+	if publisher.Healthy() {
+		t.Error("expected publisher to not be healthy after close")
+	}
+}
+
+func TestRawPartitionKey(t *testing.T) {
+	t.Parallel()
+	source := &flowv1.SourceIdentity{CollectorId: "c", SourceHost: "h"}
+	if got := RawPartitionKey(source); got != "c:h" {
+		t.Errorf("RawPartitionKey() = %q, want c:h", got)
+	}
+}
+
+func TestFranzWriterNil(t *testing.T) {
+	t.Parallel()
+	var nilWriter *FranzWriter
+	if err := nilWriter.Produce(context.Background(), Record{}); err == nil {
+		t.Error("expected error on nil FranzWriter Produce")
+	}
+	if err := nilWriter.Flush(context.Background()); err == nil {
+		t.Error("expected error on nil FranzWriter Flush")
+	}
+	nilWriter.Close() // should not panic
+
+	emptyWriter := &FranzWriter{}
+	if err := emptyWriter.Produce(context.Background(), Record{}); err == nil {
+		t.Error("expected error on empty FranzWriter Produce")
+	}
+	if err := emptyWriter.Flush(context.Background()); err == nil {
+		t.Error("expected error on empty FranzWriter Flush")
+	}
+	emptyWriter.Close() // should not panic
+}
+
+func TestNewFranzPublisher_Validation(t *testing.T) {
+	t.Parallel()
+	// Invalid config should fail NewFranzPublisher
+	_, err := NewFranzPublisher(Config{})
+	if err == nil {
+		t.Error("expected error for invalid Config in NewFranzPublisher")
+	}
+}
+
+func TestValidateConfig_AllErrors(t *testing.T) {
+	t.Parallel()
+
+	base := DefaultConfig()
+
+	tests := []struct {
+		name    string
+		modify  func(*Config)
+		require bool
+		errMsg  string
+	}{
+		{"missing brokers", func(c *Config) { c.Brokers = nil }, true, "brokers are required"},
+		{"empty raw topic", func(c *Config) { c.RawTopic = "" }, false, "raw topic is required"},
+		{"empty dead-letter topic", func(c *Config) { c.DeadLetterTopic = "" }, false, "dead-letter topic is required"},
+		{"zero queue size", func(c *Config) { c.QueueSize = 0 }, false, "queue size must be positive"},
+		{"zero workers", func(c *Config) { c.Workers = 0 }, false, "workers must be positive"},
+		{"zero request timeout", func(c *Config) { c.RequestTimeout = 0 }, false, "request timeout must be positive"},
+		{"zero delivery timeout", func(c *Config) { c.DeliveryTimeout = 0 }, false, "delivery timeout must be positive"},
+		{"negative retries", func(c *Config) { c.MaxRetries = -1 }, false, "max retries cannot be negative"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := base
+			cfg.Brokers = []string{"localhost:9092"}
+			tc.modify(&cfg)
+			err := validateConfig(cfg, tc.require)
+			if err == nil || !strings.Contains(err.Error(), tc.errMsg) {
+				t.Errorf("expected error containing %q, got %v", tc.errMsg, err)
+			}
+		})
+	}
+}
+
+func TestPublisher_FlushEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	writer := newFakeWriter()
+	publisher := newTestPublisher(t, writer, 4, 1)
+
+	// Canceled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := publisher.Flush(ctx); err == nil {
+		t.Error("expected error for canceled context Flush")
+	}
+
+	// Close then flush
+	_ = publisher.Close(context.Background())
+	if err := publisher.Flush(context.Background()); err == nil {
+		t.Error("expected error for flush after close")
+	}
+}
+
+func TestPublisher_PublishDeadLetterNilContext(t *testing.T) {
+	t.Parallel()
+
+	writer := newFakeWriter()
+	publisher := newTestPublisher(t, writer, 4, 1)
+	defer func() { _ = publisher.Close(context.Background()) }()
+
+	if err := publisher.PublishDeadLetter(context.TODO(), nil); err == nil {
+		t.Error("expected error for invalid dead letter event")
+	}
+}
