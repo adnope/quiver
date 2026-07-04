@@ -179,15 +179,28 @@ func (p *Pipeline) collectKafkaLag(ctx context.Context, admin *kadm.Client) {
 	}
 }
 
+func storagePollBatchSize(cfg config.StorageWriterConfig) int {
+	batchSize := cfg.BatchSize
+	if batchSize <= 0 {
+		batchSize = 1000
+	}
+
+	insertConcurrency := cfg.InsertConcurrency
+	if insertConcurrency <= 1 {
+		return batchSize
+	}
+
+	return batchSize * insertConcurrency
+}
+
 func (p *Pipeline) run(ctx context.Context) {
 	defer p.wg.Done()
 	p.logger.Info("ingestion pipeline started", slog.String("topic", p.cfg.Kafka.Topics.Raw))
 
-	batchSize := p.cfg.StorageWriter.BatchSize
-	if batchSize <= 0 {
-		batchSize = 1000
-	}
+	pollBatchSize := storagePollBatchSize(p.cfg.StorageWriter)
+
 	flushInterval := p.cfg.StorageWriter.FlushInterval.Std()
+
 	if flushInterval <= 0 {
 		flushInterval = time.Second
 	}
@@ -198,7 +211,7 @@ func (p *Pipeline) run(ctx context.Context) {
 		}
 
 		pollCtx, pollCancel := context.WithTimeout(ctx, flushInterval)
-		fetches := p.client.PollRecords(pollCtx, batchSize)
+		fetches := p.client.PollRecords(pollCtx, pollBatchSize)
 		pollCancel()
 
 		if errs := fetches.Errors(); len(errs) > 0 {

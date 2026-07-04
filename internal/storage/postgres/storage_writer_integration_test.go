@@ -63,10 +63,11 @@ func TestStorageWriterIntegration(t *testing.T) {
 
 	dlq := &integrationDLQ{}
 	writer, err := NewStorageWriter(config.StorageWriterConfig{
-		BatchSize:      1000,
-		MaxRetries:     2,
-		InitialBackoff: config.Duration(10 * time.Millisecond),
-		MaxBackoff:     config.Duration(50 * time.Millisecond),
+		BatchSize:         1000,
+		MaxRetries:        2,
+		InitialBackoff:    config.Duration(10 * time.Millisecond),
+		MaxBackoff:        config.Duration(50 * time.Millisecond),
+		InsertConcurrency: 1,
 	}, flowRepo, dlq)
 	if err != nil {
 		t.Fatalf("Failed to create StorageWriter: %v", err)

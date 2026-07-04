@@ -232,6 +232,13 @@ func TestConfigValidateFailures(t *testing.T) {
 			},
 			expected: "initial_backoff",
 		},
+		{
+			name: "invalid storage writer insert concurrency",
+			mutate: func(c *Config) {
+				c.StorageWriter.InsertConcurrency = 0
+			},
+			expected: "insert_concurrency",
+		},
 	}
 
 	for _, tt := range tests {
@@ -292,6 +299,9 @@ func TestLoadBytes(t *testing.T) {
 	}
 	if cfg.Observability.MetricsAggregateMaxPoints != 1000 {
 		t.Fatalf("metrics aggregate max points = %d", cfg.Observability.MetricsAggregateMaxPoints)
+	}
+	if cfg.StorageWriter.InsertConcurrency != 1 {
+		t.Fatalf("storage writer insert concurrency = %d", cfg.StorageWriter.InsertConcurrency)
 	}
 }
 
@@ -760,6 +770,13 @@ func TestConfigValidateEdgeCases(t *testing.T) {
 				cfg.StorageWriter.BatchSize = 0
 			},
 			expected: "batch_size",
+		},
+		{
+			name: "storage writer insert concurrency too high",
+			mutate: func(cfg *Config) {
+				cfg.StorageWriter.InsertConcurrency = DefaultMaxStorageInsertConcurrency + 1
+			},
+			expected: "insert_concurrency",
 		},
 		{
 			name: "collectors invalid restart policy",
