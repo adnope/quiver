@@ -43,8 +43,8 @@ func TestPublisherPublishRawWaitsForAckAndEmitsProtobufRecord(t *testing.T) {
 	if record.Topic != "flow.raw" {
 		t.Fatalf("topic = %q, want flow.raw", record.Topic)
 	}
-	if string(record.Key) != "netflow-main:router-core-01" {
-		t.Fatalf("key = %q, want netflow-main:router-core-01", record.Key)
+	if string(record.Key) != validRawEvent().GetEventId() {
+		t.Fatalf("key = %q, want event_id %q", record.Key, validRawEvent().GetEventId())
 	}
 	if len(record.Value) == 0 || record.Value[0] == '{' {
 		t.Fatalf("value looks like JSON, want protobuf bytes: %q", record.Value)

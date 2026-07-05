@@ -29,6 +29,8 @@ interface MetricAreaChartProps {
   onRetry: () => void
   scrollable?: boolean
   heightClass?: string
+  preferTallTooltipAbove?: boolean
+  tooltipY?: number
 }
 
 export function MetricAreaChart({
@@ -41,10 +43,18 @@ export function MetricAreaChart({
   onRetry,
   scrollable = false,
   heightClass = 'h-44',
+  preferTallTooltipAbove = false,
+  tooltipY,
 }: MetricAreaChartProps) {
   const visibleData = data.length > 0 ? data : EMPTY_CHART_DATA
   const chartWidth = scrollable ? Math.max(1_800, visibleData.length * 4) : undefined
   const scrollRef = useRef<HTMLDivElement | null>(null)
+  const placeTooltipAbove = preferTallTooltipAbove && widget === 'kafkaLag' && series.length > 4
+  const tooltipPosition: { y: number } | undefined = placeTooltipAbove
+    ? { y: chartHeightPixels(heightClass) - estimateKafkaLagTooltipHeight(series.length) - 12 }
+    : tooltipY !== undefined
+      ? { y: tooltipY }
+      : undefined
 
   useEffect(() => {
     if (!scrollable || !scrollRef.current) {
@@ -114,20 +124,11 @@ export function MetricAreaChart({
             <Tooltip
               content={<MetricTooltip widget={widget} range={range} series={series} />}
               cursor={{ stroke: 'var(--border)', strokeDasharray: '3 3' }}
-              allowEscapeViewBox={{ x: false, y: false }}
-              wrapperStyle={{ zIndex: 20 }}
-              /* eslint-disable @typescript-eslint/no-explicit-any */
-              position={
-                ((point: any, _: any, __: any, viewBox: any) => {
-                  const tooltipWidth = widget === 'dbLatency' ? 240 : 200
-                  let x = point.x + 12
-                  if (viewBox && point.x > viewBox.width - tooltipWidth - 20) {
-                    x = Math.max(0, point.x - tooltipWidth - 12)
-                  }
-                  return { x, y: 0 }
-                }) as any
-              }
-              /* eslint-enable @typescript-eslint/no-explicit-any */
+              allowEscapeViewBox={{ x: false, y: placeTooltipAbove }}
+              reverseDirection={{ x: false, y: placeTooltipAbove }}
+              offset={12}
+              wrapperStyle={{ zIndex: 20, pointerEvents: 'none' }}
+              {...(tooltipPosition ? { position: tooltipPosition } : {})}
             />
             {series.length > 0 ? (
               series.map((item) => (
@@ -316,6 +317,25 @@ function tooltipStatRows(stats: AggregateTooltipStats, widget: MetricWidget) {
     }
   }
   return rows
+}
+
+function chartHeightPixels(heightClass: string) {
+  if (heightClass.includes('h-72')) {
+    return 288
+  }
+  if (heightClass.includes('h-44')) {
+    return 176
+  }
+  return 176
+}
+
+function estimateKafkaLagTooltipHeight(seriesCount: number) {
+  const headerHeight = 32
+  const footerHeight = 44
+  const rowHeight = 72
+  const safetyPadding = 32
+
+  return headerHeight + footerHeight + safetyPadding + Math.max(1, seriesCount) * rowHeight
 }
 
 function ChartSkeleton({ heightClass = 'h-44' }: { heightClass?: string }) {

@@ -139,13 +139,21 @@ func TestKafkaIntegrationPublishAndConsume(t *testing.T) {
 	}
 
 	// Assertions
-	if string(record.Key) != "netflow-integration-test:router-integration-01" {
-		t.Errorf("Unexpected key: %s", record.Key)
+	if got, want := string(record.Key), event.GetEventId(); got != want {
+		t.Errorf("Unexpected key: got %q, want event_id %q", got, want)
+	}
+
+	if decodedPartitionKey := event.GetPartitionKey(); decodedPartitionKey != "netflow-integration-test:router-integration-01" {
+		t.Errorf("Unexpected event partition_key: %s", decodedPartitionKey)
 	}
 
 	var decoded flowv1.RawFlowEventEnvelope
 	if err := proto.Unmarshal(record.Value, &decoded); err != nil {
 		t.Fatalf("Failed to unmarshal Protobuf value: %v", err)
+	}
+
+	if decoded.GetPartitionKey() != "netflow-integration-test:router-integration-01" {
+		t.Errorf("Expected PartitionKey %s, got %s", event.GetPartitionKey(), decoded.GetPartitionKey())
 	}
 
 	if decoded.GetEventId() != event.EventId {
