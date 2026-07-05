@@ -97,6 +97,23 @@ func NewQueryHandler(cfg config.Config, store FlowStore, cursorCodec *CursorCode
 // @Param protocol_number query int false "IP protocol number filter"
 // @Param direction query string false "Direction filter" Enums(unknown,inbound,outbound,internal,external)
 // @Param application_protocol query string false "Application protocol filter"
+// @Param attributes_contains query string false "Case-insensitive literal substring search over attributes JSON"
+// @Param bytes_from query int false "Minimum bytes"
+// @Param bytes_to query int false "Maximum bytes"
+// @Param packets_from query int false "Minimum packets"
+// @Param packets_to query int false "Maximum packets"
+// @Param duration_ms_from query int false "Minimum duration in milliseconds"
+// @Param duration_ms_to query int false "Maximum duration in milliseconds"
+// @Param flow_state query string false "Exact flow state"
+// @Param tcp_flags query int false "Exact TCP flags value"
+// @Param input_interface query int false "Exact input interface"
+// @Param output_interface query int false "Exact output interface"
+// @Param next_hop_ip query string false "Exact next-hop IP"
+// @Param sampling_rate query int false "Exact sampling rate"
+// @Param normalization_status query string false "Normalization status" Enums(ok,partial)
+// @Param normalization_error_contains query string false "Case-insensitive literal substring search over normalization errors"
+// @Param source_ip query string false "Exact collector source IP"
+// @Param ip_version query int false "IP version" Enums(4,6)
 // @Success 200 {object} FlowSearchResponse
 // @Failure 400 {object} ErrorResponse
 // @Failure 401 {object} ErrorResponse
@@ -204,6 +221,7 @@ func (h *QueryHandler) parseFlowSearch(r *http.Request) (postgres.FlowSearchQuer
 		CollectorID:         strings.TrimSpace(values.Get("collector_id")),
 		SourceHost:          strings.TrimSpace(values.Get("source_host")),
 		ApplicationProtocol: strings.TrimSpace(values.Get("application_protocol")),
+		FlowState:           strings.TrimSpace(values.Get("flow_state")),
 	}
 	if cursorValue := strings.TrimSpace(values.Get("cursor")); cursorValue != "" {
 		cursor, err := h.cursorCodec.Decode(cursorValue)
@@ -215,7 +233,128 @@ func (h *QueryHandler) parseFlowSearch(r *http.Request) (postgres.FlowSearchQuer
 	if apiErr := parseFlowFilters(values, &query); apiErr != nil {
 		return postgres.FlowSearchQuery{}, apiErr
 	}
+	if apiErr := parseAdvancedFlowFilters(values, &query); apiErr != nil {
+		return postgres.FlowSearchQuery{}, apiErr
+	}
 	return query, nil
+}
+
+const maxAdvancedSearchTextLength = 256
+
+func parseAdvancedFlowFilters(values mapValues, query *postgres.FlowSearchQuery) *apiHandlerError {
+	attributesContains, apiErr := parseOptionalSearchText(values.Get("attributes_contains"), "attributes_contains")
+	if apiErr != nil {
+		return apiErr
+	}
+	normalizationError, apiErr := parseOptionalSearchText(values.Get("normalization_error_contains"), "normalization_error_contains")
+	if apiErr != nil {
+		return apiErr
+	}
+	query.AttributesContains = attributesContains
+	query.NormalizationError = normalizationError
+
+	if apiErr := parseAdvancedInt64Ranges(values, query); apiErr != nil {
+		return apiErr
+	}
+
+	tcpFlags, tcpFlagsSet, apiErr := parseOptionalUint16(values.Get("tcp_flags"), "tcp_flags")
+	if apiErr != nil {
+		return apiErr
+	}
+	inputInterface, inputInterfaceSet, apiErr := parseOptionalUint32(values.Get("input_interface"), "input_interface")
+	if apiErr != nil {
+		return apiErr
+	}
+	outputInterface, outputInterfaceSet, apiErr := parseOptionalUint32(values.Get("output_interface"), "output_interface")
+	if apiErr != nil {
+		return apiErr
+	}
+	samplingRate, samplingRateSet, apiErr := parseOptionalUint32(values.Get("sampling_rate"), "sampling_rate")
+	if apiErr != nil {
+		return apiErr
+	}
+	if samplingRateSet && samplingRate == 0 {
+		return newAPIHandlerError(http.StatusBadRequest, CodeInvalidParameter, "sampling_rate must be positive")
+	}
+	if tcpFlagsSet {
+		query.TCPFlags = &tcpFlags
+	}
+	if inputInterfaceSet {
+		query.InputInterface = &inputInterface
+	}
+	if outputInterfaceSet {
+		query.OutputInterface = &outputInterface
+	}
+	if samplingRateSet {
+		query.SamplingRate = &samplingRate
+	}
+
+	nextHopIP, nextHopIPSet, apiErr := parseOptionalIP(values.Get("next_hop_ip"), "next_hop_ip")
+	if apiErr != nil {
+		return apiErr
+	}
+	sourceIP, sourceIPSet, apiErr := parseOptionalIP(values.Get("source_ip"), "source_ip")
+	if apiErr != nil {
+		return apiErr
+	}
+	if nextHopIPSet {
+		query.NextHopIP = &nextHopIP
+	}
+	if sourceIPSet {
+		query.SourceIP = &sourceIP
+	}
+
+	if rawStatus := strings.TrimSpace(values.Get("normalization_status")); rawStatus != "" {
+		status := domain.NormalizationStatus(rawStatus)
+		if status != domain.NormalizationStatusOK && status != domain.NormalizationStatusPartial {
+			return newAPIHandlerError(http.StatusBadRequest, CodeInvalidParameter, "normalization_status is invalid")
+		}
+		query.NormalizationStatus = &status
+	}
+	if rawIPVersion := strings.TrimSpace(values.Get("ip_version")); rawIPVersion != "" {
+		ipVersion, ipVersionSet, apiErr := parseOptionalUint8(rawIPVersion, "ip_version")
+		if apiErr != nil {
+			return apiErr
+		}
+		if !ipVersionSet || (ipVersion != 4 && ipVersion != 6) {
+			return newAPIHandlerError(http.StatusBadRequest, CodeInvalidParameter, "ip_version must be 4 or 6")
+		}
+		query.IPVersion = &ipVersion
+	}
+	return nil
+}
+
+func parseAdvancedInt64Ranges(values mapValues, query *postgres.FlowSearchQuery) *apiHandlerError {
+	ranges := []struct {
+		fromName string
+		toName   string
+		from     **int64
+		to       **int64
+	}{
+		{fromName: "bytes_from", toName: "bytes_to", from: &query.BytesFrom, to: &query.BytesTo},
+		{fromName: "packets_from", toName: "packets_to", from: &query.PacketsFrom, to: &query.PacketsTo},
+		{fromName: "duration_ms_from", toName: "duration_ms_to", from: &query.DurationMSFrom, to: &query.DurationMSTo},
+	}
+	for _, valueRange := range ranges {
+		from, fromSet, apiErr := parseOptionalNonNegativeInt64(values.Get(valueRange.fromName), valueRange.fromName)
+		if apiErr != nil {
+			return apiErr
+		}
+		to, toSet, apiErr := parseOptionalNonNegativeInt64(values.Get(valueRange.toName), valueRange.toName)
+		if apiErr != nil {
+			return apiErr
+		}
+		if fromSet && toSet && from > to {
+			return newAPIHandlerError(http.StatusBadRequest, CodeInvalidParameter, valueRange.fromName+" must not exceed "+valueRange.toName)
+		}
+		if fromSet {
+			*valueRange.from = &from
+		}
+		if toSet {
+			*valueRange.to = &to
+		}
+	}
+	return nil
 }
 
 func parseFlowFilters(values mapValues, query *postgres.FlowSearchQuery) *apiHandlerError {
@@ -481,6 +620,36 @@ func parseOptionalUint16(raw string, field string) (uint16, bool, *apiHandlerErr
 		return 0, false, newAPIHandlerError(http.StatusBadRequest, CodeInvalidParameter, field+" is invalid")
 	}
 	return uint16(value), true, nil
+}
+
+func parseOptionalUint32(raw string, field string) (uint32, bool, *apiHandlerError) {
+	if strings.TrimSpace(raw) == "" {
+		return 0, false, nil
+	}
+	value, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil {
+		return 0, false, newAPIHandlerError(http.StatusBadRequest, CodeInvalidParameter, field+" is invalid")
+	}
+	return uint32(value), true, nil
+}
+
+func parseOptionalNonNegativeInt64(raw string, field string) (int64, bool, *apiHandlerError) {
+	if strings.TrimSpace(raw) == "" {
+		return 0, false, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		return 0, false, newAPIHandlerError(http.StatusBadRequest, CodeInvalidParameter, field+" is invalid")
+	}
+	return value, true, nil
+}
+
+func parseOptionalSearchText(raw string, field string) (string, *apiHandlerError) {
+	value := strings.TrimSpace(raw)
+	if len(value) > maxAdvancedSearchTextLength {
+		return "", newAPIHandlerError(http.StatusBadRequest, CodeInvalidParameter, field+" is too long")
+	}
+	return value, nil
 }
 
 func parseOptionalUint8(raw string, field string) (uint8, bool, *apiHandlerError) {

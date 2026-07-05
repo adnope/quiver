@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type FormEvent,
   type PointerEvent as ReactPointerEvent,
   type UIEvent as ReactUIEvent,
 } from 'react'
@@ -15,6 +16,14 @@ import { cn } from '@/lib/utils'
 import { useFlowById, useFlows } from '@/hooks/useFlows'
 import { useHealth } from '@/hooks/useHealth'
 import { useAppStore } from '@/store/app-store'
+import { AdvancedSearchPanel } from './AdvancedSearchPanel'
+import {
+  buildAdvancedSearchParams,
+  countAdvancedFilters,
+  EMPTY_ADVANCED_FILTERS,
+  getAdvancedSearchError,
+  type AdvancedFilters,
+} from './advanced-search'
 import type {
   FlowDirection,
   FlowResponse,
@@ -125,6 +134,10 @@ export function ExplorerView() {
   const [toInput, setToInput] = useState(initialTimeWindow.toInput)
   const [timeWindow, setTimeWindow] = useState(initialTimeWindow.query)
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const [advancedDraft, setAdvancedDraft] = useState<AdvancedFilters>(EMPTY_ADVANCED_FILTERS)
+  const [advancedFilters, setAdvancedFilters] = useState<AdvancedFilters>(EMPTY_ADVANCED_FILTERS)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [advancedExpandedHeight, setAdvancedExpandedHeight] = useState(0)
 
   const [searchInput, setSearchInput] = useState('')
   const [srcIpInput, setSrcIpInput] = useState('')
@@ -138,6 +151,8 @@ export function ExplorerView() {
   const [detailWidth, setDetailWidth] = useState(420)
   const timeError = getTimeWindowError(fromInput, toInput)
   const portError = getPortRangeError(portInputs)
+  const advancedError = getAdvancedSearchError(advancedDraft)
+  const activeAdvancedFilterCount = countAdvancedFilters(advancedFilters)
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -169,10 +184,11 @@ export function ExplorerView() {
   const queryParams = useMemo(() => {
     return {
       ...buildFlowSearchParams(filters, timeWindow.from, timeWindow.to),
+      ...buildAdvancedSearchParams(advancedFilters),
       limit,
       ...(includeAttributes ? { include: 'attributes' as const } : {}),
     }
-  }, [filters, timeWindow, limit, includeAttributes])
+  }, [filters, advancedFilters, timeWindow, limit, includeAttributes])
   const flows = useFlows(queryParams)
   const isFirstPageLoading = flows.isFetching && !flows.isFetchingNextPage
   const rows = useMemo(() => {
@@ -271,6 +287,25 @@ export function ExplorerView() {
     setPortInputs((current) => ({ ...current, [field]: value }))
   }
 
+  function updateAdvancedFilter<K extends keyof AdvancedFilters>(
+    key: K,
+    value: AdvancedFilters[K]
+  ) {
+    setAdvancedDraft((current) => ({ ...current, [key]: value }))
+  }
+
+  function applyAdvancedFilters(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!advancedError) {
+      setAdvancedFilters({ ...advancedDraft })
+    }
+  }
+
+  function clearAdvancedFilters() {
+    setAdvancedDraft({ ...EMPTY_ADVANCED_FILTERS })
+    setAdvancedFilters({ ...EMPTY_ADVANCED_FILTERS })
+  }
+
   function resizeDetailPane(event: ReactPointerEvent<HTMLButtonElement>) {
     if (!event.currentTarget.hasPointerCapture(event.pointerId)) {
       return
@@ -295,8 +330,13 @@ export function ExplorerView() {
   return (
     <section
       ref={explorerRef}
-      className="grid h-[calc(100svh-6rem)] overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--panel)] lg:grid-cols-[minmax(0,1fr)_var(--detail-width)]"
-      style={{ '--detail-width': `${detailWidth}px` } as CSSProperties}
+      className="grid overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--panel)] lg:grid-cols-[minmax(0,1fr)_var(--detail-width)]"
+      style={
+        {
+          '--detail-width': `${detailWidth}px`,
+          height: `calc(100svh - 6rem + ${advancedOpen ? advancedExpandedHeight : 0}px)`,
+        } as CSSProperties
+      }
     >
       <div className="flex min-h-0 min-w-0 flex-col border-b border-[var(--border)] lg:border-b-0 lg:border-r">
         <div className="flex min-h-12 flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] px-4 py-2">
@@ -544,6 +584,17 @@ export function ExplorerView() {
               <span className="text-xs font-medium text-red-400">{portError}</span>
             ) : null}
           </div>
+          <AdvancedSearchPanel
+            filters={advancedDraft}
+            activeCount={activeAdvancedFilterCount}
+            error={advancedError}
+            open={advancedOpen}
+            onChange={updateAdvancedFilter}
+            onApply={applyAdvancedFilters}
+            onClear={clearAdvancedFilters}
+            onOpenChange={setAdvancedOpen}
+            onExpandedHeightChange={setAdvancedExpandedHeight}
+          />
         </div>
 
         <div
