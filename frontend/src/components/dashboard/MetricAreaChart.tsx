@@ -31,6 +31,7 @@ interface MetricAreaChartProps {
   heightClass?: string
   preferTallTooltipAbove?: boolean
   tooltipY?: number
+  preferTooltipBesideCursor?: boolean
 }
 
 export function MetricAreaChart({
@@ -44,12 +45,14 @@ export function MetricAreaChart({
   scrollable = false,
   heightClass = 'h-44',
   preferTallTooltipAbove = false,
+  preferTooltipBesideCursor = false,
   tooltipY,
 }: MetricAreaChartProps) {
   const visibleData = data.length > 0 ? data : EMPTY_CHART_DATA
   const chartWidth = scrollable ? Math.max(1_800, visibleData.length * 4) : undefined
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const placeTooltipAbove = preferTallTooltipAbove && widget === 'kafkaLag' && series.length > 4
+  const placeTooltipBesideCursor = preferTooltipBesideCursor && widget === 'ingestion'
   const tooltipPosition: { y: number } | undefined = placeTooltipAbove
     ? { y: chartHeightPixels(heightClass) - estimateKafkaLagTooltipHeight(series.length) - 12 }
     : tooltipY !== undefined
@@ -125,8 +128,8 @@ export function MetricAreaChart({
               content={<MetricTooltip widget={widget} range={range} series={series} />}
               cursor={{ stroke: 'var(--border)', strokeDasharray: '3 3' }}
               allowEscapeViewBox={{ x: false, y: placeTooltipAbove }}
-              reverseDirection={{ x: false, y: placeTooltipAbove }}
-              offset={12}
+              reverseDirection={{ x: placeTooltipBesideCursor, y: placeTooltipAbove }}
+              offset={placeTooltipBesideCursor ? 28 : 12}
               wrapperStyle={{ zIndex: 20, pointerEvents: 'none' }}
               {...(tooltipPosition ? { position: tooltipPosition } : {})}
             />
