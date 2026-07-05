@@ -178,6 +178,7 @@ export function DashboardView() {
                 isLoading={(live.isLoading || history.isLoading) && livePoints.length === 0}
                 onRetry={() => void live.refetch()}
                 heightClass={card.widget === 'ingestion' ? 'h-72' : 'h-44'}
+                {...(card.widget === 'kafkaLag' ? { tooltipY: -16 } : {})}
                 {...(live.isError && livePoints.length === 0
                   ? { error: 'Metrics unavailable. Try again.' }
                   : {})}

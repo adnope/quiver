@@ -38,6 +38,10 @@ type PerformanceSmoke struct {
 	RecordsPersisted     int64                  `json:"records_persisted"`
 	RecordsFailed        int64                  `json:"records_failed"`
 	RecordsDropped       int64                  `json:"records_dropped_or_lag"`
+	DrainCompleted       bool                   `json:"drain_completed"`
+	DrainDurationSeconds float64                `json:"drain_duration_seconds"`
+	KafkaLagAtLoadEnd    int64                  `json:"kafka_lag_at_load_end"`
+	KafkaLagFinal        int64                  `json:"kafka_lag_final"`
 	ThroughputDurableRPS float64                `json:"throughput_durable_rps"`
 	QueryLatencies       Latencies              `json:"query_latencies"`
 	SourceBreakdown      map[string]SourceStats `json:"source_breakdown"`
@@ -121,6 +125,12 @@ var (
 	restCounters sourceCounters
 	udpCounters  sourceCounters
 	zeekCounters sourceCounters
+)
+
+const (
+	drainPollInterval      = 500 * time.Millisecond
+	drainStableZeroSamples = 12
+	drainMaxWait           = 30 * time.Minute
 )
 
 type Config struct {
@@ -390,48 +400,25 @@ func main() {
 	}
 
 	wg.Wait()
-	fmt.Println("Load generation stopped. Entering drain phase to measure durable storage persistence...")
+	fmt.Println("Load generation stopped. Entering drain phase until backend Kafka lag is stable at zero...")
 
-	finalPersistedRowCount := initialPersisted
-	stagnantCycles := 0
-	drainStart := time.Now()
-	lastIncreaseTime := drainStart
 	acceptedTotal := accepted.Load()
+	drainDuration, kafkaLagAtLoadEnd, kafkaLagFinal, drainCompleted, drainErr := waitForKafkaLagDrain(cfg, client)
+	if drainErr != nil {
+		warnings = append(warnings, fmt.Sprintf("Kafka lag drain polling encountered errors: %v", drainErr))
+	}
+	if !drainCompleted {
+		warnings = append(warnings, fmt.Sprintf(
+			"Kafka lag did not reach stable zero within %s. Final lag: %d.",
+			drainMaxWait,
+			kafkaLagFinal,
+		))
+	}
 
-	for time.Since(drainStart) < 120*time.Second {
-		currentPersistedRowCount, err := countFlowRecords(context.Background(), db)
-		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("Failed to read durable row count during drain: %v", err))
-			break
-		}
-
-		if currentPersistedRowCount < finalPersistedRowCount {
-			warnings = append(warnings, fmt.Sprintf(
-				"Durable row count decreased during drain: previous=%d current=%d. Check for concurrent truncation/deletion.",
-				finalPersistedRowCount,
-				currentPersistedRowCount,
-			))
-			finalPersistedRowCount = currentPersistedRowCount
-			break
-		}
-
-		if currentPersistedRowCount > finalPersistedRowCount {
-			lastIncreaseTime = time.Now()
-			stagnantCycles = 0
-		} else {
-			stagnantCycles++
-		}
-		finalPersistedRowCount = currentPersistedRowCount
-
-		persistedDelta := finalPersistedRowCount - initialPersisted
-		if persistedDelta >= acceptedTotal && time.Since(drainStart) >= time.Second {
-			break
-		}
-		if stagnantCycles >= 10 {
-			break
-		}
-
-		time.Sleep(1 * time.Second)
+	finalPersistedRowCount, err := countFlowRecords(context.Background(), db)
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("Failed to read final durable row count after drain: %v", err))
+		finalPersistedRowCount = initialPersisted
 	}
 
 	totalPersisted := finalPersistedRowCount - initialPersisted
@@ -444,22 +431,24 @@ func main() {
 		totalPersisted = 0
 	}
 
-	droppedOrLag := max(acceptedTotal-totalPersisted, int64(0))
+	droppedOrLag := kafkaLagFinal
+	if droppedOrLag == 0 && totalPersisted < acceptedTotal {
+		droppedOrLag = acceptedTotal - totalPersisted
+	}
 	if droppedOrLag > 0 {
-		warnings = append(warnings, fmt.Sprintf("%d records were accepted but not persisted within drain timeout. Kafka consumer lag or drops occurred.", droppedOrLag))
+		warnings = append(warnings, fmt.Sprintf(
+			"%d records remain unpersisted or in Kafka lag after drain wait.",
+			droppedOrLag,
+		))
 	}
 
-	totalPersistenceDuration := lastIncreaseTime.Sub(activeLoadStartedAt)
-	if totalPersistenceDuration <= 0 {
-		totalPersistenceDuration = time.Duration(actualDuration * float64(time.Second))
-	}
+	totalPersistenceDuration := time.Duration(actualDuration*float64(time.Second)) + drainDuration
 	if totalPersistenceDuration <= 0 {
 		totalPersistenceDuration = time.Second
 	}
 
 	durableThroughput := float64(totalPersisted) / totalPersistenceDuration.Seconds()
 	avgIngestionRPS := float64(acceptedTotal) / actualDuration
-	drainDuration := max(lastIncreaseTime.Sub(drainStart), time.Duration(0))
 
 	queryMu.Lock()
 	var lats Latencies
@@ -495,6 +484,10 @@ func main() {
 		RecordsPersisted:     totalPersisted,
 		RecordsFailed:        failed.Load(),
 		RecordsDropped:       droppedOrLag,
+		DrainCompleted:       drainCompleted,
+		DrainDurationSeconds: drainDuration.Seconds(),
+		KafkaLagAtLoadEnd:    kafkaLagAtLoadEnd,
+		KafkaLagFinal:        kafkaLagFinal,
 		ThroughputDurableRPS: durableThroughput,
 		QueryLatencies:       lats,
 		SourceBreakdown:      sourceBreakdown,
@@ -504,11 +497,13 @@ func main() {
 			fmt.Sprintf("Average Ingestion Rate: %.2f records/sec (over %.2fs active load)", avgIngestionRPS, actualDuration),
 			fmt.Sprintf("Durable Write Throughput: %.2f records/sec (over %.2fs total write time)", durableThroughput, totalPersistenceDuration.Seconds()),
 			fmt.Sprintf("Drain Phase Duration: %.2fs", drainDuration.Seconds()),
+			fmt.Sprintf("Kafka lag at load end: %d, final lag: %d, drain completed: %t", kafkaLagAtLoadEnd, kafkaLagFinal, drainCompleted),
 			fmt.Sprintf("Durable row-count delta: initial=%d final=%d", initialPersisted, finalPersistedRowCount),
 			fmt.Sprintf("Source mix weights: REST=%d UDP=%d Zeek=%d", cfg.MixREST, cfg.MixUDP, cfg.MixZeek),
 			fmt.Sprintf("Workers: REST=%d UDP=%d Zeek=%d Query=%d", cfg.RESTWorkers, cfg.UDPWorkers, cfg.ZeekWorkers, cfg.QueryWorkers),
 			fmt.Sprintf("Batch sizes: REST=%d UDP=%d Zeek=%d", cfg.RESTBatchSize, cfg.UDPBatchSize, cfg.ZeekBatchSize),
-			"Persistence is measured from SELECT COUNT(*) on quiver.flow_records before and after the run; metrics counters are not used for durable-write accounting.",
+			"Drain waits for kafka_consumer_lag to be zero for 12 consecutive 500ms backend metrics polls, up to 30 minutes.",
+			"Persistence is measured from SELECT COUNT(*) on quiver.flow_records before load and after Kafka lag drain.",
 			"Source breakdown uses record counts, not HTTP request counts.",
 		},
 	}
@@ -529,6 +524,7 @@ func main() {
 	fmt.Printf("Average Ingestion Rate: %.2f records/sec (over %.2fs active load)\n", avgIngestionRPS, actualDuration)
 	fmt.Printf("Durable Write Throughput: %.2f records/sec (over %.2fs total write time)\n", durableThroughput, totalPersistenceDuration.Seconds())
 	fmt.Printf("Drain Phase Duration: %.2fs\n", drainDuration.Seconds())
+	fmt.Printf("Kafka Lag At Load End: %d | Kafka Lag Final: %d | Drain Completed: %t\n", kafkaLagAtLoadEnd, kafkaLagFinal, drainCompleted)
 	fmt.Printf("Persisted: %d | Accepted: %d | Failed: %d | Dropped/Lag: %d\n", result.RecordsPersisted, result.RecordsAccepted, result.RecordsFailed, result.RecordsDropped)
 	fmt.Printf("Source Breakdown:\n")
 	printSourceSummary("REST", sourceBreakdown["rest"])
@@ -638,6 +634,115 @@ func countFlowRecords(ctx context.Context, db *sql.DB) (int64, error) {
 		return 0, fmt.Errorf("count quiver.flow_records: %w", err)
 	}
 	return count, nil
+}
+
+type liveMetricsResponse struct {
+	Metrics []liveMetricSnapshot `json:"metrics"`
+}
+
+type liveMetricSnapshot struct {
+	Name   string            `json:"name"`
+	Labels map[string]string `json:"labels"`
+	Value  float64           `json:"value"`
+}
+
+func waitForKafkaLagDrain(cfg Config, client *http.Client) (time.Duration, int64, int64, bool, error) {
+	drainStart := time.Now()
+	deadline := time.NewTimer(drainMaxWait)
+	defer deadline.Stop()
+
+	ticker := time.NewTicker(drainPollInterval)
+	defer ticker.Stop()
+
+	var (
+		kafkaLagAtLoadEnd int64
+		kafkaLagFinal     int64
+		stableZeroSamples int
+		firstPoll         = true
+		lastErr           error
+	)
+
+	poll := func() bool {
+		pollCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		lag, err := getLiveKafkaLag(pollCtx, client, cfg.TargetREST, cfg.AdminKey)
+		cancel()
+
+		if err != nil {
+			lastErr = err
+			stableZeroSamples = 0
+			return false
+		}
+
+		if firstPoll {
+			kafkaLagAtLoadEnd = lag
+			firstPoll = false
+		}
+
+		kafkaLagFinal = lag
+		if lag == 0 {
+			stableZeroSamples++
+		} else {
+			stableZeroSamples = 0
+		}
+
+		return stableZeroSamples >= drainStableZeroSamples
+	}
+
+	if poll() {
+		return time.Since(drainStart), kafkaLagAtLoadEnd, kafkaLagFinal, true, lastErr
+	}
+
+	for {
+		select {
+		case <-deadline.C:
+			return time.Since(drainStart), kafkaLagAtLoadEnd, kafkaLagFinal, false, lastErr
+		case <-ticker.C:
+			if poll() {
+				return time.Since(drainStart), kafkaLagAtLoadEnd, kafkaLagFinal, true, lastErr
+			}
+		}
+	}
+}
+
+func getLiveKafkaLag(ctx context.Context, client *http.Client, targetREST string, adminKey string) (int64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/api/v1/metrics/live", targetREST), nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("X-API-Key", adminKey)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Printf("Failed to close live metrics response body: %v\n", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("live metrics returned status %d", resp.StatusCode)
+	}
+
+	var body liveMetricsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return 0, err
+	}
+
+	var totalLag int64
+	for _, metric := range body.Metrics {
+		if metric.Name != "kafka_consumer_lag" {
+			continue
+		}
+		if metric.Value <= 0 || math.IsNaN(metric.Value) || math.IsInf(metric.Value, 0) {
+			continue
+		}
+		totalLag += int64(math.Round(metric.Value))
+	}
+
+	return totalLag, nil
 }
 
 func runRESTWorker(ctx context.Context, cfg Config, workerID int, targetRPS *atomic.Int64) {

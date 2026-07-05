@@ -143,7 +143,7 @@ func (p *Publisher) PublishRaw(ctx context.Context, event *flowv1.RawFlowEventEn
 	}
 	record := Record{
 		Topic: p.cfg.RawTopic,
-		Key:   []byte(validation.PartitionKey(event.GetSource())),
+		Key:   []byte(event.GetEventId()),
 		Value: value,
 		Headers: kafkaHeaders(
 			rawProtoMessage,

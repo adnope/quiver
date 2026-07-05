@@ -281,6 +281,8 @@ export function HistoryView() {
                   isLoading={query.isLoading}
                   onRetry={() => void query.refetch()}
                   heightClass={isTallChart ? 'h-72' : 'h-44'}
+                  preferTallTooltipAbove={card.widget === 'kafkaLag'}
+                  preferTooltipBesideCursor={card.widget === 'ingestion'}
                   {...(query.isError ? { error: 'Metric aggregates unavailable. Try again.' } : {})}
                 />
                 <div className="mt-3 flex flex-wrap gap-2">
