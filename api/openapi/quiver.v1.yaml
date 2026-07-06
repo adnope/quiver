@@ -845,6 +845,81 @@ paths:
         in: query
         name: application_protocol
         type: string
+      - description: Case-insensitive literal substring search over attributes JSON
+        in: query
+        name: attributes_contains
+        type: string
+      - description: Minimum bytes
+        in: query
+        name: bytes_from
+        type: integer
+      - description: Maximum bytes
+        in: query
+        name: bytes_to
+        type: integer
+      - description: Minimum packets
+        in: query
+        name: packets_from
+        type: integer
+      - description: Maximum packets
+        in: query
+        name: packets_to
+        type: integer
+      - description: Minimum duration in milliseconds
+        in: query
+        name: duration_ms_from
+        type: integer
+      - description: Maximum duration in milliseconds
+        in: query
+        name: duration_ms_to
+        type: integer
+      - description: Exact flow state
+        in: query
+        name: flow_state
+        type: string
+      - description: Exact TCP flags value
+        in: query
+        name: tcp_flags
+        type: integer
+      - description: Exact input interface
+        in: query
+        name: input_interface
+        type: integer
+      - description: Exact output interface
+        in: query
+        name: output_interface
+        type: integer
+      - description: Exact next-hop IP
+        in: query
+        name: next_hop_ip
+        type: string
+      - description: Exact sampling rate
+        in: query
+        name: sampling_rate
+        type: integer
+      - description: Normalization status
+        enum:
+        - ok
+        - partial
+        in: query
+        name: normalization_status
+        type: string
+      - description: Case-insensitive literal substring search over normalization
+          errors
+        in: query
+        name: normalization_error_contains
+        type: string
+      - description: Exact collector source IP
+        in: query
+        name: source_ip
+        type: string
+      - description: IP version
+        enum:
+        - 4
+        - 6
+        in: query
+        name: ip_version
+        type: integer
       produces:
       - application/json
       responses:

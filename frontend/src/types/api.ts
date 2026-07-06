@@ -140,6 +140,23 @@ export interface FlowSearchParams {
   protocol_number?: number
   direction?: FlowDirection
   application_protocol?: string
+  attributes_contains?: string
+  bytes_from?: number
+  bytes_to?: number
+  packets_from?: number
+  packets_to?: number
+  duration_ms_from?: number
+  duration_ms_to?: number
+  flow_state?: string
+  tcp_flags?: number
+  input_interface?: number
+  output_interface?: number
+  next_hop_ip?: string
+  sampling_rate?: number
+  normalization_status?: 'ok' | 'partial'
+  normalization_error_contains?: string
+  source_ip?: string
+  ip_version?: 4 | 6
   sort?: string
   order?: string
 }

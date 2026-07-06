@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/adnope/quiver/internal/domain"
 )
 
 func TestAggregateTalkersTableRoutesByWindow(t *testing.T) {
@@ -128,6 +130,83 @@ func TestBuildAggregationSQLUsesCAGGBucketOrRawTimestamp(t *testing.T) {
 	requireContains(t, rawSQL, "FROM quiver.flow_records")
 	requireContains(t, rawSQL, "event_start_time >= $1")
 	requireContains(t, rawSQL, "COUNT(*) AS value")
+}
+
+func TestBuildFlowWhereIncludesAdvancedFilters(t *testing.T) {
+	t.Parallel()
+
+	fromValue := int64(10)
+	toValue := int64(20)
+	tcpFlags := uint16(18)
+	inputInterface := uint32(2)
+	outputInterface := uint32(3)
+	samplingRate := uint32(100)
+	status := domain.NormalizationStatusPartial
+	ipVersion := uint8(6)
+	nextHopIP := netip.MustParseAddr("2001:db8::1")
+	sourceIP := netip.MustParseAddr("203.0.113.10")
+
+	where, _ := buildFlowWhere(FlowSearchQuery{
+		From:                time.Date(2026, 7, 6, 0, 0, 0, 0, time.UTC),
+		To:                  time.Date(2026, 7, 6, 1, 0, 0, 0, time.UTC),
+		Limit:               10,
+		AttributesContains:  "branch-router",
+		BytesFrom:           &fromValue,
+		BytesTo:             &toValue,
+		PacketsFrom:         &fromValue,
+		PacketsTo:           &toValue,
+		DurationMSFrom:      &fromValue,
+		DurationMSTo:        &toValue,
+		FlowState:           "established",
+		TCPFlags:            &tcpFlags,
+		InputInterface:      &inputInterface,
+		OutputInterface:     &outputInterface,
+		NextHopIP:           &nextHopIP,
+		SamplingRate:        &samplingRate,
+		NormalizationStatus: &status,
+		NormalizationError:  "missing field",
+		SourceIP:            &sourceIP,
+		IPVersion:           &ipVersion,
+	})
+
+	for _, clause := range []string{
+		"strpos(lower(attributes::text), lower($3)) > 0",
+		"bytes >= $4",
+		"bytes <= $5",
+		"packets >= $6",
+		"packets <= $7",
+		"duration_ms >= $8",
+		"duration_ms <= $9",
+		"flow_state = $10",
+		"tcp_flags = $11",
+		"input_interface = $12",
+		"output_interface = $13",
+		"next_hop_ip = $14::inet",
+		"sampling_rate = $15",
+		"normalization_status = $16",
+		"strpos(lower(normalization_error), lower($17)) > 0",
+		"source_ip = $18::inet",
+		"ip_version = $19",
+	} {
+		requireContains(t, where, clause)
+	}
+}
+
+func TestValidateSearchQueryRejectsReversedAdvancedRange(t *testing.T) {
+	t.Parallel()
+
+	fromValue := int64(20)
+	toValue := int64(10)
+	err := validateSearchQuery(FlowSearchQuery{
+		From:      time.Date(2026, 7, 6, 0, 0, 0, 0, time.UTC),
+		To:        time.Date(2026, 7, 6, 1, 0, 0, 0, time.UTC),
+		Limit:     10,
+		BytesFrom: &fromValue,
+		BytesTo:   &toValue,
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid bytes range") {
+		t.Fatalf("validateSearchQuery() error = %v", err)
+	}
 }
 
 func TestRefreshContinuousAggregateQueryAllowsAllFlowAggregateViews(t *testing.T) {

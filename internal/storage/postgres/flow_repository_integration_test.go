@@ -64,10 +64,19 @@ func TestFlowRepositoryIntegration(t *testing.T) {
 		_ = db.Close()
 	})
 
-	// Clear out flow_records first for a clean slate
+	seedTime := time.Date(2026, 6, 18, 5, 0, 0, 0, time.UTC)
+	seedWindowStart := seedTime.Add(-10 * time.Minute)
+	seedWindowEnd := seedTime.Add(10 * time.Minute)
+
+	// Clear only this test's fixture window so other integration packages can run concurrently.
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := db.ExecContext(ctx, "DELETE FROM quiver.flow_records"); err != nil {
+	if _, err := db.ExecContext(
+		ctx,
+		"DELETE FROM quiver.flow_records WHERE event_start_time >= $1 AND event_start_time < $2",
+		seedWindowStart,
+		seedWindowEnd,
+	); err != nil {
 		t.Fatalf("Failed to clear flow_records: %v", err)
 	}
 
@@ -77,11 +86,19 @@ func TestFlowRepositoryIntegration(t *testing.T) {
 	}
 
 	// Prepare records
-	seedTime := time.Date(2026, 6, 18, 5, 0, 0, 0, time.UTC)
 	srcPort1 := uint16(12345)
 	dstPort1 := uint16(80)
 	bytes1 := uint64(500)
 	packets1 := uint64(5)
+	duration1 := int64(250)
+	tcpFlags1 := uint16(18)
+	flowState1 := "established"
+	inputInterface1 := uint32(2)
+	outputInterface1 := uint32(3)
+	samplingRate1 := uint32(100)
+	sourceIP1 := netip.MustParseAddr("203.0.113.10")
+	nextHopIP1 := netip.MustParseAddr("192.0.2.1")
+	normalizationError1 := "Missing exporter field"
 
 	srcPort2 := uint16(54321)
 	dstPort2 := uint16(443)
@@ -96,9 +113,11 @@ func TestFlowRepositoryIntegration(t *testing.T) {
 		SourceType:          domain.SourceTypeRESTJSON,
 		CollectorID:         "rest-ingest-main",
 		SourceHost:          "rest-client-host",
+		SourceIP:            &sourceIP1,
 		IngestedAt:          seedTime,
 		NormalizedAt:        seedTime,
 		EventStartTime:      seedTime,
+		DurationMS:          &duration1,
 		SrcIP:               netip.MustParseAddr("192.168.1.10"),
 		DstIP:               netip.MustParseAddr("8.8.8.8"),
 		SrcPort:             &srcPort1,
@@ -108,9 +127,19 @@ func TestFlowRepositoryIntegration(t *testing.T) {
 		ProtocolNumber:      6,
 		Bytes:               &bytes1,
 		Packets:             &packets1,
+		TCPFlags:            &tcpFlags1,
+		FlowState:           &flowState1,
 		Direction:           domain.DirectionOutbound,
-		NormalizationStatus: domain.NormalizationStatusOK,
-		Attributes:          map[string]json.RawMessage{},
+		InputInterface:      &inputInterface1,
+		OutputInterface:     &outputInterface1,
+		NextHopIP:           &nextHopIP1,
+		SamplingRate:        &samplingRate1,
+		NormalizationStatus: domain.NormalizationStatusPartial,
+		NormalizationError:  &normalizationError1,
+		Attributes: map[string]json.RawMessage{
+			"environment": json.RawMessage(`"Production"`),
+			"nested":      json.RawMessage(`{"site":"branch-router"}`),
+		},
 	}
 
 	rec2 := domain.NormalizedFlowRecord{
@@ -250,6 +279,44 @@ func TestFlowRepositoryIntegration(t *testing.T) {
 		}
 		if len(res.Records) != 1 || res.Records[0].ID != rec2.ID {
 			t.Errorf("Expected record ID %s, got %d records", rec2.ID, len(res.Records))
+		}
+
+		// Compound advanced filters, including case-insensitive literal JSON/error search.
+		bytesFrom := int64(400)
+		bytesTo := int64(600)
+		packetsFrom := int64(5)
+		packetsTo := int64(5)
+		durationFrom := int64(200)
+		durationTo := int64(300)
+		ipVersion := uint8(4)
+		searchQuery = FlowSearchQuery{
+			From:                seedTime.Add(-10 * time.Minute),
+			To:                  seedTime.Add(10 * time.Minute),
+			Limit:               10,
+			AttributesContains:  "BRANCH-ROUTER",
+			BytesFrom:           &bytesFrom,
+			BytesTo:             &bytesTo,
+			PacketsFrom:         &packetsFrom,
+			PacketsTo:           &packetsTo,
+			DurationMSFrom:      &durationFrom,
+			DurationMSTo:        &durationTo,
+			FlowState:           flowState1,
+			TCPFlags:            &tcpFlags1,
+			InputInterface:      &inputInterface1,
+			OutputInterface:     &outputInterface1,
+			NextHopIP:           &nextHopIP1,
+			SamplingRate:        &samplingRate1,
+			NormalizationStatus: &rec1.NormalizationStatus,
+			NormalizationError:  "EXPORTER FIELD",
+			SourceIP:            &sourceIP1,
+			IPVersion:           &ipVersion,
+		}
+		res, err = flowRepo.SearchFlows(ctx, searchQuery)
+		if err != nil {
+			t.Fatalf("SearchFlows with advanced filters failed: %v", err)
+		}
+		if len(res.Records) != 1 || res.Records[0].ID != rec1.ID {
+			t.Errorf("Expected advanced search to return %s, got %+v", rec1.ID, res.Records)
 		}
 	})
 

@@ -281,6 +281,46 @@ func TestFlowSearchValidationEdgeCases(t *testing.T) {
 			query:     "dst_port=invalid",
 			wantError: CodeInvalidParameter,
 		},
+		{
+			name:      "reversed bytes range",
+			query:     "bytes_from=20&bytes_to=10",
+			wantError: CodeInvalidParameter,
+		},
+		{
+			name:      "negative packet count",
+			query:     "packets_from=-1",
+			wantError: CodeInvalidParameter,
+		},
+		{
+			name:      "tcp flags overflow",
+			query:     "tcp_flags=65536",
+			wantError: CodeInvalidParameter,
+		},
+		{
+			name:      "zero sampling rate",
+			query:     "sampling_rate=0",
+			wantError: CodeInvalidParameter,
+		},
+		{
+			name:      "bad normalization status",
+			query:     "normalization_status=failed",
+			wantError: CodeInvalidParameter,
+		},
+		{
+			name:      "bad IP version",
+			query:     "ip_version=5",
+			wantError: CodeInvalidParameter,
+		},
+		{
+			name:      "bad next-hop IP",
+			query:     "next_hop_ip=router",
+			wantError: CodeInvalidParameter,
+		},
+		{
+			name:      "attributes search too long",
+			query:     "attributes_contains=" + strings.Repeat("a", maxAdvancedSearchTextLength+1),
+			wantError: CodeInvalidParameter,
+		},
 	}
 
 	for _, tt := range tests {
@@ -300,6 +340,47 @@ func TestFlowSearchValidationEdgeCases(t *testing.T) {
 				t.Fatalf("error code = %q, want %q", response.Error.Code, tt.wantError)
 			}
 		})
+	}
+}
+
+func TestFlowAdvancedSearchParameters(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeFlowStore{}
+	handler := newQueryTestServer(t, store, nil)
+	target := "/api/v1/flows?from=2026-06-16T10:00:00Z&to=2026-06-16T11:00:00Z" +
+		"&attributes_contains=branch-router&bytes_from=10&bytes_to=20" +
+		"&packets_from=2&packets_to=4&duration_ms_from=100&duration_ms_to=200" +
+		"&flow_state=established&tcp_flags=18&input_interface=2&output_interface=3" +
+		"&next_hop_ip=2001:db8::1&sampling_rate=100&normalization_status=partial" +
+		"&normalization_error_contains=missing%20field&source_ip=203.0.113.10&ip_version=6"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, newQueryRequest(target, "query-key"))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	query := store.lastSearchQuery()
+	if query.AttributesContains != "branch-router" || query.NormalizationError != "missing field" {
+		t.Fatalf("text filters = %+v", query)
+	}
+	if query.BytesFrom == nil || *query.BytesFrom != 10 || query.BytesTo == nil || *query.BytesTo != 20 {
+		t.Fatalf("bytes range = %+v", query)
+	}
+	if query.PacketsFrom == nil || *query.PacketsFrom != 2 || query.PacketsTo == nil || *query.PacketsTo != 4 {
+		t.Fatalf("packets range = %+v", query)
+	}
+	if query.DurationMSFrom == nil || *query.DurationMSFrom != 100 || query.DurationMSTo == nil || *query.DurationMSTo != 200 {
+		t.Fatalf("duration range = %+v", query)
+	}
+	if query.TCPFlags == nil || *query.TCPFlags != 18 || query.InputInterface == nil || *query.InputInterface != 2 {
+		t.Fatalf("integer filters = %+v", query)
+	}
+	if query.NextHopIP == nil || query.NextHopIP.String() != "2001:db8::1" || query.SourceIP == nil || query.SourceIP.String() != "203.0.113.10" {
+		t.Fatalf("IP filters = %+v", query)
+	}
+	if query.NormalizationStatus == nil || *query.NormalizationStatus != domain.NormalizationStatusPartial || query.IPVersion == nil || *query.IPVersion != 6 {
+		t.Fatalf("enum filters = %+v", query)
 	}
 }
 

@@ -49,6 +49,23 @@ type FlowSearchQuery struct {
 	SourceHost          string
 	ApplicationProtocol string
 	Direction           *domain.Direction
+	AttributesContains  string
+	BytesFrom           *int64
+	BytesTo             *int64
+	PacketsFrom         *int64
+	PacketsTo           *int64
+	DurationMSFrom      *int64
+	DurationMSTo        *int64
+	FlowState           string
+	TCPFlags            *uint16
+	InputInterface      *uint32
+	OutputInterface     *uint32
+	NextHopIP           *netip.Addr
+	SamplingRate        *uint32
+	NormalizationStatus *domain.NormalizationStatus
+	NormalizationError  string
+	SourceIP            *netip.Addr
+	IPVersion           *uint8
 }
 
 type FlowSearchResult struct {
@@ -754,6 +771,57 @@ func buildFlowWhere(query FlowSearchQuery) (string, []any) {
 	if query.Direction != nil {
 		add("direction = $%d", string(*query.Direction))
 	}
+	if query.AttributesContains != "" {
+		add("strpos(lower(attributes::text), lower($%d)) > 0", query.AttributesContains)
+	}
+	if query.BytesFrom != nil {
+		add("bytes >= $%d", *query.BytesFrom)
+	}
+	if query.BytesTo != nil {
+		add("bytes <= $%d", *query.BytesTo)
+	}
+	if query.PacketsFrom != nil {
+		add("packets >= $%d", *query.PacketsFrom)
+	}
+	if query.PacketsTo != nil {
+		add("packets <= $%d", *query.PacketsTo)
+	}
+	if query.DurationMSFrom != nil {
+		add("duration_ms >= $%d", *query.DurationMSFrom)
+	}
+	if query.DurationMSTo != nil {
+		add("duration_ms <= $%d", *query.DurationMSTo)
+	}
+	if query.FlowState != "" {
+		add("flow_state = $%d", query.FlowState)
+	}
+	if query.TCPFlags != nil {
+		add("tcp_flags = $%d", *query.TCPFlags)
+	}
+	if query.InputInterface != nil {
+		add("input_interface = $%d", *query.InputInterface)
+	}
+	if query.OutputInterface != nil {
+		add("output_interface = $%d", *query.OutputInterface)
+	}
+	if query.NextHopIP != nil {
+		add("next_hop_ip = $%d::inet", query.NextHopIP.String())
+	}
+	if query.SamplingRate != nil {
+		add("sampling_rate = $%d", *query.SamplingRate)
+	}
+	if query.NormalizationStatus != nil {
+		add("normalization_status = $%d", string(*query.NormalizationStatus))
+	}
+	if query.NormalizationError != "" {
+		add("strpos(lower(normalization_error), lower($%d)) > 0", query.NormalizationError)
+	}
+	if query.SourceIP != nil {
+		add("source_ip = $%d::inet", query.SourceIP.String())
+	}
+	if query.IPVersion != nil {
+		add("ip_version = $%d", *query.IPVersion)
+	}
 	if query.Cursor != nil {
 		args = append(args, query.Cursor.EventStartTime, query.Cursor.ID)
 		clauses = append(
@@ -966,7 +1034,20 @@ func validateSearchQuery(query FlowSearchQuery) error {
 	if query.Limit <= 0 {
 		return fmt.Errorf("%w: limit must be positive", ErrInvalidFlowQuery)
 	}
+	if invalidInt64Range(query.BytesFrom, query.BytesTo) {
+		return fmt.Errorf("%w: invalid bytes range", ErrInvalidFlowQuery)
+	}
+	if invalidInt64Range(query.PacketsFrom, query.PacketsTo) {
+		return fmt.Errorf("%w: invalid packets range", ErrInvalidFlowQuery)
+	}
+	if invalidInt64Range(query.DurationMSFrom, query.DurationMSTo) {
+		return fmt.Errorf("%w: invalid duration_ms range", ErrInvalidFlowQuery)
+	}
 	return nil
+}
+
+func invalidInt64Range(from *int64, to *int64) bool {
+	return from != nil && to != nil && *from > *to
 }
 
 func validateAggregationQuery(query AggregationQuery, requireDirection bool) error {
